@@ -118,6 +118,9 @@ REAL_ESTATE_DB_PATH = STATE_DIR / "real_estate_building.json"
 REAL_ESTATE_PRICE_CACHE_PATH = STATE_DIR / "real_estate_price_cache.json"
 REAL_ESTATE_TRADE_CACHE_PATH = STATE_DIR / "real_estate_trade_cache.json"
 MARKET_CALENDAR_PATH = STATE_DIR / "market_calendar_events.json"
+MARKET_CALENDAR_AUTO_CACHE_PATH = STATE_DIR / "market_calendar_auto_cache.json"
+MARKET_CALENDAR_AUTO_CACHE_TTL_SECONDS = 6 * 60 * 60
+MARKET_CALENDAR_MIN_KR_MARCAP = 2000 * 100000000
 REAL_ESTATE_EXCEL_PATH = Path(
     os.getenv(
         "STOCK_DASHBOARD_REAL_ESTATE_EXCEL_PATH",
@@ -763,6 +766,7 @@ def normalize_market_calendar_event(raw: dict[str, Any]) -> dict[str, Any] | Non
         "importance": str(raw.get("importance") or "medium").strip() or "medium",
         "note": str(raw.get("note") or "").strip(),
         "source": str(raw.get("source") or "manual").strip() or "manual",
+        "url": str(raw.get("url") or "").strip(),
     }
 
 
@@ -794,7 +798,285 @@ def save_market_calendar_events(events: list[dict[str, Any]]) -> list[dict[str, 
     return normalized
 
 
-def market_calendar_payload(start: str | None = None, end: str | None = None) -> dict[str, Any]:
+def market_calendar_event_key(event: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(event.get("date") or ""),
+            normalize_text(event.get("title")),
+            str(event.get("market") or ""),
+            str(event.get("time") or ""),
+            str(event.get("source") or ""),
+        ]
+    )
+
+
+def market_calendar_date_range(start_date: date, end_date: date) -> list[date]:
+    days = max(0, min((end_date - start_date).days, 75))
+    return [start_date + timedelta(days=offset) for offset in range(days + 1)]
+
+
+def kind_stock_code_from_onclick(onclick: str) -> str:
+    match = re.search(r"(?:companysummary_open|openDisclsChart|fnPopStockPrices)\('([^']+)'", str(onclick or ""))
+    if not match:
+        return ""
+    raw_code = re.sub(r"\D", "", match.group(1))
+    if len(raw_code) == 5:
+        return raw_code + "0"
+    return raw_code.zfill(6) if raw_code else ""
+
+
+def kind_disclosure_category(title: str) -> str:
+    text = normalize_text(title)
+    if any(token in text for token in ["잠정실적", "영업실적", "매출액", "영업이익", "분기보고서", "반기보고서", "사업보고서"]):
+        return "실적/보고서"
+    if any(token in text for token in ["단일판매", "공급계약", "수주", "계약체결"]):
+        return "수주/계약"
+    if any(token in text for token in ["시설투자", "신규시설", "타법인", "취득", "양수", "증설"]):
+        return "투자"
+    if any(token in text for token in ["유상증자", "무상증자", "전환사채", "신주인수권", "자금조달"]):
+        return "자금조달"
+    if any(token in text for token in ["합병", "분할", "영업양수", "영업양도"]):
+        return "합병/분할"
+    if any(token in text for token in ["배당", "자기주식", "자사주", "주식소각"]):
+        return "주주환원"
+    if any(token in text for token in ["주주총회", "기준일", "명의개서"]):
+        return "주주일정"
+    if any(token in text for token in ["투자주의", "투자경고", "단기과열", "거래정지", "관리종목"]):
+        return "시장조치"
+    return "공시"
+
+
+def kind_disclosure_importance(title: str, marcap: float | None) -> str:
+    text = normalize_text(title)
+    if any(token in text for token in ["잠정실적", "영업실적", "단일판매", "공급계약", "시설투자", "합병", "분할", "유상증자", "거래정지"]):
+        return "high"
+    if marcap and marcap >= 10000 * 100000000:
+        return "high"
+    if any(token in text for token in ["투자주의", "단기과열"]):
+        return "low"
+    return "medium"
+
+
+def fetch_kind_disclosures_for_date(target_date: date, min_marcap: float = MARKET_CALENDAR_MIN_KR_MARCAP) -> list[dict[str, Any]]:
+    response = requests.post(
+        "https://kind.krx.co.kr/disclosure/todaydisclosure.do?method=searchTodayDisclosureSub",
+        data={
+            "currentPageSize": "100",
+            "pageIndex": "1",
+            "orderMode": "0",
+            "orderStat": "D",
+            "forward": "todaydisclosure_sub",
+            "todayFlag": "N",
+            "selDate": target_date.isoformat(),
+        },
+        headers={
+            "User-Agent": news_headers()["User-Agent"],
+            "Referer": "https://kind.krx.co.kr/disclosure/todaydisclosure.do?method=searchTodayDisclosureMain",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    if not response.text.strip():
+        return []
+    soup = BeautifulSoup(response.text, "html.parser")
+    events: list[dict[str, Any]] = []
+    for row in soup.select("tbody tr"):
+        cells = row.select("td")
+        if len(cells) < 3:
+            continue
+        time_text = clean_news_text(cells[0].get_text(" "))
+        company_link = cells[1].select_one("a")
+        title_link = cells[2].select_one("a")
+        company = clean_news_text(company_link.get_text(" ") if company_link else cells[1].get_text(" "))
+        title = clean_news_text(title_link.get_text(" ") if title_link else cells[2].get_text(" "))
+        if not company or not title:
+            continue
+        code = kind_stock_code_from_onclick(company_link.get("onclick") if company_link else "")
+        if not code and len(cells) >= 5:
+            for link in cells[-1].select("a"):
+                code = kind_stock_code_from_onclick(link.get("onclick") or "")
+                if code:
+                    break
+        listing_row = find_listing_row_by_code(code) if code else resolve_stock_payload(name=company)
+        marcap = to_float((listing_row or {}).get("marcap"))
+        if marcap is None or marcap < min_marcap:
+            continue
+        accept_no = ""
+        if title_link:
+            match = re.search(r"openDisclsViewer\('([^']+)'", str(title_link.get("onclick") or ""))
+            accept_no = match.group(1) if match else ""
+        source_url = (
+            "https://kind.krx.co.kr/common/disclsviewer.do?method=search&acptno=" + quote(accept_no)
+            if accept_no
+            else "https://kind.krx.co.kr/disclosure/todaydisclosure.do?method=searchTodayDisclosureMain"
+        )
+        events.append(
+            {
+                "date": target_date.isoformat(),
+                "time": time_text,
+                "title": f"{company} · {title}",
+                "category": kind_disclosure_category(title),
+                "market": "KR",
+                "importance": kind_disclosure_importance(title, marcap),
+                "note": f"KIND 공시 · 시총 {marcap / 100000000:.0f}억원 이상",
+                "source": "KIND",
+                "url": source_url,
+                "id": hashlib.sha1(f"KIND|{target_date}|{company}|{title}|{accept_no}".encode("utf-8")).hexdigest()[:16],
+            }
+        )
+    return events
+
+
+def investing_country_to_market(country_text: str, currency_text: str) -> str:
+    source = f"{country_text} {currency_text}".upper()
+    if "UNITED STATES" in source or "USD" in source:
+        return "US"
+    if "SOUTH KOREA" in source or "KRW" in source:
+        return "KR"
+    if "CHINA" in source or "CNY" in source:
+        return "CN"
+    if "JAPAN" in source or "JPY" in source:
+        return "JP"
+    if "EUR" in source or "EURO" in source:
+        return "EU"
+    return "Global"
+
+
+def fetch_investing_calendar(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    response = requests.post(
+        "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData",
+        data={
+            "country[]": ["5", "4", "35", "11", "25", "32", "6", "72"],
+            "importance[]": ["3"],
+            "timeZone": "8",
+            "timeFilter": "timeRemain",
+            "currentTab": "custom",
+            "limit_from": "0",
+            "dateFrom": start_date.isoformat(),
+            "dateTo": end_date.isoformat(),
+        },
+        headers={
+            "User-Agent": news_headers()["User-Agent"],
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "https://www.investing.com/economic-calendar/",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    soup = BeautifulSoup(str(payload.get("data") or ""), "html.parser")
+    events: list[dict[str, Any]] = []
+    current_date: date | None = None
+    for row in soup.select("tr"):
+        day_cell = row.select_one("td.theDay")
+        if day_cell:
+            try:
+                current_date = datetime.strptime(clean_news_text(day_cell.get_text(" ")), "%A, %B %d, %Y").date()
+            except Exception:
+                current_date = None
+            continue
+        if current_date is None:
+            continue
+        cells = row.select("td")
+        if len(cells) < 4:
+            continue
+        time_text = clean_news_text(cells[0].get_text(" "))
+        currency = clean_news_text(cells[1].get_text(" "))
+        impact = clean_news_text(cells[2].get("title") or cells[2].get_text(" "))
+        event_cell = cells[3]
+        title = clean_news_text(event_cell.get_text(" "))
+        if not title:
+            continue
+        country_span = cells[1].select_one("[title]")
+        country = clean_news_text(country_span.get("title") if country_span else "")
+        market = investing_country_to_market(country, currency)
+        event_id = str(row.get("id") or "").replace("eventRowId_", "")
+        events.append(
+            {
+                "date": current_date.isoformat(),
+                "time": "" if time_text.lower() == "all day" else time_text,
+                "title": title,
+                "category": "휴장" if "holiday" in normalize_text(title + impact) else "경제지표",
+                "market": market,
+                "importance": "high",
+                "note": "Investing.com economic calendar" + (f" · {currency}" if currency else ""),
+                "source": "Investing.com",
+                "url": "https://www.investing.com/economic-calendar/",
+                "id": hashlib.sha1(f"INVESTING|{current_date}|{event_id}|{title}|{market}".encode("utf-8")).hexdigest()[:16],
+            }
+        )
+    return events
+
+
+def load_market_calendar_auto_cache() -> dict[str, Any]:
+    if not MARKET_CALENDAR_AUTO_CACHE_PATH.exists():
+        return {"events": [], "ranges": {}, "errors": []}
+    try:
+        payload = json.loads(MARKET_CALENDAR_AUTO_CACHE_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {"events": [], "ranges": {}, "errors": []}
+    except Exception:
+        return {"events": [], "ranges": {}, "errors": []}
+
+
+def save_market_calendar_auto_cache(payload: dict[str, Any]) -> dict[str, Any]:
+    MARKET_CALENDAR_AUTO_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = MARKET_CALENDAR_AUTO_CACHE_PATH.with_name(f"{MARKET_CALENDAR_AUTO_CACHE_PATH.stem}_{uuid.uuid4().hex[:8]}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(MARKET_CALENDAR_AUTO_CACHE_PATH)
+    return payload
+
+
+def refresh_market_calendar_auto_events(start_date: date, end_date: date, force: bool = False) -> dict[str, Any]:
+    cache = load_market_calendar_auto_cache()
+    range_key = f"{start_date.isoformat()}:{end_date.isoformat()}"
+    ranges = cache.get("ranges") if isinstance(cache.get("ranges"), dict) else {}
+    range_meta = ranges.get(range_key) if isinstance(ranges.get(range_key), dict) else {}
+    fetched_at = parse_iso_datetime(range_meta.get("fetched_at")) if range_meta else None
+    if (
+        not force
+        and fetched_at
+        and (datetime.now() - fetched_at).total_seconds() < MARKET_CALENDAR_AUTO_CACHE_TTL_SECONDS
+    ):
+        return cache
+
+    errors: list[str] = []
+    fetched_events: list[dict[str, Any]] = []
+    try:
+        kind_end_date = min(end_date, date.today())
+        if start_date <= kind_end_date:
+            for target_date in market_calendar_date_range(start_date, kind_end_date):
+                fetched_events.extend(fetch_kind_disclosures_for_date(target_date))
+    except Exception as exc:
+        errors.append(f"KIND: {exc}")
+    try:
+        if start_date <= end_date:
+            fetched_events.extend(fetch_investing_calendar(start_date, end_date))
+    except Exception as exc:
+        errors.append(f"Investing.com: {exc}")
+
+    normalized_new = [item for item in (normalize_market_calendar_event(event) for event in fetched_events) if item]
+    existing = [
+        item for item in (normalize_market_calendar_event(event) for event in cache.get("events", []))
+        if item and not (start_date.isoformat() <= str(item.get("date") or "") <= end_date.isoformat())
+    ]
+    merged_by_key: dict[str, dict[str, Any]] = {}
+    for event in existing + normalized_new:
+        merged_by_key[market_calendar_event_key(event)] = event
+    ranges[range_key] = {
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "event_count": len(normalized_new),
+        "errors": errors,
+    }
+    payload = {
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "events": sorted(merged_by_key.values(), key=lambda item: (item.get("date", ""), item.get("time", ""), item.get("title", ""))),
+        "ranges": ranges,
+        "errors": errors,
+    }
+    return save_market_calendar_auto_cache(payload)
+
+
+def market_calendar_payload(start: str | None = None, end: str | None = None, refresh: bool = False) -> dict[str, Any]:
     today = date.today()
     try:
         start_date = datetime.strptime(str(start or ""), "%Y-%m-%d").date()
@@ -804,10 +1086,20 @@ def market_calendar_payload(start: str | None = None, end: str | None = None) ->
         end_date = datetime.strptime(str(end or ""), "%Y-%m-%d").date()
     except Exception:
         end_date = start_date + timedelta(days=45)
+    auto_cache = refresh_market_calendar_auto_events(start_date, end_date, force=refresh)
+    manual_events = load_market_calendar_events()
+    auto_events = [
+        item for item in (normalize_market_calendar_event(event) for event in auto_cache.get("events", []))
+        if item
+    ]
+    merged_by_key: dict[str, dict[str, Any]] = {}
+    for event in manual_events + auto_events:
+        merged_by_key[market_calendar_event_key(event)] = event
     events = [
-        event for event in load_market_calendar_events()
+        event for event in merged_by_key.values()
         if start_date.isoformat() <= str(event.get("date") or "") <= end_date.isoformat()
     ]
+    events.sort(key=lambda item: (item.get("date", ""), item.get("time", ""), item.get("importance") != "high", item.get("title", "")))
     by_date: dict[str, list[dict[str, Any]]] = {}
     for event in events:
         by_date.setdefault(str(event.get("date")), []).append(event)
@@ -816,24 +1108,30 @@ def market_calendar_payload(start: str | None = None, end: str | None = None) ->
         "end": end_date.isoformat(),
         "events": events,
         "by_date": by_date,
+        "auto": {
+            "updated_at": auto_cache.get("updated_at") or "",
+            "event_count": len(auto_events),
+            "errors": auto_cache.get("errors") or [],
+            "min_kr_market_cap_100m": round(MARKET_CALENDAR_MIN_KR_MARCAP / 100000000.0, 0),
+        },
         "sources": [
             {
-                "name": "Trading Economics",
-                "type": "경제지표 캘린더",
-                "note": "경제지표, 중앙은행 일정, iCalendar Export API 지원",
-                "url": "https://tradingeconomics.com/api/calendar.aspx",
+                "name": "KIND",
+                "type": "국내 기업 공시",
+                "note": "시가총액 2000억원 이상 기업 공시만 자동 반영",
+                "url": "https://kind.krx.co.kr/disclosure/todaydisclosure.do?method=searchTodayDisclosureMain",
             },
             {
-                "name": "Finnhub",
-                "type": "실적/경제지표/휴장",
-                "note": "earnings calendar, economic calendar, market holiday API 제공",
-                "url": "https://finnhub.io/docs/api",
+                "name": "Investing.com",
+                "type": "해외 주요 경제 일정",
+                "note": "High importance 경제지표와 휴장 일정 자동 반영",
+                "url": "https://www.investing.com/economic-calendar/",
             },
             {
-                "name": "EODHD/FMP",
-                "type": "실적/경제지표",
-                "note": "미국 실적 일정과 경제지표 캘린더 자동화 후보",
-                "url": "https://github.com/EodHistoricalData/eodhd-openapi",
+                "name": "수동 일정",
+                "type": "직접 추가",
+                "note": "자동 소스에서 빠진 ETF 상장, 내부 체크포인트 보강",
+                "url": "/api/market-calendar.ics",
             },
         ],
     }
@@ -14981,9 +15279,17 @@ def global_stocks_detail(symbol: str) -> JSONResponse:
 
 
 @app.get("/api/market-calendar")
-def market_calendar(start: str | None = None, end: str | None = None) -> JSONResponse:
+def market_calendar(start: str | None = None, end: str | None = None, refresh: bool = False) -> JSONResponse:
     try:
-        return JSONResponse(market_calendar_payload(start=start, end=end))
+        return JSONResponse(market_calendar_payload(start=start, end=end, refresh=refresh))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/market-calendar/reload")
+def market_calendar_reload(start: str | None = None, end: str | None = None) -> JSONResponse:
+    try:
+        return JSONResponse(market_calendar_payload(start=start, end=end, refresh=True))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -15005,7 +15311,11 @@ def market_calendar_add_event(request: MarketCalendarEventRequest) -> JSONRespon
 @app.get("/api/market-calendar.ics")
 def market_calendar_ics() -> Response:
     try:
-        content = build_market_calendar_ics(load_market_calendar_events())
+        payload = market_calendar_payload(
+            start=(date.today() - timedelta(days=7)).isoformat(),
+            end=(date.today() + timedelta(days=90)).isoformat(),
+        )
+        content = build_market_calendar_ics(payload.get("events", []))
         return Response(
             content=content,
             media_type="text/calendar; charset=utf-8",

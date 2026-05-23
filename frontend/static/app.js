@@ -12009,13 +12009,16 @@
       importance: "medium",
       note: "",
     });
+    const [autoReloading, setAutoReloading] = useState(false);
     const cells = buildMonthCells(activeMonth);
     const calendarStart = cells.length ? cells[0].date : activeMonth + "-01";
     const calendarEnd = cells.length ? cells[cells.length - 1].date : activeMonth + "-31";
     const request = useFetchJson("/api/market-calendar?start=" + encodeURIComponent(calendarStart) + "&end=" + encodeURIComponent(calendarEnd));
     const data = request.data || {};
+    const auto = data.auto || {};
     const byDate = data.by_date || {};
     const allEvents = ensureArray(data.events);
+    const autoErrors = ensureArray(auto.errors);
     const upcomingEvents = allEvents.filter(function (event) {
       return String(event.date || "") >= isoDateOffset(0);
     }).slice(0, 14);
@@ -12047,6 +12050,23 @@
       });
     }
 
+    function reloadAutoCalendar() {
+      if (autoReloading) {
+        return;
+      }
+      setAutoReloading(true);
+      fetchJson(
+        "/api/market-calendar/reload?start=" + encodeURIComponent(calendarStart) + "&end=" + encodeURIComponent(calendarEnd),
+        { method: "POST", noCache: true }
+      ).then(function () {
+        request.reload();
+      }).catch(function (error) {
+        alert(error.message || String(error));
+      }).finally(function () {
+        setAutoReloading(false);
+      });
+    }
+
     function renderEventChip(event) {
       return h(
         "div",
@@ -12056,7 +12076,9 @@
           title: [event.title, event.time, event.note].filter(Boolean).join(" · "),
         },
         h("span", { className: "market-calendar-category" }, event.category || "기타"),
-        h("strong", null, event.title),
+        event.url
+          ? h("a", { href: event.url, target: "_blank", rel: "noreferrer" }, event.title)
+          : h("strong", null, event.title),
         h("small", null, [event.market, event.time].filter(Boolean).join(" · "))
       );
     }
@@ -12102,6 +12124,7 @@
           h("p", { className: "page-copy compact-copy" }, "휴장, 경제지표, 실적, ETF 상장 같은 주요 일정을 월간 캘린더로 보고 Google Calendar에 가져올 수 있게 정리합니다.")
         ),
         h("div", { className: "market-calendar-actions" },
+          h("button", { type: "button", className: "secondary-button", disabled: autoReloading, onClick: reloadAutoCalendar }, autoReloading ? "자동 로드 중" : "자동 일정 새로고침"),
           h("a", { className: "secondary-button", href: "/api/market-calendar.ics" }, "ICS 다운로드"),
           h("a", { className: "secondary-button", href: "https://calendar.google.com/calendar/u/0/r/settings/export", target: "_blank", rel: "noreferrer" }, "Google Calendar 가져오기")
         )
@@ -12112,8 +12135,12 @@
         h(SummaryCard, { label: "이번 화면 일정", value: numberFormat(allEvents.length, 0) + "개" }),
         h(SummaryCard, { label: "중요 일정", value: numberFormat(highEvents.length, 0) + "개" }),
         h(SummaryCard, { label: "다음 일정", value: upcomingEvents.length ? formatDateLabel(upcomingEvents[0].date) : "-", help: upcomingEvents.length ? upcomingEvents[0].title : "예정 없음" }),
-        h(SummaryCard, { label: "동기화", value: "ICS", help: "Google Calendar에서 가져오기 가능" })
+        h(SummaryCard, { label: "자동 일정", value: numberFormat(auto.event_count, 0) + "개", help: auto.updated_at ? "최근 로드 " + auto.updated_at : "KIND/Investing.com 자동 로드" }),
+        h(SummaryCard, { label: "국내 필터", value: "2000억+", help: "KIND 국내 기업 공시는 시가총액 2000억원 이상만 표시" })
       ),
+      autoErrors.length
+        ? h("div", { className: "notice-box warning" }, "자동 일정 일부를 불러오지 못했습니다: " + autoErrors.join(" / "))
+        : null,
       h(
         "div",
         { className: "panel market-calendar-panel" },
@@ -12173,8 +12200,8 @@
         "div",
         { className: "panel market-calendar-source-panel" },
         h("div", { className: "section-toolbar compact" },
-          h(SectionTitle, null, "자동화 후보 데이터 소스"),
-          h("span", { className: "summary-help" }, "경제지표/실적은 API 자동화, 한국 특수 일정은 수동 보강을 섞는 구성이 가장 안정적입니다.")
+          h(SectionTitle, null, "자동 데이터 소스"),
+          h("span", { className: "summary-help" }, "국내 기업 일정은 KIND 공시, 해외 주요 이벤트는 Investing.com 경제 캘린더를 사용합니다.")
         ),
         h("div", { className: "market-calendar-source-grid" }, ensureArray(data.sources).map(renderSourceCard))
       )

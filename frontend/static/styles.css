@@ -5983,11 +5983,15 @@ button.sector-entry-stock-chip.clickable:hover {
   color: #475569;
 }
 
-.market-calendar-event strong {
+.market-calendar-event strong,
+.market-calendar-event a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+  color: inherit;
+  font-weight: 900;
+  text-decoration: none;
 }
 
 .market-calendar-event small,
