@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stock Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260505-02" />
+    <style>
+      .boot-fallback {
+        max-width: 720px;
+        margin: 48px auto;
+        padding: 24px;
+        border: 1px solid #dbe3ef;
+        border-radius: 18px;
+        font-family: Arial, sans-serif;
+        color: #172033;
+        background: #ffffff;
+      }
+      .boot-fallback h1 {
+        margin: 0 0 8px;
+        font-size: 22px;
+      }
+      .boot-fallback p {
+        margin: 8px 0;
+        line-height: 1.5;
+      }
+      .boot-error {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        background: #fff1f2;
+        color: #9f1239;
+        white-space: pre-wrap;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="boot-fallback">
+        <h1>Stock Dashboard 로딩 중</h1>
+        <p>페이지 데이터를 불러오고 있습니다. 10초 이상 이 화면이 유지되면 새로고침하거나 실행 창에서 다시 열어주세요.</p>
+        <p>외부 공유 주소는 반드시 <strong>https://...trycloudflare.com</strong> 주소여야 합니다.</p>
+      </div>
+    </div>
+    <script>
+      window.addEventListener("error", function (event) {
+        var root = document.getElementById("root");
+        if (!root) return;
+        root.innerHTML = '<div class="boot-fallback"><h1>앱 실행 오류</h1><p>브라우저에서 대시보드 스크립트를 실행하지 못했습니다.</p><div class="boot-error"></div></div>';
+        var box = root.querySelector(".boot-error");
+        if (box) box.textContent = (event.message || "Unknown error") + "\n" + (event.filename || "") + ":" + (event.lineno || "");
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        var root = document.getElementById("root");
+        if (!root) return;
+        var message = event.reason && (event.reason.message || String(event.reason)) || "Unknown promise rejection";
+        root.innerHTML = '<div class="boot-fallback"><h1>데이터 로드 오류</h1><p>대시보드 데이터를 불러오는 중 문제가 발생했습니다.</p><div class="boot-error"></div></div>';
+        var box = root.querySelector(".boot-error");
+        if (box) box.textContent = message;
+      });
+    </script>
+    <script src="/static/vendor/react.development.js"></script>
+    <script src="/static/vendor/react-dom.development.js"></script>
+    <script src="/static/vendor/chart.umd.js"></script>
+    <script src="/static/vendor/hammer.min.js"></script>
+    <script src="/static/vendor/chartjs-plugin-zoom.min.js"></script>
+    <script src="/static/vendor/html2canvas.min.js"></script>
+    <script src="/static/app.js?v=20260505-02"></script>
+  </body>
+</html>

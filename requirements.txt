@@ -1,0 +1,15 @@
+fastapi==0.136.1
+uvicorn[standard]==0.38.0
+pydantic==2.12.5
+pandas==2.3.3
+numpy==2.3.5
+openpyxl==3.1.5
+xlrd==2.0.2
+requests==2.32.5
+FinanceDataReader==0.9.110
+OpenDartReader==0.2.3
+telethon==1.42.0
+python-multipart==0.0.20
+lxml==6.0.2
+beautifulsoup4==4.14.2
+pykrx==1.0.51

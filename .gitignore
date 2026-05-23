@@ -1,0 +1,58 @@
+# Python / runtime
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local app state and logs
+*.log
+desktop_edge_profile/
+.pycache_check/
+docs_cache/
+outputs/
+edge_dump.txt
+edge_shared_dump.txt
+backend/*cache*/
+backend/*_cache.json
+backend/*_history.json
+backend/*_snapshot*.json
+backend/dialogs_debug.json
+backend/market_calendar_events.json
+backend/real_estate_building*.json
+backend/real_estate_price_cache.json
+backend/real_estate_trade_cache.json
+backend/screening_cache*.json
+backend/screening_cache*.tmp
+backend/sector_database.json
+backend/sector_database_backups/
+backend/trade_*.json
+
+# Secrets and private sessions
+.env
+.env.*
+local_settings.json
+backend/local_settings.json
+backend/kis_token_cache.json
+backend/telegram_session/
+
+# Large vendored/runtime binaries
+backend/vendor/
+tools/cloudflared.exe
+.tmp_kis_repo/
+
+# Generated or temporary data files
+temp_*.xlsx
+backend/*.xlsx
+*.xlsm.bak
+*.xlsx.bak
+.komis_*.html
+.komis_*.js
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
