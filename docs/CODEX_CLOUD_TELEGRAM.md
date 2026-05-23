@@ -53,6 +53,34 @@ GitHub 저장소 Settings -> Secrets and variables -> Actions에 아래 Secrets�
 - `TELEGRAM_BOT_TOKEN`: BotFather에서 받은 봇 토큰
 - `TELEGRAM_CHAT_ID`: 알림 받을 개인 또는 그룹 chat id
 
+## 보유 종목 뉴스 자동 알림
+
+`.github/workflows/portfolio-news-alert.yml`는 30분마다 보유 종목 관련 신규 뉴스를 검색하고, 아직 보낸 적 없는 중요 뉴스만 Telegram으로 보낸다.
+
+GitHub Actions에서 PC 없이 실행하려면 저장소 Secrets에 아래 값을 추가한다.
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `STOCK_ALERT_HOLDINGS_JSON`
+
+`STOCK_ALERT_HOLDINGS_JSON` 예시:
+
+```json
+[
+  {"name": "삼성전자", "code": "005930", "weight_pct": 12.5},
+  {"name": "SK하이닉스", "code": "000660", "weight_pct": 18.2}
+]
+```
+
+로컬 PC에서 실행하면 `STOCK_ALERT_HOLDINGS_JSON`이 없어도 포트폴리오 수익 페이지와 같은 데이터에서 최신 보유 종목을 읽으려고 시도한다.
+
+```powershell
+python tools\portfolio_news_alert.py --dry-run
+python tools\portfolio_news_alert.py
+```
+
+중복 발송 방지는 `.alert_state/portfolio_news_alert_cache.json` 또는 `backend/stock_news_alert_cache.json`에 저장된 뉴스 지문으로 처리한다. GitHub Actions에서는 `.alert_state`를 Actions cache로 이어받는다.
+
 ## Telegram에서 Codex 작업 만들기
 
 `tools/telegram_github_bridge.py`는 Telegram 명령을 GitHub Issue로 바꾸는 작은 long-polling 봇이다. PC가 꺼져 있어도 쓰려면 Render, Fly.io, Railway, VPS, NAS, 라즈베리파이 같은 항상 켜진 곳에서 실행한다.

@@ -13,12 +13,14 @@ desktop_edge_profile/
 .pycache_check/
 docs_cache/
 outputs/
+.alert_state/
 edge_dump.txt
 edge_shared_dump.txt
 backend/*cache*/
 backend/*_cache.json
 backend/*_history.json
 backend/*_snapshot*.json
+backend/stock_news_alert_cache.json
 backend/dialogs_debug.json
 backend/market_calendar_events.json
 backend/real_estate_building*.json
