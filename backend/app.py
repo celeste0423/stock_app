@@ -1420,6 +1420,8 @@ def stock_alert_settings() -> dict[str, str]:
     return {
         "github_repository": str(os.getenv("STOCK_ALERT_GITHUB_REPOSITORY") or stock_alert.get("github_repository") or "").strip(),
         "github_token": str(os.getenv("STOCK_ALERT_GITHUB_TOKEN") or stock_alert.get("github_token") or "").strip(),
+        "telegram_bot_token": str(os.getenv("TELEGRAM_BOT_TOKEN") or stock_alert.get("telegram_bot_token") or "").strip(),
+        "telegram_chat_id": str(os.getenv("TELEGRAM_CHAT_ID") or stock_alert.get("telegram_chat_id") or "").strip(),
     }
 
 
@@ -1436,6 +1438,12 @@ def stock_alert_status_payload() -> dict[str, Any]:
         "configured": bool(settings["github_repository"] and settings["github_token"]),
         "has_token": bool(settings["github_token"]),
         "token_masked": mask_secret(settings["github_token"]),
+        "telegram": {
+            "has_bot_token": bool(settings["telegram_bot_token"]),
+            "bot_token_masked": mask_secret(settings["telegram_bot_token"]),
+            "chat_id": settings["telegram_chat_id"],
+            "configured": bool(settings["telegram_bot_token"] and settings["telegram_chat_id"]),
+        },
         "secret_name": "STOCK_ALERT_HOLDINGS_JSON",
         "snapshot": {
             "updated_at": snapshot.get("updated_at") or "",
@@ -1670,6 +1678,11 @@ class MarketCalendarEventRequest(BaseModel):
 class StockAlertGitHubSettingsRequest(BaseModel):
     repository: str
     token: str
+
+
+class StockAlertTelegramSettingsRequest(BaseModel):
+    bot_token: str
+    chat_id: str | None = ""
 
 
 @lru_cache(maxsize=1)
@@ -11723,6 +11736,71 @@ def sync_stock_alert_holdings_secret() -> dict[str, Any]:
     }
 
 
+def detect_telegram_chat_id() -> dict[str, Any]:
+    settings = stock_alert_settings()
+    bot_token = settings["telegram_bot_token"]
+    if not bot_token:
+        raise ValueError("Telegram bot token 설정이 필요합니다.")
+    response = requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates", timeout=20)
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok"):
+        raise ValueError(str(payload))
+    candidates: list[dict[str, Any]] = []
+    for update in payload.get("result") or []:
+        message = update.get("message") or update.get("edited_message") or update.get("channel_post")
+        if not isinstance(message, dict):
+            continue
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        chat_id = str(chat.get("id") or "").strip()
+        if not chat_id:
+            continue
+        candidates.append(
+            {
+                "chat_id": chat_id,
+                "type": chat.get("type") or "",
+                "title": chat.get("title") or chat.get("username") or chat.get("first_name") or "",
+                "date": message.get("date") or 0,
+                "text": str(message.get("text") or "")[:80],
+            }
+        )
+    if not candidates:
+        raise ValueError("봇에 들어온 메시지가 없습니다. Telegram에서 봇에게 /start를 보낸 뒤 다시 시도해 주세요.")
+    candidates.sort(key=lambda item: int(item.get("date") or 0), reverse=True)
+    picked = candidates[0]
+    settings_payload = load_settings()
+    stock_alert = settings_payload.get("stock_alert") if isinstance(settings_payload.get("stock_alert"), dict) else {}
+    stock_alert["telegram_chat_id"] = picked["chat_id"]
+    settings_payload["stock_alert"] = stock_alert
+    save_settings(settings_payload)
+    return {"ok": True, "picked": picked, "candidates": candidates[:5]}
+
+
+def sync_stock_alert_telegram_secrets() -> dict[str, Any]:
+    settings = stock_alert_settings()
+    if not settings["github_repository"] or not settings["github_token"]:
+        raise ValueError("GitHub repository/token 설정이 필요합니다.")
+    if not settings["telegram_bot_token"] or not settings["telegram_chat_id"]:
+        raise ValueError("Telegram bot token/chat id 설정이 필요합니다.")
+    update_github_actions_secret(
+        settings["github_repository"],
+        settings["github_token"],
+        "TELEGRAM_BOT_TOKEN",
+        settings["telegram_bot_token"],
+    )
+    update_github_actions_secret(
+        settings["github_repository"],
+        settings["github_token"],
+        "TELEGRAM_CHAT_ID",
+        settings["telegram_chat_id"],
+    )
+    return {
+        "ok": True,
+        "repository": settings["github_repository"],
+        "synced": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
+    }
+
+
 def split_theme_tokens(note: Any) -> list[str]:
     if note is None or (isinstance(note, float) and math.isnan(note)):
         return []
@@ -15255,6 +15333,41 @@ def stock_alert_github_settings(request: StockAlertGitHubSettingsRequest) -> JSO
         settings["stock_alert"] = stock_alert
         save_settings(settings)
         return JSONResponse(stock_alert_status_payload())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/stock-alert/telegram-settings")
+def stock_alert_telegram_settings(request: StockAlertTelegramSettingsRequest) -> JSONResponse:
+    try:
+        bot_token = request.bot_token.strip()
+        chat_id = str(request.chat_id or "").strip()
+        if not bot_token:
+            return JSONResponse({"error": "Telegram bot token이 필요합니다."}, status_code=400)
+        settings = load_settings()
+        stock_alert = settings.get("stock_alert") if isinstance(settings.get("stock_alert"), dict) else {}
+        stock_alert["telegram_bot_token"] = bot_token
+        if chat_id:
+            stock_alert["telegram_chat_id"] = chat_id
+        settings["stock_alert"] = stock_alert
+        save_settings(settings)
+        return JSONResponse(stock_alert_status_payload())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/stock-alert/detect-telegram-chat")
+def stock_alert_detect_telegram_chat() -> JSONResponse:
+    try:
+        return JSONResponse(detect_telegram_chat_id())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/stock-alert/sync-telegram-secrets")
+def stock_alert_sync_telegram_secrets() -> JSONResponse:
+    try:
+        return JSONResponse(sync_stock_alert_telegram_secrets())
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 

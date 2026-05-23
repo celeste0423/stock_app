@@ -3525,7 +3525,12 @@
     const [resetSignal, setResetSignal] = useState(0);
     const [alertRepo, setAlertRepo] = useState("celeste0423/stock_app");
     const [alertToken, setAlertToken] = useState("");
+    const [telegramBotToken, setTelegramBotToken] = useState("");
+    const [telegramChatId, setTelegramChatId] = useState("");
     const [alertSaving, setAlertSaving] = useState(false);
+    const [telegramSaving, setTelegramSaving] = useState(false);
+    const [telegramDetecting, setTelegramDetecting] = useState(false);
+    const [telegramSyncing, setTelegramSyncing] = useState(false);
     const [alertSyncing, setAlertSyncing] = useState(false);
     const [alertMessage, setAlertMessage] = useState("");
 
@@ -3563,6 +3568,7 @@
     const summary = data.summary || {};
     const alertStatus = alertRequest.data || {};
     const alertSnapshot = alertStatus.snapshot || {};
+    const telegramStatus = alertStatus.telegram || {};
     const alertHoldings = ensureArray((holdingsRequest.data || {}).holdings);
     const monthOptions = portfolioMonthOptions(data.series);
     const activePeriod = periodKey || monthOptions[monthOptions.length - 1] || "all";
@@ -3615,6 +3621,62 @@
         })
         .finally(function () {
           setAlertSyncing(false);
+        });
+    }
+
+    function saveTelegramSettings() {
+      if (!telegramBotToken.trim()) {
+        setAlertMessage("Telegram bot token을 입력해 주세요.");
+        return;
+      }
+      setTelegramSaving(true);
+      setAlertMessage("");
+      fetchJson("/api/stock-alert/telegram-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bot_token: telegramBotToken.trim(), chat_id: telegramChatId.trim() }),
+      }).then(function () {
+        setTelegramBotToken("");
+        setAlertMessage("Telegram bot 설정을 저장했습니다.");
+        alertRequest.refresh(true);
+      }).catch(function (error) {
+        setAlertMessage(error.message || String(error));
+      }).finally(function () {
+        setTelegramSaving(false);
+      });
+    }
+
+    function detectTelegramChat() {
+      setTelegramDetecting(true);
+      setAlertMessage("");
+      fetchJson("/api/stock-alert/detect-telegram-chat", { method: "POST", noCache: true })
+        .then(function (payload) {
+          const picked = payload.picked || {};
+          setTelegramChatId(picked.chat_id || "");
+          setAlertMessage("Telegram chat id를 찾았습니다: " + (picked.title || picked.chat_id || ""));
+          alertRequest.refresh(true);
+        })
+        .catch(function (error) {
+          setAlertMessage(error.message || String(error));
+        })
+        .finally(function () {
+          setTelegramDetecting(false);
+        });
+    }
+
+    function syncTelegramSecrets() {
+      setTelegramSyncing(true);
+      setAlertMessage("");
+      fetchJson("/api/stock-alert/sync-telegram-secrets", { method: "POST", noCache: true })
+        .then(function () {
+          setAlertMessage("Telegram bot token과 chat id를 GitHub Secrets에 동기화했습니다.");
+          alertRequest.refresh(true);
+        })
+        .catch(function (error) {
+          setAlertMessage(error.message || String(error));
+        })
+        .finally(function () {
+          setTelegramSyncing(false);
         });
     }
 
@@ -3680,6 +3742,7 @@
           h(SummaryCard, { label: "Secret 보유종목", value: numberFormat(alertSnapshot.holding_count, 0) + "개", help: alertSnapshot.source_date ? "기준일 " + alertSnapshot.source_date : "아직 동기화 없음" }),
           h(SummaryCard, { label: "현재 추출 종목", value: holdingsRequest.loading ? "로딩" : numberFormat(alertHoldings.length, 0) + "개", help: (holdingsRequest.data || {}).source_date ? "기준일 " + (holdingsRequest.data || {}).source_date : "최근 비어 있지 않은 보유일" }),
           h(SummaryCard, { label: "저장소", value: alertStatus.repository || alertRepo, help: alertStatus.has_token ? "토큰 " + alertStatus.token_masked : "GitHub token 필요" }),
+          h(SummaryCard, { label: "Telegram", value: telegramStatus.configured ? "준비됨" : "설정 필요", help: telegramStatus.chat_id ? "chat " + telegramStatus.chat_id : (telegramStatus.has_bot_token ? "chat id 필요" : "bot token 필요") }),
           h(SummaryCard, { label: "마지막 동기화", value: alertSnapshot.updated_at ? formatDateLabel(String(alertSnapshot.updated_at).slice(0, 10)) : "-", help: alertSnapshot.updated_at || "없음" })
         ),
         h("div", { className: "market-calendar-form-grid stock-alert-settings-grid" },
@@ -3687,6 +3750,13 @@
           h("label", { className: "wide" }, h("span", null, "Fine-grained token"), h("input", { className: "text-input", type: "password", value: alertToken, placeholder: alertStatus.has_token ? "저장된 토큰 유지" : "Actions secrets write 권한 token", onChange: function (event) { setAlertToken(event.target.value); } })),
           h("button", { type: "button", className: "secondary-button", disabled: alertSaving, onClick: saveAlertSettings }, alertSaving ? "저장 중" : "설정 저장"),
           h("button", { type: "button", className: "primary-button", disabled: alertSyncing || !alertStatus.configured, onClick: syncAlertHoldings }, alertSyncing ? "동기화 중" : "보유종목 Secret 동기화")
+        ),
+        h("div", { className: "market-calendar-form-grid stock-alert-settings-grid" },
+          h("label", { className: "wide" }, h("span", null, "Telegram bot token"), h("input", { className: "text-input", type: "password", value: telegramBotToken, placeholder: telegramStatus.has_bot_token ? "저장된 봇 토큰 유지" : "BotFather token", onChange: function (event) { setTelegramBotToken(event.target.value); } })),
+          h("label", null, h("span", null, "Telegram chat id"), h("input", { className: "text-input", value: telegramChatId || telegramStatus.chat_id || "", placeholder: "봇에게 /start 후 자동 찾기", onChange: function (event) { setTelegramChatId(event.target.value); } })),
+          h("button", { type: "button", className: "secondary-button", disabled: telegramSaving, onClick: saveTelegramSettings }, telegramSaving ? "저장 중" : "봇 설정 저장"),
+          h("button", { type: "button", className: "secondary-button", disabled: telegramDetecting || !telegramStatus.has_bot_token, onClick: detectTelegramChat }, telegramDetecting ? "찾는 중" : "Chat ID 자동 찾기"),
+          h("button", { type: "button", className: "primary-button", disabled: telegramSyncing || !alertStatus.configured || !telegramStatus.configured, onClick: syncTelegramSecrets }, telegramSyncing ? "동기화 중" : "Telegram Secrets 동기화")
         ),
         alertMessage ? h("div", { className: "summary-help" + (alertMessage.indexOf("오류") >= 0 || alertMessage.indexOf("필요") >= 0 ? " text-danger" : "") }, alertMessage) : null,
         alertHoldings.length
