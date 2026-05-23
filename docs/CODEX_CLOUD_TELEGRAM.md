@@ -63,7 +63,7 @@ GitHub Actions에서 PC 없이 실행하려면 저장소 Secrets에 아래 값�
 - `TELEGRAM_CHAT_ID`
 - `STOCK_ALERT_HOLDINGS_JSON`
 
-`STOCK_ALERT_HOLDINGS_JSON` 예시:
+초기 설정용 `STOCK_ALERT_HOLDINGS_JSON` 예시:
 
 ```json
 [
@@ -88,7 +88,17 @@ python tools\export_portfolio_holdings.py --output outputs\stock_alert_holdings.
 
 기본값은 마지막 날짜가 전량 현금화 상태일 때 가장 최근의 비어 있지 않은 보유일을 기준으로 출력한다. 반드시 마지막 날짜 그대로만 쓰려면 `--strict-latest`를 붙인다.
 
-PC가 꺼진 뒤에도 GitHub Actions가 같은 보유 종목을 기준으로 감시하려면, 위 출력값을 GitHub 저장소의 `STOCK_ALERT_HOLDINGS_JSON` Secret에 넣어야 한다. 포트폴리오 비중 파일을 바꾼 뒤에는 이 Secret도 다시 갱신해야 클라우드 알림 기준이 최신 상태가 된다.
+수동 업로드를 피하려면 앱의 `포트폴리오 수익` 페이지에서 `보유종목 뉴스 알림 동기화` 패널을 사용한다.
+
+1. GitHub fine-grained token을 만든다.
+   - Repository access: 이 저장소만
+   - Actions secrets: Read and write
+   - Metadata: Read
+2. `GitHub repo`에 `celeste0423/stock_app`를 입력한다.
+3. token을 입력하고 `설정 저장`을 누른다.
+4. `보유종목 Secret 동기화`를 누른다.
+
+이 버튼은 포트폴리오 수익 페이지와 같은 계산으로 최신 보유종목을 추출한 뒤, GitHub Actions Secret `STOCK_ALERT_HOLDINGS_JSON`을 자동 갱신한다. 마지막 날짜가 전량 현금화 상태이면 가장 최근의 비어 있지 않은 보유일 기준으로 동기화한다.
 
 중복 발송 방지는 `.alert_state/portfolio_news_alert_cache.json` 또는 `backend/stock_news_alert_cache.json`에 저장된 뉴스 지문으로 처리한다. GitHub Actions에서는 `.alert_state`를 Actions cache로 이어받는다.
 

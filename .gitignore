@@ -21,6 +21,7 @@ backend/*_cache.json
 backend/*_history.json
 backend/*_snapshot*.json
 backend/stock_news_alert_cache.json
+backend/stock_alert_holdings_snapshot.json
 backend/dialogs_debug.json
 backend/market_calendar_events.json
 backend/real_estate_building*.json

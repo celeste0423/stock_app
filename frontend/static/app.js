@@ -3516,11 +3516,18 @@
 
   function PortfolioPage() {
     const request = useFetchJson("/api/portfolio/performance");
+    const alertRequest = useFetchJson("/api/stock-alert/status");
+    const holdingsRequest = useFetchJson("/api/stock-alert/holdings");
     const [selectedDate, setSelectedDate] = useState("");
     const [periodKey, setPeriodKey] = useState("");
     const [allocationMode, setAllocationMode] = useState("sector");
     const [xRange, setXRange] = useState(null);
     const [resetSignal, setResetSignal] = useState(0);
+    const [alertRepo, setAlertRepo] = useState("celeste0423/stock_app");
+    const [alertToken, setAlertToken] = useState("");
+    const [alertSaving, setAlertSaving] = useState(false);
+    const [alertSyncing, setAlertSyncing] = useState(false);
+    const [alertMessage, setAlertMessage] = useState("");
 
     useEffect(function () {
       if (!request.data) {
@@ -3554,6 +3561,9 @@
 
     const data = request.data || {};
     const summary = data.summary || {};
+    const alertStatus = alertRequest.data || {};
+    const alertSnapshot = alertStatus.snapshot || {};
+    const alertHoldings = ensureArray((holdingsRequest.data || {}).holdings);
     const monthOptions = portfolioMonthOptions(data.series);
     const activePeriod = periodKey || monthOptions[monthOptions.length - 1] || "all";
     const viewSeries = normalizePortfolioSeriesForPeriod(data.series, activePeriod);
@@ -3568,6 +3578,45 @@
     const viewSeriesWithInvestmentState = markPortfolioInvestmentState(viewSeries, viewAllocations);
     const selectedDetail = details.find(function (item) { return item.date === selectedDate; }) || details[details.length - 1];
     const periodLabel = activePeriod === "all" ? "전체 기간" : monthLabel(activePeriod);
+
+    function saveAlertSettings() {
+      if (!alertRepo.trim() || !alertToken.trim()) {
+        setAlertMessage("GitHub repository와 token을 입력해 주세요.");
+        return;
+      }
+      setAlertSaving(true);
+      setAlertMessage("");
+      fetchJson("/api/stock-alert/github-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repository: alertRepo.trim(), token: alertToken.trim() }),
+      }).then(function () {
+        setAlertToken("");
+        setAlertMessage("GitHub Secret 동기화 설정을 저장했습니다.");
+        alertRequest.refresh(true);
+      }).catch(function (error) {
+        setAlertMessage(error.message || String(error));
+      }).finally(function () {
+        setAlertSaving(false);
+      });
+    }
+
+    function syncAlertHoldings() {
+      setAlertSyncing(true);
+      setAlertMessage("");
+      fetchJson("/api/stock-alert/sync-holdings", { method: "POST", noCache: true })
+        .then(function (payload) {
+          setAlertMessage("보유종목 " + numberFormat(payload.holding_count, 0) + "개를 GitHub Secret에 동기화했습니다.");
+          alertRequest.refresh(true);
+          holdingsRequest.refresh(true);
+        })
+        .catch(function (error) {
+          setAlertMessage(error.message || String(error));
+        })
+        .finally(function () {
+          setAlertSyncing(false);
+        });
+    }
 
     return h(
       React.Fragment,
@@ -3614,6 +3663,44 @@
             },
           }, "엑셀로 내보내기")
         )
+      ),
+      h(
+        "div",
+        { className: "panel stock-alert-sync-panel" },
+        h("div", { className: "section-toolbar" },
+          h("div", null,
+            h(SectionTitle, null, "보유종목 뉴스 알림 동기화"),
+            h("div", { className: "summary-help" }, "PC가 꺼져 있어도 GitHub Actions가 현재 보유종목 기준으로 뉴스를 감시하도록 GitHub Secret을 갱신합니다.")
+          ),
+          h("span", { className: "telegram-status-pill" }, alertStatus.configured ? "연결됨" : "설정 필요")
+        ),
+        h(
+          "div",
+          { className: "summary-grid-small strategy-summary-grid" },
+          h(SummaryCard, { label: "Secret 보유종목", value: numberFormat(alertSnapshot.holding_count, 0) + "개", help: alertSnapshot.source_date ? "기준일 " + alertSnapshot.source_date : "아직 동기화 없음" }),
+          h(SummaryCard, { label: "현재 추출 종목", value: holdingsRequest.loading ? "로딩" : numberFormat(alertHoldings.length, 0) + "개", help: (holdingsRequest.data || {}).source_date ? "기준일 " + (holdingsRequest.data || {}).source_date : "최근 비어 있지 않은 보유일" }),
+          h(SummaryCard, { label: "저장소", value: alertStatus.repository || alertRepo, help: alertStatus.has_token ? "토큰 " + alertStatus.token_masked : "GitHub token 필요" }),
+          h(SummaryCard, { label: "마지막 동기화", value: alertSnapshot.updated_at ? formatDateLabel(String(alertSnapshot.updated_at).slice(0, 10)) : "-", help: alertSnapshot.updated_at || "없음" })
+        ),
+        h("div", { className: "market-calendar-form-grid stock-alert-settings-grid" },
+          h("label", null, h("span", null, "GitHub repo"), h("input", { className: "text-input", value: alertRepo, placeholder: "owner/repo", onChange: function (event) { setAlertRepo(event.target.value); } })),
+          h("label", { className: "wide" }, h("span", null, "Fine-grained token"), h("input", { className: "text-input", type: "password", value: alertToken, placeholder: alertStatus.has_token ? "저장된 토큰 유지" : "Actions secrets write 권한 token", onChange: function (event) { setAlertToken(event.target.value); } })),
+          h("button", { type: "button", className: "secondary-button", disabled: alertSaving, onClick: saveAlertSettings }, alertSaving ? "저장 중" : "설정 저장"),
+          h("button", { type: "button", className: "primary-button", disabled: alertSyncing || !alertStatus.configured, onClick: syncAlertHoldings }, alertSyncing ? "동기화 중" : "보유종목 Secret 동기화")
+        ),
+        alertMessage ? h("div", { className: "summary-help" + (alertMessage.indexOf("오류") >= 0 || alertMessage.indexOf("필요") >= 0 ? " text-danger" : "") }, alertMessage) : null,
+        alertHoldings.length
+          ? h(DataTable, {
+              rows: alertHoldings.slice(0, 20),
+              emptyMessage: "보유 종목이 없습니다.",
+              columns: [
+                { key: "name", label: "종목" },
+                { key: "code", label: "코드" },
+                { key: "weight_pct", label: "비중", render: function (row) { return formatPercent(row.weight_pct, 1); } },
+                { key: "source_date", label: "기준일" },
+              ],
+            })
+          : null
       ),
       h(
         "div",

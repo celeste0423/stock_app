@@ -121,6 +121,7 @@ MARKET_CALENDAR_PATH = STATE_DIR / "market_calendar_events.json"
 MARKET_CALENDAR_AUTO_CACHE_PATH = STATE_DIR / "market_calendar_auto_cache.json"
 MARKET_CALENDAR_AUTO_CACHE_TTL_SECONDS = 6 * 60 * 60
 MARKET_CALENDAR_MIN_KR_MARCAP = 2000 * 100000000
+STOCK_ALERT_HOLDINGS_SNAPSHOT_PATH = STATE_DIR / "stock_alert_holdings_snapshot.json"
 REAL_ESTATE_EXCEL_PATH = Path(
     os.getenv(
         "STOCK_DASHBOARD_REAL_ESTATE_EXCEL_PATH",
@@ -1413,6 +1414,37 @@ def kis_status_payload(check_token: bool = False) -> dict[str, Any]:
     return payload
 
 
+def stock_alert_settings() -> dict[str, str]:
+    settings = load_settings()
+    stock_alert = settings.get("stock_alert") if isinstance(settings.get("stock_alert"), dict) else {}
+    return {
+        "github_repository": str(os.getenv("STOCK_ALERT_GITHUB_REPOSITORY") or stock_alert.get("github_repository") or "").strip(),
+        "github_token": str(os.getenv("STOCK_ALERT_GITHUB_TOKEN") or stock_alert.get("github_token") or "").strip(),
+    }
+
+
+def stock_alert_status_payload() -> dict[str, Any]:
+    settings = stock_alert_settings()
+    snapshot: dict[str, Any] = {}
+    if STOCK_ALERT_HOLDINGS_SNAPSHOT_PATH.exists():
+        try:
+            snapshot = json.loads(STOCK_ALERT_HOLDINGS_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            snapshot = {}
+    return {
+        "repository": settings["github_repository"],
+        "configured": bool(settings["github_repository"] and settings["github_token"]),
+        "has_token": bool(settings["github_token"]),
+        "token_masked": mask_secret(settings["github_token"]),
+        "secret_name": "STOCK_ALERT_HOLDINGS_JSON",
+        "snapshot": {
+            "updated_at": snapshot.get("updated_at") or "",
+            "source_date": snapshot.get("source_date") or "",
+            "holding_count": len(snapshot.get("holdings") or []),
+        },
+    }
+
+
 def is_public_web_mode() -> bool:
     return os.getenv("STOCK_DASHBOARD_PUBLIC_WEB", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -1633,6 +1665,11 @@ class MarketCalendarEventRequest(BaseModel):
     importance: str | None = "medium"
     note: str | None = ""
     source: str | None = "manual"
+
+
+class StockAlertGitHubSettingsRequest(BaseModel):
+    repository: str
+    token: str
 
 
 @lru_cache(maxsize=1)
@@ -11563,6 +11600,129 @@ def build_portfolio_diagnostic() -> dict[str, Any]:
     }
 
 
+def latest_stock_alert_holdings(min_weight_pct: float = 0.0, latest_non_empty: bool = True) -> list[dict[str, Any]]:
+    performance = calculate_portfolio_performance()
+    allocations = performance.get("daily_allocations") or []
+    rebalances = performance.get("rebalances") or []
+    if not allocations:
+        return []
+    selected_allocation = allocations[-1] if isinstance(allocations[-1], dict) else {}
+    if latest_non_empty and not (selected_allocation.get("stock_weights") or {}):
+        for allocation in reversed(allocations):
+            if isinstance(allocation, dict) and (allocation.get("stock_weights") or {}):
+                selected_allocation = allocation
+                break
+    stock_weights = selected_allocation.get("stock_weights") or {}
+    meta_by_name: dict[str, dict[str, Any]] = {}
+    for rebalance in reversed(rebalances):
+        for item in rebalance.get("holdings") or []:
+            name = str(item.get("resolved_name") or item.get("stock_name") or item.get("stock_code") or "").strip()
+            if name and name not in meta_by_name:
+                meta_by_name[name] = item
+        if meta_by_name:
+            break
+    holdings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for name, weight in sorted(stock_weights.items(), key=lambda item: float(item[1] or 0), reverse=True):
+        try:
+            weight_pct = float(weight or 0.0)
+        except Exception:
+            weight_pct = 0.0
+        if weight_pct < min_weight_pct:
+            continue
+        meta = meta_by_name.get(str(name)) or {}
+        listing = resolve_stock_payload(name=str(name)) or {}
+        code = str(meta.get("stock_code") or listing.get("code") or "").strip()
+        key = code or str(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        holdings.append(
+            {
+                "name": str(name),
+                "code": code,
+                "weight_pct": round(weight_pct, 3),
+                "sector": str(meta.get("sector") or ""),
+                "source_date": selected_allocation.get("date") or "",
+            }
+        )
+    return holdings
+
+
+def github_api_request(method: str, repo: str, path: str, token: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if "/" not in repo:
+        raise ValueError("GitHub repository는 owner/name 형식이어야 합니다.")
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "stock-dashboard-local",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    response = requests.request(
+        method,
+        f"https://api.github.com/repos/{repo}{path}",
+        headers=headers,
+        data=data,
+        timeout=25,
+    )
+    if response.status_code >= 400:
+        raise ValueError(f"GitHub API 오류 {response.status_code}: {response.text[:300]}")
+    return response.json() if response.text else {}
+
+
+def encrypt_github_actions_secret(public_key: str, value: str) -> str:
+    try:
+        from nacl import encoding, public
+    except Exception as exc:
+        raise RuntimeError("PyNaCl 패키지가 필요합니다. requirements.txt 설치 후 다시 시도해 주세요.") from exc
+    key = public.PublicKey(public_key.encode("utf-8"), encoding.Base64Encoder())
+    sealed_box = public.SealedBox(key)
+    encrypted = sealed_box.encrypt(value.encode("utf-8"))
+    return base64.b64encode(encrypted).decode("utf-8")
+
+
+def update_github_actions_secret(repo: str, token: str, name: str, value: str) -> dict[str, Any]:
+    key_payload = github_api_request("GET", repo, "/actions/secrets/public-key", token)
+    encrypted_value = encrypt_github_actions_secret(str(key_payload.get("key") or ""), value)
+    github_api_request(
+        "PUT",
+        repo,
+        f"/actions/secrets/{quote(name)}",
+        token,
+        {"encrypted_value": encrypted_value, "key_id": key_payload.get("key_id")},
+    )
+    return {"secret_name": name, "repository": repo}
+
+
+def sync_stock_alert_holdings_secret() -> dict[str, Any]:
+    settings = stock_alert_settings()
+    if not settings["github_repository"] or not settings["github_token"]:
+        raise ValueError("GitHub repository/token 설정이 필요합니다.")
+    holdings = latest_stock_alert_holdings(latest_non_empty=True)
+    if not holdings:
+        raise ValueError("동기화할 보유 종목이 없습니다.")
+    value = json.dumps(holdings, ensure_ascii=False, separators=(",", ":"))
+    update_github_actions_secret(settings["github_repository"], settings["github_token"], "STOCK_ALERT_HOLDINGS_JSON", value)
+    snapshot = {
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "repository": settings["github_repository"],
+        "source_date": holdings[0].get("source_date") or "",
+        "holdings": holdings,
+    }
+    STOCK_ALERT_HOLDINGS_SNAPSHOT_PATH.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "ok": True,
+        "repository": settings["github_repository"],
+        "secret_name": "STOCK_ALERT_HOLDINGS_JSON",
+        "holding_count": len(holdings),
+        "source_date": holdings[0].get("source_date") or "",
+        "updated_at": snapshot["updated_at"],
+    }
+
+
 def split_theme_tokens(note: Any) -> list[str]:
     if note is None or (isinstance(note, float) and math.isnan(note)):
         return []
@@ -15067,6 +15227,57 @@ def stock_investor_flows(code: str | None = None, name: str | None = None, days:
 def portfolio_performance() -> JSONResponse:
     try:
         return JSONResponse(calculate_portfolio_performance())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/stock-alert/status")
+def stock_alert_status() -> JSONResponse:
+    try:
+        return JSONResponse(stock_alert_status_payload())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/stock-alert/github-settings")
+def stock_alert_github_settings(request: StockAlertGitHubSettingsRequest) -> JSONResponse:
+    try:
+        repository = request.repository.strip()
+        token = request.token.strip()
+        if "/" not in repository:
+            return JSONResponse({"error": "repository는 owner/name 형식이어야 합니다."}, status_code=400)
+        if not token:
+            return JSONResponse({"error": "GitHub token이 필요합니다."}, status_code=400)
+        settings = load_settings()
+        stock_alert = settings.get("stock_alert") if isinstance(settings.get("stock_alert"), dict) else {}
+        stock_alert["github_repository"] = repository
+        stock_alert["github_token"] = token
+        settings["stock_alert"] = stock_alert
+        save_settings(settings)
+        return JSONResponse(stock_alert_status_payload())
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/stock-alert/holdings")
+def stock_alert_holdings() -> JSONResponse:
+    try:
+        holdings = latest_stock_alert_holdings(latest_non_empty=True)
+        return JSONResponse(
+            {
+                "holdings": holdings,
+                "holding_count": len(holdings),
+                "source_date": holdings[0].get("source_date") if holdings else "",
+            }
+        )
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/stock-alert/sync-holdings")
+def stock_alert_sync_holdings() -> JSONResponse:
+    try:
+        return JSONResponse(sync_stock_alert_holdings_secret())
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
