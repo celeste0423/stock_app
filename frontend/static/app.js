@@ -3533,6 +3533,7 @@
     const [telegramSyncing, setTelegramSyncing] = useState(false);
     const [alertSyncing, setAlertSyncing] = useState(false);
     const [alertMessage, setAlertMessage] = useState("");
+    const [alertPanelOpen, setAlertPanelOpen] = useState(false);
 
     useEffect(function () {
       if (!request.data) {
@@ -3728,13 +3729,16 @@
       ),
       h(
         "div",
-        { className: "panel stock-alert-sync-panel" },
+        { className: "panel stock-alert-sync-panel" + (alertPanelOpen ? " open" : " collapsed") },
         h("div", { className: "section-toolbar" },
           h("div", null,
             h(SectionTitle, null, "보유종목 뉴스 알림 동기화"),
             h("div", { className: "summary-help" }, "PC가 꺼져 있어도 GitHub Actions가 현재 보유종목 기준으로 뉴스를 감시하도록 GitHub Secret을 갱신합니다.")
           ),
-          h("span", { className: "telegram-status-pill" }, alertStatus.configured ? "연결됨" : "설정 필요")
+          h("div", { className: "toggle-group" },
+            h("span", { className: "telegram-status-pill" }, alertStatus.configured && telegramStatus.configured ? "연결됨" : "설정 필요"),
+            h("button", { type: "button", className: "mini-button", onClick: function () { setAlertPanelOpen(!alertPanelOpen); } }, alertPanelOpen ? "접기" : "펼치기")
+          )
         ),
         h(
           "div",
@@ -3745,31 +3749,35 @@
           h(SummaryCard, { label: "Telegram", value: telegramStatus.configured ? "준비됨" : "설정 필요", help: telegramStatus.chat_id ? "chat " + telegramStatus.chat_id : (telegramStatus.has_bot_token ? "chat id 필요" : "bot token 필요") }),
           h(SummaryCard, { label: "마지막 동기화", value: alertSnapshot.updated_at ? formatDateLabel(String(alertSnapshot.updated_at).slice(0, 10)) : "-", help: alertSnapshot.updated_at || "없음" })
         ),
-        h("div", { className: "market-calendar-form-grid stock-alert-settings-grid" },
-          h("label", null, h("span", null, "GitHub repo"), h("input", { className: "text-input", value: alertRepo, placeholder: "owner/repo", onChange: function (event) { setAlertRepo(event.target.value); } })),
-          h("label", { className: "wide" }, h("span", null, "Fine-grained token"), h("input", { className: "text-input", type: "password", value: alertToken, placeholder: alertStatus.has_token ? "저장된 토큰 유지" : "Actions secrets write 권한 token", onChange: function (event) { setAlertToken(event.target.value); } })),
-          h("button", { type: "button", className: "secondary-button", disabled: alertSaving, onClick: saveAlertSettings }, alertSaving ? "저장 중" : "설정 저장"),
-          h("button", { type: "button", className: "primary-button", disabled: alertSyncing || !alertStatus.configured, onClick: syncAlertHoldings }, alertSyncing ? "동기화 중" : "보유종목 Secret 동기화")
-        ),
-        h("div", { className: "market-calendar-form-grid stock-alert-settings-grid" },
-          h("label", { className: "wide" }, h("span", null, "Telegram bot token"), h("input", { className: "text-input", type: "password", value: telegramBotToken, placeholder: telegramStatus.has_bot_token ? "저장된 봇 토큰 유지" : "BotFather token", onChange: function (event) { setTelegramBotToken(event.target.value); } })),
-          h("label", null, h("span", null, "Telegram chat id"), h("input", { className: "text-input", value: telegramChatId || telegramStatus.chat_id || "", placeholder: "봇에게 /start 후 자동 찾기", onChange: function (event) { setTelegramChatId(event.target.value); } })),
-          h("button", { type: "button", className: "secondary-button", disabled: telegramSaving, onClick: saveTelegramSettings }, telegramSaving ? "저장 중" : "봇 설정 저장"),
-          h("button", { type: "button", className: "secondary-button", disabled: telegramDetecting || !telegramStatus.has_bot_token, onClick: detectTelegramChat }, telegramDetecting ? "찾는 중" : "Chat ID 자동 찾기"),
-          h("button", { type: "button", className: "primary-button", disabled: telegramSyncing || !alertStatus.configured || !telegramStatus.configured, onClick: syncTelegramSecrets }, telegramSyncing ? "동기화 중" : "Telegram Secrets 동기화")
-        ),
-        alertMessage ? h("div", { className: "summary-help" + (alertMessage.indexOf("오류") >= 0 || alertMessage.indexOf("필요") >= 0 ? " text-danger" : "") }, alertMessage) : null,
-        alertHoldings.length
-          ? h(DataTable, {
-              rows: alertHoldings.slice(0, 20),
-              emptyMessage: "보유 종목이 없습니다.",
-              columns: [
-                { key: "name", label: "종목" },
-                { key: "code", label: "코드" },
-                { key: "weight_pct", label: "비중", render: function (row) { return formatPercent(row.weight_pct, 1); } },
-                { key: "source_date", label: "기준일" },
-              ],
-            })
+        alertPanelOpen
+          ? h(React.Fragment, null,
+              h("div", { className: "market-calendar-form-grid stock-alert-settings-grid" },
+                h("label", null, h("span", null, "GitHub repo"), h("input", { className: "text-input", value: alertRepo, placeholder: "owner/repo", onChange: function (event) { setAlertRepo(event.target.value); } })),
+                h("label", { className: "wide" }, h("span", null, "Fine-grained token"), h("input", { className: "text-input", type: "password", value: alertToken, placeholder: alertStatus.has_token ? "저장된 토큰 유지" : "Actions secrets write 권한 token", onChange: function (event) { setAlertToken(event.target.value); } })),
+                h("button", { type: "button", className: "secondary-button", disabled: alertSaving, onClick: saveAlertSettings }, alertSaving ? "저장 중" : "설정 저장"),
+                h("button", { type: "button", className: "primary-button", disabled: alertSyncing || !alertStatus.configured, onClick: syncAlertHoldings }, alertSyncing ? "동기화 중" : "보유종목 Secret 동기화")
+              ),
+              h("div", { className: "market-calendar-form-grid stock-alert-settings-grid" },
+                h("label", { className: "wide" }, h("span", null, "Telegram bot token"), h("input", { className: "text-input", type: "password", value: telegramBotToken, placeholder: telegramStatus.has_bot_token ? "저장된 봇 토큰 유지" : "BotFather token", onChange: function (event) { setTelegramBotToken(event.target.value); } })),
+                h("label", null, h("span", null, "Telegram chat id"), h("input", { className: "text-input", value: telegramChatId || telegramStatus.chat_id || "", placeholder: "봇에게 /start 후 자동 찾기", onChange: function (event) { setTelegramChatId(event.target.value); } })),
+                h("button", { type: "button", className: "secondary-button", disabled: telegramSaving, onClick: saveTelegramSettings }, telegramSaving ? "저장 중" : "봇 설정 저장"),
+                h("button", { type: "button", className: "secondary-button", disabled: telegramDetecting || !telegramStatus.has_bot_token, onClick: detectTelegramChat }, telegramDetecting ? "찾는 중" : "Chat ID 자동 찾기"),
+                h("button", { type: "button", className: "primary-button", disabled: telegramSyncing || !alertStatus.configured || !telegramStatus.configured, onClick: syncTelegramSecrets }, telegramSyncing ? "동기화 중" : "Telegram Secrets 동기화")
+              ),
+              alertMessage ? h("div", { className: "summary-help" + (alertMessage.indexOf("오류") >= 0 || alertMessage.indexOf("필요") >= 0 ? " text-danger" : "") }, alertMessage) : null,
+              alertHoldings.length
+                ? h(DataTable, {
+                    rows: alertHoldings.slice(0, 20),
+                    emptyMessage: "보유 종목이 없습니다.",
+                    columns: [
+                      { key: "name", label: "종목" },
+                      { key: "code", label: "코드" },
+                      { key: "weight_pct", label: "비중", render: function (row) { return formatPercent(row.weight_pct, 1); } },
+                      { key: "source_date", label: "기준일" },
+                    ],
+                  })
+                : null
+            )
           : null
       ),
       h(
