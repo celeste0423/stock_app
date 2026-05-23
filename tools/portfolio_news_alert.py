@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.app import calculate_portfolio_performance, clean_news_text, search_stock_news  # noqa: E402
+from backend.app import calculate_portfolio_performance, clean_news_text, resolve_stock_payload, search_stock_news  # noqa: E402
 
 
 DEFAULT_CACHE_PATH = ROOT / "backend" / "stock_news_alert_cache.json"
@@ -80,14 +80,21 @@ def holdings_from_env() -> list[dict[str, Any]]:
     return dedupe_holdings(holdings)
 
 
-def holdings_from_portfolio(min_weight_pct: float = 0.0) -> list[dict[str, Any]]:
+def holdings_from_portfolio(min_weight_pct: float = 0.0, latest_non_empty: bool = False) -> list[dict[str, Any]]:
     performance = calculate_portfolio_performance()
     allocations = performance.get("daily_allocations") or []
     rebalances = performance.get("rebalances") or []
     if not allocations:
         return []
 
-    latest_weights = (allocations[-1].get("stock_weights") or {}) if isinstance(allocations[-1], dict) else {}
+    selected_allocation = allocations[-1] if isinstance(allocations[-1], dict) else {}
+    if latest_non_empty and not (selected_allocation.get("stock_weights") or {}):
+        for allocation in reversed(allocations):
+            if isinstance(allocation, dict) and (allocation.get("stock_weights") or {}):
+                selected_allocation = allocation
+                break
+
+    latest_weights = selected_allocation.get("stock_weights") or {}
     meta_by_name: dict[str, dict[str, Any]] = {}
     if rebalances:
         for item in rebalances[-1].get("holdings") or []:
@@ -104,12 +111,14 @@ def holdings_from_portfolio(min_weight_pct: float = 0.0) -> list[dict[str, Any]]
         if weight_pct < min_weight_pct:
             continue
         meta = meta_by_name.get(str(name)) or {}
+        listing = resolve_stock_payload(name=str(name)) or {}
         holdings.append(
             {
                 "name": str(name),
-                "code": str(meta.get("stock_code") or "").strip(),
+                "code": str(meta.get("stock_code") or listing.get("code") or "").strip(),
                 "weight_pct": weight_pct,
                 "sector": meta.get("sector") or "",
+                "source_date": selected_allocation.get("date") or "",
             }
         )
     return dedupe_holdings(holdings)

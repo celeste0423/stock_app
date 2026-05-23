@@ -79,6 +79,17 @@ python tools\portfolio_news_alert.py --dry-run
 python tools\portfolio_news_alert.py
 ```
 
+현재 포트폴리오 수익 페이지 기준 보유 종목을 GitHub Secret에 넣을 JSON으로 뽑으려면 아래 명령을 사용한다.
+
+```powershell
+python tools\export_portfolio_holdings.py
+python tools\export_portfolio_holdings.py --output outputs\stock_alert_holdings.json
+```
+
+기본값은 마지막 날짜가 전량 현금화 상태일 때 가장 최근의 비어 있지 않은 보유일을 기준으로 출력한다. 반드시 마지막 날짜 그대로만 쓰려면 `--strict-latest`를 붙인다.
+
+PC가 꺼진 뒤에도 GitHub Actions가 같은 보유 종목을 기준으로 감시하려면, 위 출력값을 GitHub 저장소의 `STOCK_ALERT_HOLDINGS_JSON` Secret에 넣어야 한다. 포트폴리오 비중 파일을 바꾼 뒤에는 이 Secret도 다시 갱신해야 클라우드 알림 기준이 최신 상태가 된다.
+
 중복 발송 방지는 `.alert_state/portfolio_news_alert_cache.json` 또는 `backend/stock_news_alert_cache.json`에 저장된 뉴스 지문으로 처리한다. GitHub Actions에서는 `.alert_state`를 Actions cache로 이어받는다.
 
 ## Telegram에서 Codex 작업 만들기
