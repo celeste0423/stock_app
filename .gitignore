@@ -28,6 +28,7 @@ backend/real_estate_building*.json
 backend/real_estate_price_cache.json
 backend/real_estate_trade_cache.json
 backend/screening_cache*.json
+backend/*.json.bak_*
 backend/screening_cache*.tmp
 backend/sector_database.json
 backend/sector_database_backups/
@@ -49,10 +50,16 @@ tools/cloudflared.exe
 # Generated or temporary data files
 temp_*.xlsx
 backend/*.xlsx
+backend/*.sqlite
+backend/*.sqlite3
+backend/*.parquet
+*_screening_cache.json
 *.xlsm.bak
 *.xlsx.bak
 .komis_*.html
 .komis_*.js
+frontend/static/*.bak
+.codex_backups/
 
 # OS/editor
 .DS_Store

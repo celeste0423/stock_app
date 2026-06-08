@@ -5,7 +5,9 @@ import math
 import mimetypes
 import os
 import re
+import zipfile
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -28,8 +30,9 @@ from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from zoneinfo import ZoneInfo
 
 CURRENT_DIR = Path(__file__).resolve().parent
 VENDOR_DIR = CURRENT_DIR / "vendor"
@@ -40,6 +43,12 @@ import FinanceDataReader as fdr
 import numpy as np
 import OpenDartReader
 import pandas as pd
+try:
+    from pykrx import stock as pykrx_stock
+    PYKRX_IMPORT_ERROR: Exception | None = None
+except Exception as exc:
+    pykrx_stock = None
+    PYKRX_IMPORT_ERROR = exc
 import requests
 import uvicorn
 from bs4 import BeautifulSoup
@@ -80,13 +89,24 @@ PORTFOLIO_PATH = Path(
         "C:/Users/jyeob/OneDrive - SK Hynix Inc/Cloud/\ud22c\uc790/\uc8fc\uc2dd/\ube44\uc911_\ub370\uc77c\ub9ac.xlsx",
     )
 )
-SCREENING_DIR = Path(os.getenv("STOCK_DASHBOARD_SCREENING_DIR", "D:/Study/\uc8fc\uc2dd_\ub370\uc77c\ub9ac"))
+SCREENING_DIR = Path(os.getenv("STOCK_DASHBOARD_SCREENING_DIR", "D:/Study/Stock_Daily"))
+SCREENING_FAST_DB_PATH = Path(os.getenv("STOCK_DASHBOARD_SCREENING_FAST_DB_PATH", str(CURRENT_DIR / "stock_daily_fast.sqlite")))
+SCREENING_FAST_PARQUET_PATH = Path(os.getenv("STOCK_DASHBOARD_SCREENING_FAST_PARQUET_PATH", str(CURRENT_DIR / "stock_daily_fast.parquet")))
+US_SCREENING_FAST_DB_PATH = Path(os.getenv("STOCK_DASHBOARD_US_SCREENING_FAST_DB_PATH", str(CURRENT_DIR / "us_stock_daily_fast.sqlite")))
+US_SCREENING_FAST_PARQUET_PATH = Path(os.getenv("STOCK_DASHBOARD_US_SCREENING_FAST_PARQUET_PATH", str(CURRENT_DIR / "us_stock_daily_fast.parquet")))
+ASIA_SCREENING_FAST_DB_PATH = Path(os.getenv("STOCK_DASHBOARD_ASIA_SCREENING_FAST_DB_PATH", str(CURRENT_DIR / "asia_stock_daily_fast.sqlite")))
+ASIA_SCREENING_FAST_PARQUET_PATH = Path(os.getenv("STOCK_DASHBOARD_ASIA_SCREENING_FAST_PARQUET_PATH", str(CURRENT_DIR / "asia_stock_daily_fast.parquet")))
+SCREENING_SQL_ONLY = str(os.getenv("STOCK_DASHBOARD_SCREENING_SQL_ONLY", "1")).strip().lower() in {"1", "true", "yes", "y", "on"}
 STATE_DIR = Path(os.getenv("STOCK_DASHBOARD_STATE_DIR", str(CURRENT_DIR)))
 SETTINGS_PATH = STATE_DIR / "local_settings.json"
 SECTOR_DB_PATH = STATE_DIR / "sector_database.json"
 SECTOR_DB_BACKUP_DIR = STATE_DIR / "sector_database_backups"
 SCREENING_CACHE_PATH = STATE_DIR / "screening_cache.json"
-SCREENING_CALENDAR_CACHE_VERSION = 5
+US_SCREENING_CACHE_PATH = STATE_DIR / "us_screening_cache.json"
+ASIA_SCREENING_CACHE_PATH = STATE_DIR / "asia_screening_cache.json"
+SCREENING_CALENDAR_CACHE_VERSION = 6
+US_SCREENING_CALENDAR_CACHE_VERSION = 1
+ASIA_SCREENING_CALENDAR_CACHE_VERSION = 1
 TELEGRAM_SESSION_DIR = STATE_DIR / "telegram_session"
 TELEGRAM_SESSION_FILE = TELEGRAM_SESSION_DIR / "user"
 TELEGRAM_CODE_FILE = TELEGRAM_SESSION_DIR / "login_state.json"
@@ -112,8 +132,16 @@ KOMIS_PRICE_CACHE_DIR = STATE_DIR / "komis_price_cache"
 DART_EARNINGS_TREND_CACHE_DIR = STATE_DIR / "dart_earnings_trend_cache"
 KIS_TOKEN_CACHE_PATH = STATE_DIR / "kis_token_cache.json"
 MARKET_INVESTOR_FLOW_CACHE_PATH = STATE_DIR / "market_investor_flow_cache.json"
+SIGNAL_RADAR_CACHE_PATH = STATE_DIR / "signal_radar_cache.json"
+KIND_BUSINESS_SEGMENT_CACHE_DIR = STATE_DIR / "kind_business_segment_cache"
 GLOBAL_INDICES_PAYLOAD_CACHE_DIR = STATE_DIR / "global_indices_payload_cache"
+CHART_PREVIEW_CACHE_DIR = STATE_DIR / "stock_chart_preview_cache"
+GLOBAL_COMPANY_AI_CACHE_PATH = STATE_DIR / "global_company_ai_cache.json"
 GLOBAL_INDICES_PAYLOAD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+GLOBAL_INDICES_PAYLOAD_CACHE_VERSION = "v3"
+PORTFOLIO_PERFORMANCE_CACHE: dict[str, Any] = {}
+PORTFOLIO_PERFORMANCE_CACHE_LOCK = threading.Lock()
+PORTFOLIO_PERFORMANCE_CACHE_TTL_SECONDS = 180
 REAL_ESTATE_DB_PATH = STATE_DIR / "real_estate_building.json"
 REAL_ESTATE_PRICE_CACHE_PATH = STATE_DIR / "real_estate_price_cache.json"
 REAL_ESTATE_TRADE_CACHE_PATH = STATE_DIR / "real_estate_trade_cache.json"
@@ -129,6 +157,12 @@ REAL_ESTATE_EXCEL_PATH = Path(
     )
 )
 REAL_ESTATE_DATA_DIR = REAL_ESTATE_EXCEL_PATH.parent
+REAL_ESTATE_BANK_IMPORT_DIR = Path(
+    os.getenv(
+        "STOCK_DASHBOARD_REAL_ESTATE_BANK_IMPORT_DIR",
+        str(REAL_ESTATE_DATA_DIR / "계좌입출금내역"),
+    )
+)
 TRADE_DATA_VERSION = 3
 TOURIST_VISITOR_DATA_VERSION = 1
 KIS_MOCK_BASE_URL = "https://openapivts.koreainvestment.com:29443"
@@ -213,6 +247,9 @@ TELEGRAM_DISCLOSURE_CATEGORIES = {
 
 PORTFOLIO_SHEET = "\uc8fc\uc2dd\ube44\uc911"
 SCREENING_SHEET = "\uc8fc\ub3c4\uc8fc \ucc3e\uae30"
+SCREENING_SCORE_CACHE_VERSION = "s-score-v3"
+SCREENING_SCORE_COLUMN_INDEX = 18  # Excel S column, zero-based for pandas iloc.
+SCREENING_SCORE_COLUMN_NAME = "\uc885\ud569 \uc810\uc218"
 
 NAME_ALIASES = {
     "\uc0bc\uc804": "\uc0bc\uc131\uc804\uc790",
@@ -442,6 +479,97 @@ GLOBAL_INDEX_ITEMS = [
     {"symbol": "DX-Y.NYB", "name": "Dollar Index", "group": "환율", "source": "Yahoo Finance", "source_symbol": "DX-Y.NYB"},
 ]
 
+KOREA_STOCK_ETF_ITEMS = [
+    ("495850", "KODEX KOREA Value-up", "코리아 밸류업"),
+    ("494670", "TIGER Shipbuilding TOP10", "조선 TOP10"),
+    ("491820", "HANARO Electric Power Capex", "전력 설비 투자"),
+    ("487240", "KODEX AI Electric Power Core Facilities", "AI 전력 핵심 설비"),
+    ("475050", "ACE KPOP Focus", "KPOP 포커스"),
+    ("471990", "KODEX AI Semiconductor Core Equipment", "AI 반도체 핵심 장비"),
+    ("466940", "TIGER Bank High Dividend Plus TOP10", "은행 고배당 플러스"),
+    ("463250", "TIGER K-Defense Industry & Space", "K-방산 및 우주"),
+    ("449450", "PLUS K-Defense Industry", "K-방산"),
+    ("445290", "KODEX Robot Active", "로봇 액티브"),
+    ("438900", "HANARO K-Food", "K-푸드"),
+    ("434730", "HANARO Nuclear Power", "원자력"),
+    ("421320", "PLUS Aerospace & UAM", "우주항공 및 UAM"),
+    ("395160", "KODEX AI Semiconductor TOP2 Plus", "AI 반도체 TOP2 플러스"),
+    ("385510", "KODEX Renewable Energy Active", "신재생 에너지 액티브"),
+    ("364970", "TIGER KRX Bio K-New Deal", "바이오 K-뉴딜"),
+    ("329200", "TIGER REITs Real Estate Infra", "리츠 부동산 인프라"),
+    ("307520", "TIGER Holdings Company", "지주회사"),
+    ("305720", "KODEX Secondary Battery Industry", "2차전지 산업"),
+    ("300950", "KODEX Game Industry", "게임 산업"),
+    ("292150", "TIGER TOP10", "국내 TOP10"),
+    ("266390", "KODEX Consumer Discretionary", "경기 소비재"),
+    ("266360", "KODEX K-Content", "K-콘텐츠"),
+    ("261140", "TIGER Preferred Stock", "우선주"),
+    ("252650", "KODEX 200 Equalweight", "코스피 200 동일가중"),
+    ("244580", "KODEX BIO", "바이오"),
+    ("229200", "KODEX KOSDAQ150", "코스닥 150"),
+    ("228810", "TIGER Media Contents", "미디어 콘텐츠"),
+    ("228800", "TIGER Travel Leisure", "여행 레저"),
+    ("228790", "TIGER Cosmetics", "화장품"),
+    ("161510", "PLUS High Dividend", "고배당"),
+    ("157490", "TIGER Software", "소프트웨어"),
+    ("150460", "TIGER China Consumer", "중국 소비재"),
+    ("143860", "TIGER Health Care", "헬스케어"),
+    ("140710", "KODEX Transportation", "운송"),
+    ("140700", "KODEX Insurance", "보험"),
+    ("139280", "TIGER Consumer Staples", "필수 소비재"),
+    ("139270", "TIGER Financials", "금융"),
+    ("139260", "TIGER IT", "IT"),
+    ("139230", "TIGER 200 Heavy Industry", "200 중공업"),
+    ("138540", "TIGER Hyundai Motor Group", "현대차 그룹"),
+    ("117700", "KODEX Construction", "건설"),
+    ("117680", "KODEX Steels", "철강"),
+    ("117460", "KODEX Energy & Chemicals", "에너지 화학"),
+    ("102970", "KODEX Securities", "증권"),
+    ("102960", "KODEX Machinery & Equipment", "기계 장비"),
+    ("102780", "KODEX Samsung Group", "삼성그룹"),
+    ("091180", "KODEX Autos", "자동차"),
+    ("091170", "KODEX Banks", "은행"),
+    ("069500", "KODEX 200", "코스피 200"),
+    ("0105E0", "SOL Korea High Dividend", "국내 고배당"),
+]
+
+GLOBAL_INDEX_ITEMS.extend(
+    {
+        "symbol": f"KETF-{code}",
+        "fetch_symbol": code,
+        "name": f"{theme} · {etf_name}",
+        "group": "한국주식ETF",
+        "source": "FinanceDataReader KRX ETF",
+        "source_symbol": code,
+    }
+    for code, etf_name, theme in KOREA_STOCK_ETF_ITEMS
+)
+
+GLOBAL_PPI_ITEMS = [
+    ("PCU3344183344189", "PCB Assemblies / Loaded Boards PPI"),
+    ("PCU334418334418", "Printed Circuit Assembly Mfg PPI"),
+    ("PCU334412334412", "Bare Printed Circuit Board Mfg PPI"),
+    ("PCU334413334413", "Semiconductor Device Mfg PPI"),
+    ("PCU3344133344131", "Integrated Circuit Packages PPI"),
+    ("PCU334413334413A", "Other Semiconductor Devices / Wafers PPI"),
+    ("PCU3344173344170", "Electronic Connectors PPI"),
+    ("PCU33441K33441K", "Capacitor/Resistor/Coil/Transformer PPI"),
+    ("WPU117839", "IC Packages incl. Microprocessors PPI"),
+]
+
+GLOBAL_INDEX_ITEMS.extend(
+    {
+        "symbol": f"PPI-{series_id}",
+        "fetch_symbol": f"BLS:{series_id}",
+        "name": name,
+        "group": "PPI",
+        "source": "BLS API / FRED PPI series",
+        "source_symbol": series_id,
+        "frequency": "monthly",
+    }
+    for series_id, name in GLOBAL_PPI_ITEMS
+)
+
 KOMIS_MINERAL_PRICE_ITEMS = [
     ("HP001", "MNRL0002", "니켈", "Nickel"),
     ("HP001", "MNRL0008", "동", "Copper"),
@@ -522,6 +650,43 @@ STRATEGY_TYPES = {
         "name": "RSI 반등",
         "description": "RSI(14)가 30선을 상향 돌파하면 매수, 70선 아래로 재진입하면 매도합니다. 매수/매도마다 0.2% 비용을 반영합니다.",
     },
+    "leader_top10_score70": {
+        "name": "주도주 Top10·70점 리밸런싱",
+        "description": "종합점수 상위 10위이면서 70점 이상에 처음 진입한 종목을 매수하고, 보유 종목 점수가 70점 이하로 내려가면 매도합니다. 보유 종목은 매일 점수 비율로 리밸런싱하며 회전 비용 0.2%를 반영합니다.",
+    },
+    "leader_top5_score80": {
+        "name": "주도주 Top5·80점 리밸런싱",
+        "description": "종합점수 상위 5위이면서 80점 이상에 처음 진입한 종목을 매수하고, 보유 종목 점수가 80점 미만으로 내려가면 매도합니다. 보유 종목은 매일 점수 비율로 리밸런싱하며 회전 비용 0.2%를 반영합니다.",
+    },
+    "leader_top5_score70": {
+        "name": "주도주 Top5·70점 리밸런싱",
+        "description": "종합점수 상위 5위이면서 70점 이상에 처음 진입한 종목을 매수하고, 보유 종목 점수가 70점 미만으로 내려가면 매도합니다. 보유 종목은 매일 점수 비율로 리밸런싱하며 회전 비용 0.2%를 반영합니다.",
+    },
+    "leader_all_score80": {
+        "name": "주도주 전종목·80점 리밸런싱",
+        "description": "종합점수 80점 이상인 종목을 모두 매수하고, 보유 종목 점수가 80점 미만으로 내려가면 매도합니다. 보유 종목은 매일 점수 비율로 리밸런싱하며 회전 비용 0.2%를 반영합니다.",
+    },
+    "leader_all_score70": {
+        "name": "주도주 전종목·70점 리밸런싱",
+        "description": "종합점수 70점 이상인 종목을 모두 매수하고, 보유 종목 점수가 70점 이하로 내려가면 매도합니다. 보유 종목은 매일 점수 비율로 리밸런싱하며 회전 비용 0.2%를 반영합니다.",
+    },
+    "leader_all_score55": {
+        "name": "주도주 전종목·55점 리밸런싱",
+        "description": "종합점수 55점 이상인 종목을 모두 매수하고, 보유 종목 점수가 55점 이하로 내려가면 매도합니다. 보유 종목은 매일 점수 비율로 리밸런싱하며 회전 비용 0.2%를 반영합니다.",
+    },
+    "leader_custom": {
+        "name": "주도주 점수 직접입력",
+        "description": "매수/매도 점수와 TopN을 직접 입력해 주도주 리밸런싱 백테스트를 수행합니다.",
+    },
+}
+
+LEADER_STRATEGY_PRESETS: dict[str, dict[str, float | int]] = {
+    "leader_top10_score70": {"top_n": 10, "entry_threshold": 70.0, "exit_threshold": 70.0},
+    "leader_top5_score80": {"top_n": 5, "entry_threshold": 80.0, "exit_threshold": 80.0},
+    "leader_top5_score70": {"top_n": 5, "entry_threshold": 70.0, "exit_threshold": 70.0},
+    "leader_all_score80": {"top_n": 10000, "entry_threshold": 80.0, "exit_threshold": 80.0},
+    "leader_all_score70": {"top_n": 10000, "entry_threshold": 70.0, "exit_threshold": 70.0},
+    "leader_all_score55": {"top_n": 10000, "entry_threshold": 55.0, "exit_threshold": 55.0},
 }
 TELEGRAM_EARNINGS_REPORT_INCLUDE_TOKENS = [
     "실적",
@@ -677,7 +842,21 @@ def safe_copy_to_temp(source_path: Path) -> Path:
     temp_dir = Path(tempfile.gettempdir()) / "stock_dashboard_cache"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_path = temp_dir / f"{source_path.stem}_{uuid.uuid4().hex[:8]}{source_path.suffix}"
-    shutil.copy2(source_path, temp_path)
+    last_error: Exception | None = None
+    for _ in range(8):
+        try:
+            shutil.copy2(source_path, temp_path)
+            return temp_path
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.4)
+        except Exception:
+            raise
+    if last_error is not None:
+        raise PermissionError(
+            f"엑셀 파일이 다른 프로세스(Excel/동기화)에서 잠겨 읽을 수 없습니다. "
+            f"파일을 닫고 다시 시도하세요: {source_path}"
+        ) from last_error
     return temp_path
 
 
@@ -725,6 +904,83 @@ def load_settings() -> dict[str, Any]:
 def save_settings(settings: dict[str, Any]) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_global_company_ai_cache() -> dict[str, Any]:
+    if not GLOBAL_COMPANY_AI_CACHE_PATH.exists():
+        return {"items": {}, "loaded_at": ""}
+    try:
+        payload = json.loads(GLOBAL_COMPANY_AI_CACHE_PATH.read_text(encoding="utf-8"))
+        return {
+            "items": payload.get("items", {}) if isinstance(payload.get("items"), dict) else {},
+            "loaded_at": str(payload.get("loaded_at", "")),
+        }
+    except Exception:
+        return {"items": {}, "loaded_at": ""}
+
+
+def save_global_company_ai_cache(cache: dict[str, Any]) -> dict[str, Any]:
+    cache["loaded_at"] = datetime.now().isoformat(timespec="seconds")
+    temp_path = GLOBAL_COMPANY_AI_CACHE_PATH.with_name(f"{GLOBAL_COMPANY_AI_CACHE_PATH.stem}_{uuid.uuid4().hex[:8]}.tmp")
+    temp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(GLOBAL_COMPANY_AI_CACHE_PATH)
+    return cache
+
+
+def get_openai_api_key() -> str:
+    settings = load_settings()
+    public_data = settings.get("public_data") if isinstance(settings.get("public_data"), dict) else {}
+    return (
+        str(os.getenv("OPENAI_API_KEY", "")).strip()
+        or str(settings.get("openai_api_key") or "").strip()
+        or str(settings.get("openai_key") or "").strip()
+        or str(public_data.get("openai_api_key") or "").strip()
+        or str(public_data.get("openai_key") or "").strip()
+    )
+
+
+def krx_credentials_signature(user_id: str, password: str) -> str:
+    return hashlib.sha1(f"{str(user_id).strip()}::{str(password).strip()}".encode("utf-8")).hexdigest()
+
+
+def should_attempt_krx_login(user_id: str, password: str) -> bool:
+    user_id = str(user_id or "").strip()
+    password = str(password or "").strip()
+    if not user_id or not password:
+        return False
+    settings = load_settings()
+    state = settings.get("krx_login_state", {}) if isinstance(settings.get("krx_login_state"), dict) else {}
+    failed_signature = str(state.get("failed_signature") or "").strip()
+    return failed_signature != krx_credentials_signature(user_id, password)
+
+
+def record_krx_login_result(user_id: str, password: str, success: bool, error: str = "") -> None:
+    user_id = str(user_id or "").strip()
+    password = str(password or "").strip()
+    settings = load_settings()
+    if success:
+        if "krx_login_state" in settings:
+            settings.pop("krx_login_state", None)
+            save_settings(settings)
+        return
+    if not user_id or not password:
+        return
+    settings["krx_login_state"] = {
+        "failed_signature": krx_credentials_signature(user_id, password),
+        "failed_at": datetime.now().isoformat(timespec="seconds"),
+        "last_error": str(error or "").strip()[:500],
+    }
+    save_settings(settings)
+
+
+def get_krx_settings() -> dict[str, str]:
+    settings = load_settings()
+    krx = settings.get("krx", {}) if isinstance(settings.get("krx"), dict) else {}
+    user_id = str(os.getenv("KRX_ID", "") or krx.get("id", "")).strip()
+    password = str(os.getenv("KRX_PW", "") or krx.get("password", "")).strip()
+    if user_id and password and not should_attempt_krx_login(user_id, password):
+        return {"id": "", "password": ""}
+    return {"id": user_id, "password": password}
 
 
 DEFAULT_MARKET_CALENDAR_EVENTS: list[dict[str, Any]] = [
@@ -1306,8 +1562,90 @@ def save_screening_cache(cache: dict[str, Any]) -> dict[str, Any]:
     return cache
 
 
+def load_us_screening_cache() -> dict[str, Any]:
+    if not US_SCREENING_CACHE_PATH.exists():
+        return {"summaries": {}, "recent_leaders": {}, "loaded_at": ""}
+    try:
+        payload = json.loads(US_SCREENING_CACHE_PATH.read_text(encoding="utf-8"))
+        return {
+            "summaries": payload.get("summaries", {}) if isinstance(payload.get("summaries"), dict) else {},
+            "recent_leaders": payload.get("recent_leaders", {}) if isinstance(payload.get("recent_leaders"), dict) else {},
+            "calendar": payload.get("calendar", {}) if isinstance(payload.get("calendar"), dict) else {},
+            "loaded_at": str(payload.get("loaded_at", "")),
+        }
+    except Exception:
+        return {"summaries": {}, "recent_leaders": {}, "loaded_at": ""}
+
+
+def save_us_screening_cache(cache: dict[str, Any]) -> dict[str, Any]:
+    cache["loaded_at"] = datetime.now().isoformat(timespec="seconds")
+    temp_path = US_SCREENING_CACHE_PATH.with_name(f"{US_SCREENING_CACHE_PATH.stem}_{uuid.uuid4().hex[:8]}.tmp")
+    temp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(US_SCREENING_CACHE_PATH)
+    return cache
+
+
+def load_asia_screening_cache() -> dict[str, Any]:
+    if not ASIA_SCREENING_CACHE_PATH.exists():
+        return {"summaries": {}, "recent_leaders": {}, "loaded_at": ""}
+    try:
+        payload = json.loads(ASIA_SCREENING_CACHE_PATH.read_text(encoding="utf-8"))
+        return {
+            "summaries": payload.get("summaries", {}) if isinstance(payload.get("summaries"), dict) else {},
+            "recent_leaders": payload.get("recent_leaders", {}) if isinstance(payload.get("recent_leaders"), dict) else {},
+            "calendar": payload.get("calendar", {}) if isinstance(payload.get("calendar"), dict) else {},
+            "loaded_at": str(payload.get("loaded_at", "")),
+        }
+    except Exception:
+        return {"summaries": {}, "recent_leaders": {}, "loaded_at": ""}
+
+
+def save_asia_screening_cache(cache: dict[str, Any]) -> dict[str, Any]:
+    cache["loaded_at"] = datetime.now().isoformat(timespec="seconds")
+    temp_path = ASIA_SCREENING_CACHE_PATH.with_name(f"{ASIA_SCREENING_CACHE_PATH.stem}_{uuid.uuid4().hex[:8]}.tmp")
+    temp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(ASIA_SCREENING_CACHE_PATH)
+    return cache
+
+
+def screening_data_version_token() -> str:
+    # 점수 재계산(SQL 갱신) 시 DB mtime이 바뀌므로 캐시 키를 자동 무효화한다.
+    try:
+        if SCREENING_FAST_DB_PATH.exists():
+            return f"db{int(SCREENING_FAST_DB_PATH.stat().st_mtime)}"
+    except Exception:
+        pass
+    try:
+        files = sorted(
+            (p for p in SCREENING_DIR.glob("*.xls*") if re.match(r"^(20\d{6})_", p.name)),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if files:
+            return f"xlsx{int(files[0].stat().st_mtime)}"
+    except Exception:
+        pass
+    return "na"
+
+
 def screening_cache_key(file_date: str, min_score: float) -> str:
-    return f"{file_date}|{float(min_score):.4f}"
+    token = screening_data_version_token()
+    return f"{SCREENING_SCORE_CACHE_VERSION}|{token}|{file_date}|{float(min_score):.4f}"
+
+
+def screening_summary_payload_cache_key(file_date: str, min_score: float, recent_limit: int) -> str:
+    token = screening_data_version_token()
+    return f"{SCREENING_SCORE_CACHE_VERSION}|payload|{token}|{file_date}|{float(min_score):.4f}|{int(recent_limit)}"
+
+
+def parse_screening_cache_key(key: Any) -> tuple[str, str]:
+    parts = str(key).split("|")
+    if len(parts) == 4 and parts[0] == SCREENING_SCORE_CACHE_VERSION:
+        return parts[2], parts[3]
+    if len(parts) == 3 and parts[0] == SCREENING_SCORE_CACHE_VERSION:
+        # legacy format fallback
+        return parts[1], parts[2]
+    return "", ""
 
 
 def get_dart_api_key() -> str:
@@ -1633,6 +1971,18 @@ class ThemeReloadRequest(BaseModel):
     min_score: float = 50.0
     recent_limit: int = RECENT_SCREENING_LOOKBACK
     reload_all: bool = False
+    region: str | None = None
+
+
+class ThemeTestExcelRequest(BaseModel):
+    file_date: str | None = None
+    suffix: str = "_test_52w"
+
+
+class ThemeBuildTodayExcelRequest(BaseModel):
+    min_score: float = 0.0
+    recent_limit: int = 20
+    region: str | None = None
 
 
 class ThemeNoteUpdateRequest(BaseModel):
@@ -1687,6 +2037,49 @@ class StockAlertTelegramSettingsRequest(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_listing_table() -> pd.DataFrame:
+    try:
+        base_date = date.today().strftime("%Y%m%d")
+        biz_date = pykrx_stock.get_nearest_business_day_in_a_week(base_date)
+        rows: list[dict[str, Any]] = []
+
+        for market in ("KOSPI", "KOSDAQ", "KONEX"):
+            tickers = pykrx_stock.get_market_ticker_list(date=biz_date, market=market)
+            if not tickers:
+                continue
+
+            cap_frame = pykrx_stock.get_market_cap_by_ticker(date=biz_date, market=market)
+            cap_map: dict[str, dict[str, float | None]] = {}
+            if cap_frame is not None and not cap_frame.empty:
+                for ticker, rec in cap_frame.iterrows():
+                    code = str(ticker).zfill(6)
+                    cap_map[code] = {
+                        "Close": to_float(rec.get("종가")),
+                        "Marcap": to_float(rec.get("시가총액")),
+                        "Stocks": to_float(rec.get("상장주식수")),
+                    }
+
+            for ticker in tickers:
+                code = str(ticker).zfill(6)
+                name = pykrx_stock.get_market_ticker_name(code) or code
+                cap_row = cap_map.get(code, {})
+                rows.append(
+                    {
+                        "Code": code,
+                        "Name": name,
+                        "Market": market,
+                        "Close": cap_row.get("Close"),
+                        "Marcap": cap_row.get("Marcap"),
+                        "Stocks": cap_row.get("Stocks"),
+                    }
+                )
+
+        if rows:
+            listing = pd.DataFrame(rows)
+            listing["normalized"] = listing["Name"].map(normalize_text)
+            return listing
+    except Exception:
+        pass
+
     source = fdr.StockListing("KRX").copy()
     keep_columns = [column for column in ["Code", "Name", "Market", "Close", "Marcap", "Stocks"] if column in source.columns]
     listing = source[keep_columns].copy()
@@ -1709,6 +2102,103 @@ def get_name_lookup() -> dict[str, dict[str, str]]:
     return lookup
 
 
+@lru_cache(maxsize=1)
+def get_screening_stock_lookup() -> dict[str, dict[str, dict[str, Any]]]:
+    by_code: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    if not SCREENING_FAST_DB_PATH.exists():
+        return {"by_code": by_code, "by_name": by_name}
+    try:
+        with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+            rows = conn.execute(
+                """
+                SELECT stock_code,
+                       stock_name,
+                       MAX(file_date_key) AS latest_file_date_key,
+                       MAX(COALESCE(market_cap_100m, 0)) AS market_cap_100m
+                FROM screening_rows
+                WHERE stock_code IS NOT NULL
+                  AND TRIM(stock_code) <> ''
+                  AND stock_name IS NOT NULL
+                  AND TRIM(stock_name) <> ''
+                GROUP BY stock_code, stock_name
+                """
+            ).fetchall()
+    except Exception:
+        return {"by_code": by_code, "by_name": by_name}
+
+    for stock_code, stock_name, latest_file_date_key, market_cap_100m in rows:
+        code = str(stock_code or "").strip().zfill(6)
+        name = str(stock_name or "").strip()
+        normalized_name = normalize_text(name)
+        if not code or not name or not normalized_name:
+            continue
+        item = {
+            "code": code,
+            "name": name,
+            "latest_file_date_key": str(latest_file_date_key or ""),
+            "market_cap_100m": to_float(market_cap_100m) or 0.0,
+        }
+        existing_code = by_code.get(code)
+        if (
+            existing_code is None
+            or item["latest_file_date_key"] > str(existing_code.get("latest_file_date_key") or "")
+            or (
+                item["latest_file_date_key"] == str(existing_code.get("latest_file_date_key") or "")
+                and item["market_cap_100m"] > float(existing_code.get("market_cap_100m") or 0)
+            )
+        ):
+            by_code[code] = item
+        existing_name = by_name.get(normalized_name)
+        if (
+            existing_name is None
+            or item["latest_file_date_key"] > str(existing_name.get("latest_file_date_key") or "")
+            or (
+                item["latest_file_date_key"] == str(existing_name.get("latest_file_date_key") or "")
+                and item["market_cap_100m"] > float(existing_name.get("market_cap_100m") or 0)
+            )
+        ):
+            by_name[normalized_name] = item
+    return {"by_code": by_code, "by_name": by_name}
+
+
+def resolve_stock_from_screening_cache(name: str) -> tuple[str | None, str]:
+    raw = str(name or "").strip()
+    normalized = normalize_text(raw)
+    if not normalized:
+        return None, ""
+    lookup = get_screening_stock_lookup()
+    by_code = lookup.get("by_code") or {}
+    by_name = lookup.get("by_name") or {}
+
+    code_candidate = re.sub(r"\D", "", raw)
+    if len(code_candidate) in {5, 6}:
+        item = by_code.get(code_candidate.zfill(6))
+        if item:
+            return str(item.get("code") or "").zfill(6), str(item.get("name") or raw)
+
+    exact = by_name.get(normalized)
+    if exact:
+        return str(exact.get("code") or "").zfill(6), str(exact.get("name") or raw)
+
+    best_item: dict[str, Any] | None = None
+    best_rank: tuple[int, float, str] | None = None
+    for key, item in by_name.items():
+        if normalized not in key and key not in normalized:
+            continue
+        rank = (
+            0 if key.startswith(normalized) else 1,
+            -float(item.get("market_cap_100m") or 0),
+            str(item.get("name") or ""),
+        )
+        if best_rank is None or rank < best_rank:
+            best_item = item
+            best_rank = rank
+    if best_item:
+        return str(best_item.get("code") or "").zfill(6), str(best_item.get("name") or raw)
+    return None, raw
+
+
 def resolve_stock(name: str) -> tuple[str | None, str]:
     normalized = normalize_text(name)
     if not normalized:
@@ -1719,6 +2209,10 @@ def resolve_stock(name: str) -> tuple[str | None, str]:
         listing_row = find_listing_row_by_code(code_candidate)
         if listing_row:
             return listing_row["code"], listing_row["name"]
+
+    cached_code, cached_name = resolve_stock_from_screening_cache(name)
+    if cached_code:
+        return cached_code, cached_name
 
     candidate = NAME_ALIASES.get(normalized, name)
     normalized_candidate = normalize_text(candidate)
@@ -2496,6 +2990,225 @@ def build_global_company_detail(symbol: str) -> dict[str, Any]:
     }
 
 
+def global_company_ai_cache_key(symbol: str) -> str:
+    return f"v1|{normalize_global_symbol(symbol)}"
+
+
+def normalize_global_company_ai_brief(payload: Any, symbol: str, detail: dict[str, Any]) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    history_rows = []
+    for item in source.get("history", []) if isinstance(source.get("history"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        year = str(item.get("year") or "").strip()
+        event = str(item.get("event") or "").strip()
+        if year or event:
+            history_rows.append({"year": year, "event": event})
+    segment_rows = []
+    total_pct = 0.0
+    finite_pct_count = 0
+    for item in source.get("business_segments", []) if isinstance(source.get("business_segments"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        description = str(item.get("description") or "").strip()
+        confidence = str(item.get("confidence") or "medium").strip().lower()
+        share_pct = to_float(item.get("share_pct"))
+        if share_pct is not None:
+            share_pct = round(float(max(0.0, min(100.0, share_pct))), 1)
+            total_pct += share_pct
+            finite_pct_count += 1
+        if name or description:
+            segment_rows.append(
+                {
+                    "name": name,
+                    "share_pct": share_pct,
+                    "description": description,
+                    "confidence": confidence if confidence in {"high", "medium", "low"} else "medium",
+                }
+            )
+    return {
+        "symbol": normalize_global_symbol(symbol),
+        "company_name": str(detail.get("name") or source.get("company_name") or symbol),
+        "overview": str(source.get("overview") or "").strip(),
+        "history": history_rows[:8],
+        "business_segments": segment_rows[:8],
+        "revenue_mix_note": str(source.get("revenue_mix_note") or "").strip(),
+        "risks": [str(item).strip() for item in source.get("risks", []) if str(item).strip()][:5] if isinstance(source.get("risks"), list) else [],
+        "has_segment_percentages": bool(finite_pct_count),
+        "segment_pct_total": round(total_pct, 1) if finite_pct_count else None,
+    }
+
+
+def build_global_company_ai_request_payload(detail: dict[str, Any]) -> dict[str, Any]:
+    quarters = [item for item in (detail.get("quarters") or []) if isinstance(item, dict)][:6]
+    annuals = [item for item in (detail.get("annuals") or []) if isinstance(item, dict)][:4]
+    stats = detail.get("stats") if isinstance(detail.get("stats"), dict) else {}
+    return {
+        "symbol": str(detail.get("symbol") or ""),
+        "name": str(detail.get("name") or ""),
+        "exchange": str(detail.get("exchange") or ""),
+        "sector": str(detail.get("sector") or ""),
+        "currency": str(detail.get("currency") or ""),
+        "market_cap_billion": round(float(to_float(detail.get("market_cap_billion")) or 0.0), 2) if to_float(detail.get("market_cap_billion")) is not None else None,
+        "price": to_float(detail.get("price")),
+        "latest_revenue": to_float(stats.get("latest_revenue")),
+        "latest_net_income": to_float(stats.get("latest_net_income")),
+        "gross_margin_pct": to_float(stats.get("gross_margin_pct")),
+        "operating_margin_pct": to_float(stats.get("operating_margin_pct")),
+        "net_margin_pct": to_float(stats.get("net_margin_pct")),
+        "quarters": [
+            {
+                "label": str(item.get("label") or ""),
+                "revenue": to_float(item.get("revenue")),
+                "operating_income": to_float(item.get("operating_income")),
+                "net_income": to_float(item.get("net_income")),
+                "filed": str(item.get("filed") or ""),
+                "form": str(item.get("form") or ""),
+            }
+            for item in quarters
+        ],
+        "annuals": [
+            {
+                "label": str(item.get("label") or ""),
+                "revenue": to_float(item.get("revenue")),
+                "operating_income": to_float(item.get("operating_income")),
+                "net_income": to_float(item.get("net_income")),
+                "filed": str(item.get("filed") or ""),
+                "form": str(item.get("form") or ""),
+            }
+            for item in annuals
+        ],
+        "source": detail.get("source") if isinstance(detail.get("source"), dict) else {},
+    }
+
+
+def request_openai_global_company_brief(detail: dict[str, Any]) -> dict[str, Any]:
+    api_key = get_openai_api_key()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY가 설정되어 있지 않습니다.")
+    compact_payload = build_global_company_ai_request_payload(detail)
+    schema = {
+        "name": "global_company_ai_brief",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "company_name": {"type": "string"},
+                "overview": {"type": "string"},
+                "history": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "year": {"type": "string"},
+                            "event": {"type": "string"},
+                        },
+                        "required": ["year", "event"],
+                        "additionalProperties": False,
+                    },
+                },
+                "business_segments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "share_pct": {"type": ["number", "null"]},
+                            "description": {"type": "string"},
+                            "confidence": {"type": "string"},
+                        },
+                        "required": ["name", "share_pct", "description", "confidence"],
+                        "additionalProperties": False,
+                    },
+                },
+                "revenue_mix_note": {"type": "string"},
+                "risks": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["company_name", "overview", "history", "business_segments", "revenue_mix_note", "risks"],
+            "additionalProperties": False,
+        },
+    }
+    system_prompt = (
+        "You are an equity research assistant. Return concise Korean JSON only. "
+        "Summarize the company's history and business areas for an investor UI. "
+        "Do not invent precise revenue mix percentages unless reasonably well-known from public information. "
+        "If uncertain, set share_pct to null and mention the uncertainty in revenue_mix_note. "
+        "Keep overview to 3-5 sentences, history to 4-6 items, business_segments to 3-6 items, and risks to 2-4 bullets."
+    )
+    user_prompt = (
+        "다음 기업 데이터를 바탕으로 연혁과 사업분야를 요약해 주세요.\n"
+        "출력은 지정된 JSON 스키마만 따르세요.\n"
+        f"{json.dumps(compact_payload, ensure_ascii=False)}"
+    )
+    model_candidates = [
+        str(os.getenv("OPENAI_GLOBAL_COMPANY_MODEL", "")).strip(),
+        "gpt-5-mini",
+        "gpt-4.1-mini",
+        "gpt-4o-mini",
+    ]
+    tried_errors: list[str] = []
+    for model_name in [item for item in model_candidates if item]:
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model_name,
+                    "temperature": 0.2,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": schema,
+                    },
+                },
+                timeout=90,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            content = (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            if not content:
+                raise RuntimeError("OpenAI 응답 본문이 비어 있습니다.")
+            parsed = json.loads(content)
+            normalized = normalize_global_company_ai_brief(parsed, str(detail.get("symbol") or ""), detail)
+            normalized["model"] = model_name
+            normalized["generated_at"] = datetime.now().isoformat(timespec="seconds")
+            return normalized
+        except Exception as exc:
+            tried_errors.append(f"{model_name}: {exc}")
+            continue
+    raise RuntimeError(" / ".join(tried_errors) if tried_errors else "OpenAI 기업 브리프 생성 실패")
+
+
+def build_global_company_ai_brief(symbol: str, force_refresh: bool = False) -> dict[str, Any]:
+    normalized_symbol = normalize_global_symbol(symbol)
+    if not normalized_symbol:
+        raise ValueError("검색할 티커를 입력해 주세요.")
+    cache = load_global_company_ai_cache()
+    cache_key = global_company_ai_cache_key(normalized_symbol)
+    cached = cache.setdefault("items", {}).get(cache_key)
+    if not force_refresh and isinstance(cached, dict):
+        return cached
+    detail = build_global_company_detail(normalized_symbol)
+    ai_brief = request_openai_global_company_brief(detail)
+    payload = {
+        "symbol": normalized_symbol,
+        "company_name": str(detail.get("name") or normalized_symbol),
+        "brief": ai_brief,
+        "cache_source": "openai",
+        "cached_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    cache["items"][cache_key] = payload
+    save_global_company_ai_cache(cache)
+    return payload
+
+
 def normalize_stock_code_value(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -2623,10 +3336,10 @@ def autocomplete_stocks(query: str, limit: int = 12) -> list[dict[str, Any]]:
     listing["rank"] = 4
     listing.loc[listing["code_text"].str.startswith(needle), "rank"] = 0
     listing.loc[listing["normalized"].str.startswith(needle), "rank"] = 1
-    listing.loc[listing["normalized"].str.contains(needle, na=False), "rank"] = 2
-    listing.loc[listing["code_text"].str.contains(needle, na=False), "rank"] = listing["rank"].clip(upper=3)
+    listing.loc[listing["normalized"].str.contains(needle, na=False, regex=False), "rank"] = 2
+    listing.loc[listing["code_text"].str.contains(needle, na=False, regex=False), "rank"] = listing["rank"].clip(upper=3)
     filtered = listing[
-        listing["normalized"].str.contains(needle, na=False) | listing["code_text"].str.contains(needle, na=False)
+        listing["normalized"].str.contains(needle, na=False, regex=False) | listing["code_text"].str.contains(needle, na=False, regex=False)
     ].copy()
     filtered = filtered.sort_values(["rank", "Marcap"], ascending=[True, False]).head(limit)
     return [
@@ -2674,14 +3387,29 @@ def parse_kind_disclosure_rows(html: str) -> list[dict[str, Any]]:
     return rows
 
 
-def find_latest_kind_business_report(company: str) -> dict[str, Any]:
+def kind_report_title_matches(title: str, report_scope: str = "business") -> bool:
+    text = normalize_text(title)
+    if report_scope == "periodic":
+        return any(token in text for token in ("분기보고서", "반기보고서", "사업보고서"))
+    return "사업보고서" in text and "분기보고서" not in text and "반기보고서" not in text
+
+
+def find_latest_kind_report(company: str, report_scope: str = "business") -> dict[str, Any]:
     query = str(company or "").strip()
     if not query:
         raise ValueError("기업명을 입력해 주세요.")
 
-    code, resolved_name = resolve_stock(query)
+    code, resolved_name = resolve_stock_from_screening_cache(query)
     if not code:
-        matches = autocomplete_stocks(query, limit=1)
+        try:
+            code, resolved_name = resolve_stock(query)
+        except Exception:
+            code, resolved_name = None, query
+    if not code:
+        try:
+            matches = autocomplete_stocks(query, limit=1)
+        except Exception:
+            matches = []
         if matches:
             code = str(matches[0].get("code") or "").zfill(6)
             resolved_name = str(matches[0].get("name") or resolved_name or query)
@@ -2731,7 +3459,7 @@ def find_latest_kind_business_report(company: str) -> dict[str, Any]:
             break
         for row in rows:
             title = str(row.get("title") or "")
-            if "사업보고서" in title and "분기보고서" not in title and "반기보고서" not in title:
+            if kind_report_title_matches(title, report_scope):
                 return {
                     **row,
                     "query": query,
@@ -2739,7 +3467,297 @@ def find_latest_kind_business_report(company: str) -> dict[str, Any]:
                     "stock_name": resolved_name or query,
                     "source": "KIND",
                 }
-    raise LookupError(f"KIND에서 최근 5년 내 사업보고서를 찾지 못했습니다: {resolved_name or query}")
+    report_label = "정기보고서" if report_scope == "periodic" else "사업보고서"
+    raise LookupError(f"KIND에서 최근 5년 내 {report_label}를 찾지 못했습니다: {resolved_name or query}")
+
+
+def find_latest_kind_business_report(company: str) -> dict[str, Any]:
+    return find_latest_kind_report(company, "business")
+
+
+def find_latest_kind_periodic_report(company: str) -> dict[str, Any]:
+    return find_latest_kind_report(company, "periodic")
+
+
+def kind_viewer_headers(referer: str | None = None) -> dict[str, str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6",
+    }
+    if referer:
+        headers["Referer"] = referer
+    return headers
+
+
+def kind_main_document_url(report: dict[str, Any]) -> dict[str, Any]:
+    report_url = str(report.get("url") or "").strip()
+    if not report_url:
+        raise ValueError("KIND 사업보고서 URL이 없습니다.")
+    session = requests.Session()
+    viewer_response = session.get(report_url, headers=kind_viewer_headers("https://kind.krx.co.kr/"), timeout=20)
+    viewer_response.raise_for_status()
+    viewer_response.encoding = "utf-8"
+    soup = BeautifulSoup(viewer_response.text, "html.parser")
+    main_option = None
+    for option in soup.select("select#mainDoc option"):
+        value = str(option.get("value") or "").strip()
+        label = option.get_text(" ", strip=True)
+        if value and "사업보고서" in label:
+            main_option = option
+            break
+    if main_option is None:
+        raise LookupError("KIND 사업보고서 본문 문서를 찾지 못했습니다.")
+    doc_no = str(main_option.get("value") or "").split("|")[0].strip()
+    if not doc_no:
+        raise LookupError("KIND 사업보고서 본문 문서번호가 비어 있습니다.")
+    content_response = session.post(
+        "https://kind.krx.co.kr/common/disclsviewer.do",
+        data={"method": "searchContents", "docNo": doc_no, "acptNo": report.get("acpt_no") or ""},
+        headers={**kind_viewer_headers(report_url), "X-Requested-With": "XMLHttpRequest"},
+        timeout=20,
+    )
+    content_response.raise_for_status()
+    content_response.encoding = "utf-8"
+    match = re.search(r"setPath\('([^']*)','([^']*)','([^']*)'", content_response.text)
+    if not match:
+        raise LookupError("KIND 사업보고서 본문 경로를 찾지 못했습니다.")
+    toc_url, document_url, server_path = [item.strip() for item in match.groups()]
+    return {
+        "doc_no": doc_no,
+        "toc_url": toc_url,
+        "document_url": document_url,
+        "server_path": server_path,
+    }
+
+
+def parse_segment_percent(value: Any) -> float | None:
+    text = str(value or "").replace(",", "").strip()
+    if not text or text in {"-", "nan", "None"}:
+        return None
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    value = float(match.group(0))
+    if "△" in text or text.startswith("("):
+        value = -abs(value)
+    return value
+
+
+def parse_business_segment_amount_ratio(cells: list[str]) -> tuple[int | None, float | None, int | None]:
+    for index, cell in enumerate(cells):
+        text = str(cell or "").strip()
+        if "%" not in text:
+            continue
+        ratio_text = text
+        parenthesis_match = re.search(r"\(([^()]*(?:%|％)[^()]*)\)", text)
+        if parenthesis_match:
+            ratio_text = parenthesis_match.group(1)
+        ratio = parse_segment_percent(ratio_text)
+        if ratio is None:
+            continue
+        amount = None
+        before_parenthesis = text.split("(", 1)[0].strip()
+        if before_parenthesis and before_parenthesis != text:
+            amount = clean_numeric_text(before_parenthesis)
+        if amount is None:
+            for amount_index in range(index - 1, -1, -1):
+                numeric = clean_numeric_text(cells[amount_index])
+                if numeric is not None and abs(float(numeric)) > 0:
+                    amount = numeric
+                    break
+        if amount is not None:
+            return int(round(float(amount))), round(float(ratio), 2), index
+
+    for index in range(1, len(cells)):
+        amount = clean_numeric_text(cells[index - 1])
+        ratio = clean_numeric_text(cells[index])
+        if amount is None or ratio is None:
+            continue
+        amount_value = float(amount)
+        ratio_value = float(ratio)
+        if abs(amount_value) >= 1000 and 0 < ratio_value <= 100:
+            return int(round(amount_value)), round(ratio_value, 2), index
+    return None, None, None
+
+
+def merge_business_segment_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        segment = str(row.get("segment") or "").strip()
+        if not segment:
+            continue
+        if segment not in grouped:
+            grouped[segment] = {**row}
+            grouped[segment]["amount_million_krw"] = int(row.get("amount_million_krw") or 0)
+            grouped[segment]["ratio_pct"] = float(row.get("ratio_pct") or 0.0)
+            order.append(segment)
+            continue
+        target = grouped[segment]
+        target["amount_million_krw"] = int(target.get("amount_million_krw") or 0) + int(row.get("amount_million_krw") or 0)
+        target["ratio_pct"] = round(float(target.get("ratio_pct") or 0.0) + float(row.get("ratio_pct") or 0.0), 2)
+        for field in ["sales_type", "items", "usage", "brand"]:
+            current = str(target.get(field) or "").strip()
+            addition = str(row.get(field) or "").strip()
+            if addition and addition not in current:
+                target[field] = (current + " / " + addition).strip(" /")
+    return [grouped[key] for key in order]
+
+
+def business_segment_table_score(frame: pd.DataFrame) -> int:
+    column_text = " ".join(
+        " ".join([str(part) for part in column if str(part) != "nan"]) if isinstance(column, tuple) else str(column)
+        for column in frame.columns
+    )
+    text = column_text + " " + " ".join(
+        str(value)
+        for value in frame.fillna("").astype(str).values.flatten().tolist()
+        if str(value).strip()
+    )
+    score = 0
+    for token, weight in [
+        ("사업부문", 12),
+        ("부 문", 10),
+        ("부문", 8),
+        ("매출유형", 8),
+        ("주요 제품", 8),
+        ("품 목", 6),
+        ("품목", 5),
+        ("구체적용도", 6),
+        ("주요상표", 6),
+        ("주요 생산", 8),
+        ("판매제품", 8),
+        ("금 액", 8),
+        ("매출액", 12),
+        ("비 율", 12),
+        ("비율", 12),
+        ("비중", 12),
+    ]:
+        if token in text:
+            score += weight
+    if "매입유형" in text or "매입액" in text:
+        score -= 30
+    if "주요 매출처" in text:
+        score -= 20
+    return score
+
+
+def parse_kind_business_segment_rows(document_html: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    try:
+        tables = pd.read_html(StringIO(document_html))
+    except Exception:
+        tables = []
+    best_rows: list[dict[str, Any]] = []
+    best_score = -999
+    best_index = -1
+    for table_index, frame in enumerate(tables):
+        if frame.empty or frame.shape[1] < 4:
+            continue
+        score = business_segment_table_score(frame)
+        if score < 35:
+            continue
+        rows: list[dict[str, Any]] = []
+        for _, raw_row in frame.fillna("").iterrows():
+            cells = [re.sub(r"\s+", " ", str(value)).strip() for value in raw_row.tolist()]
+            joined = " ".join(cells)
+            if not joined:
+                continue
+            if any(token in joined for token in ["사업부문 매출유형", "매출유형 품", "매출액 비율"]):
+                continue
+            if cells[0] in {"사업부문", "부 문", "부문", "합 계", "합계", "소 계", "소계", "총 계", "총계", "계"} or cells[0].startswith("※"):
+                continue
+            amount, ratio, ratio_idx = parse_business_segment_amount_ratio(cells)
+            if ratio is None or amount is None:
+                continue
+            segment = cells[0]
+            if not segment or segment in {"사업부문", "매출유형", "소 계", "소계"}:
+                continue
+            amount_idx = max(1, int(ratio_idx or 1) - 1)
+            descriptors = [cell for cell in cells[1:amount_idx] if cell and cell not in {"매출유형", "품목", "품 목", "구체적용도", "주요상표등", "구분"}]
+            sales_type = descriptors[0] if len(descriptors) >= 2 else ""
+            items = descriptors[1] if len(descriptors) >= 2 else (descriptors[0] if descriptors else "")
+            usage = descriptors[2] if len(descriptors) >= 3 else ""
+            brand = descriptors[3] if len(descriptors) >= 4 else ""
+            row = {
+                "segment": segment,
+                "sales_type": sales_type,
+                "items": items,
+                "usage": usage,
+                "brand": brand,
+                "amount_million_krw": int(round(float(amount))),
+                "ratio_pct": round(float(ratio), 2),
+            }
+            if row["segment"] and row["ratio_pct"] > 0:
+                rows.append(row)
+        rows = merge_business_segment_rows(rows)
+        if not rows:
+            continue
+        ratio_sum = sum(float(row.get("ratio_pct") or 0) for row in rows)
+        if 85 <= ratio_sum <= 115:
+            score += 25
+        score += min(len(rows), 8)
+        if score > best_score:
+            best_score = score
+            best_rows = rows
+            best_index = table_index
+    total_amount = sum(int(row.get("amount_million_krw") or 0) for row in best_rows)
+    total_ratio = sum(float(row.get("ratio_pct") or 0) for row in best_rows)
+    return best_rows, {
+        "table_index": best_index,
+        "table_score": best_score if best_rows else None,
+        "unit": "백만원",
+        "total_amount_million_krw": total_amount,
+        "total_ratio_pct": round(total_ratio, 2) if best_rows else None,
+    }
+
+
+def load_kind_business_segments(company: str) -> dict[str, Any]:
+    query = str(company or "").strip()
+    if not query:
+        raise ValueError("기업명을 입력해 주세요.")
+    KIND_BUSINESS_SEGMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    code, resolved_name = resolve_stock_from_screening_cache(query)
+    if not code:
+        try:
+            code, resolved_name = resolve_stock(query)
+        except Exception:
+            code, resolved_name = None, query
+    cache_seed = ("v3|" + (code or normalize_search_text(resolved_name or query) or query)).encode("utf-8")
+    cache_path = KIND_BUSINESS_SEGMENT_CACHE_DIR / f"{hashlib.sha1(cache_seed).hexdigest()[:16]}.json"
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if time.time() - float(cached.get("_cached_at") or 0) < 24 * 60 * 60:
+                return {key: value for key, value in cached.items() if key != "_cached_at"}
+        except Exception:
+            pass
+    report = find_latest_kind_business_report(query)
+    document_meta = kind_main_document_url(report)
+    document_url = document_meta["document_url"]
+    response = requests.get(document_url, headers=kind_viewer_headers(report.get("url")), timeout=35)
+    response.raise_for_status()
+    response.encoding = "utf-8"
+    rows, table_meta = parse_kind_business_segment_rows(response.text)
+    if not rows:
+        raise LookupError("최신 사업보고서에서 사업부문별 매출 비중 표를 찾지 못했습니다.")
+    rows.sort(key=lambda item: float(item.get("ratio_pct") or 0), reverse=True)
+    payload = {
+        "query": query,
+        "stock_code": report.get("stock_code") or code,
+        "stock_name": report.get("stock_name") or resolved_name or query,
+        "report_title": report.get("title"),
+        "accepted_at": report.get("accepted_at"),
+        "kind_url": report.get("url"),
+        "document_url": document_url,
+        "source": "KIND 최신 사업보고서",
+        "segments": rows,
+        "summary": table_meta,
+    }
+    cache_path.write_text(json.dumps({**payload, "_cached_at": time.time()}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
 
 
 def news_headers() -> dict[str, str]:
@@ -3014,43 +4032,91 @@ def build_tradingview_symbol(stock_code: str | None, stock_name: str | None) -> 
 
 @lru_cache(maxsize=512)
 def load_stock_chart_preview_cached(stock_code: str, months: int = 3) -> dict[str, Any]:
-    code = re.sub(r"\D", "", str(stock_code or "")).zfill(6)
-    if not code or code == "000000":
+    raw_code = str(stock_code or "").strip()
+    numeric_code = re.sub(r"\D", "", raw_code).zfill(6)
+    is_kr_code = bool(numeric_code and numeric_code != "000000" and re.fullmatch(r"\d{6}", numeric_code))
+    code = numeric_code if is_kr_code else raw_code.upper()
+    if not code:
         raise ValueError("차트 데이터를 가져올 종목코드를 찾을 수 없습니다.")
     months = max(1, min(int(months or 3), 12))
+    disk_cached = load_chart_preview_disk_cache(code, months)
+    if isinstance(disk_cached, dict):
+        return disk_cached
     end_date = date.today()
     start_date = end_date - timedelta(days=max(45, months * 38))
+
     frame = fdr.DataReader(code, start_date.isoformat(), end_date.isoformat())
     if frame is None or frame.empty:
-        raise ValueError("차트 데이터가 없습니다.")
-    frame = frame.reset_index().tail(90)
-    rows: list[dict[str, Any]] = []
-    for _, row in frame.iterrows():
-        raw_date = row.get("Date")
-        if isinstance(raw_date, (datetime, date)):
-            date_text = raw_date.strftime("%Y-%m-%d")
+        if is_kr_code and SCREENING_FAST_DB_PATH.exists():
+            ensure_screening_db_indexes()
+            with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+                sql_rows = conn.execute(
+                    """
+                    SELECT file_date_key, close_price
+                    FROM daily_close_cache
+                    WHERE stock_code = ?
+                      AND file_date_key BETWEEN ? AND ?
+                    ORDER BY file_date_key ASC
+                    """,
+                    (code, start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d")),
+                ).fetchall()
+            rows = []
+            for file_date_key, close_price in sql_rows[-90:]:
+                close = to_float(close_price)
+                date_key = str(file_date_key or "")
+                if not close or not re.fullmatch(r"20\d{6}", date_key):
+                    continue
+                date_text = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}"
+                rows.append(
+                    {
+                        "date": date_text,
+                        "open": close,
+                        "high": close,
+                        "low": close,
+                        "close": close,
+                        "volume": 0,
+                    }
+                )
+            if not rows:
+                raise ValueError("차트 데이터가 없습니다.")
         else:
-            date_text = str(raw_date)[:10]
-        rows.append(
-            {
-                "date": date_text,
-                "open": to_float(row.get("Open")),
-                "high": to_float(row.get("High")),
-                "low": to_float(row.get("Low")),
-                "close": to_float(row.get("Close")),
-                "volume": to_float(row.get("Volume")),
-            }
-        )
+            raise ValueError("차트 데이터가 없습니다.")
+    else:
+        frame = frame.reset_index().tail(90)
+        date_column = None
+        for candidate in ("Date", "date", "index"):
+            if candidate in frame.columns:
+                date_column = candidate
+                break
+        if date_column is None and len(frame.columns):
+            date_column = str(frame.columns[0])
+        rows = []
+        for _, row in frame.iterrows():
+            raw_date = row.get(date_column) if date_column else None
+            if isinstance(raw_date, (datetime, date)):
+                date_text = raw_date.strftime("%Y-%m-%d")
+            else:
+                date_text = str(raw_date)[:10]
+            rows.append(
+                {
+                    "date": date_text,
+                    "open": to_float(row.get("Open")),
+                    "high": to_float(row.get("High")),
+                    "low": to_float(row.get("Low")),
+                    "close": to_float(row.get("Close")),
+                    "volume": to_float(row.get("Volume")),
+                }
+            )
     valid_rows = [item for item in rows if all(item.get(key) is not None for key in ["open", "high", "low", "close"])]
     if not valid_rows:
         raise ValueError("유효한 차트 데이터가 없습니다.")
     first_close = float(valid_rows[0]["close"] or 0)
     last_close = float(valid_rows[-1]["close"] or 0)
     return_pct = ((last_close / first_close) - 1) * 100 if first_close else 0.0
-    resolved = find_listing_row_by_code(code) or {}
-    return {
+    resolved = find_listing_row_by_code(code) if is_kr_code else {}
+    payload = {
         "stock_code": code,
-        "stock_name": resolved.get("name", ""),
+        "stock_name": resolved.get("name", "") if isinstance(resolved, dict) else "",
         "months": months,
         "rows": valid_rows,
         "summary": {
@@ -3061,8 +4127,11 @@ def load_stock_chart_preview_cached(stock_code: str, months: int = 3) -> dict[st
             "point_count": len(valid_rows),
         },
     }
+    save_chart_preview_disk_cache(code, months, payload)
+    return payload
 
 
+@lru_cache(maxsize=512)
 def build_stock_sector_entry_markers(
     stock_code: str | None,
     start_date: str | None,
@@ -3071,7 +4140,12 @@ def build_stock_sector_entry_markers(
     code = normalize_stock_code_value(stock_code)
     if not code or not start_date or not end_date:
         return []
-    summaries = screening_backtest_source_summaries()
+    try:
+        start_dt = datetime.strptime(str(start_date), "%Y-%m-%d").date() - timedelta(days=7)
+        end_dt = datetime.strptime(str(end_date), "%Y-%m-%d").date()
+    except Exception:
+        return []
+    summaries = screening_backtest_source_summaries(start_date=start_dt, end_date=end_dt)
     if not summaries:
         return []
     sector_db = load_sector_db()
@@ -3142,6 +4216,7 @@ def build_stock_sector_entry_markers(
     return markers
 
 
+@lru_cache(maxsize=512)
 def build_sector_entry_markers_for_sector(
     sector_name: str | None,
     start_date: str | None,
@@ -3150,7 +4225,12 @@ def build_sector_entry_markers_for_sector(
     sector_name = str(sector_name or "").strip()
     if not sector_name or not start_date or not end_date:
         return []
-    summaries = screening_backtest_source_summaries()
+    try:
+        start_dt = datetime.strptime(str(start_date), "%Y-%m-%d").date() - timedelta(days=7)
+        end_dt = datetime.strptime(str(end_date), "%Y-%m-%d").date()
+    except Exception:
+        return []
+    summaries = screening_backtest_source_summaries(start_date=start_dt, end_date=end_dt)
     if not summaries:
         return []
     sector_db = load_sector_db()
@@ -3216,8 +4296,10 @@ def build_sector_entry_markers_for_sector(
 
 
 def load_stock_chart_preview(stock_code: str | None = None, stock_name: str | None = None, months: int = 3) -> dict[str, Any]:
-    resolved = resolve_stock_payload(stock_code, stock_name)
-    code = str((resolved or {}).get("code") or stock_code or "").strip()
+    fallback_code = str(stock_code or "").strip()
+    is_us_like_code = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9.\-]{0,11}", fallback_code))
+    resolved = None if is_us_like_code else resolve_stock_payload(stock_code, stock_name)
+    code = str((resolved or {}).get("code") or fallback_code or "").strip()
     if not code:
         raise ValueError("차트 데이터를 가져올 종목을 찾을 수 없습니다.")
     payload = load_stock_chart_preview_cached(code, months)
@@ -3226,14 +4308,20 @@ def load_stock_chart_preview(stock_code: str | None = None, stock_name: str | No
         "rows": [dict(row) for row in payload.get("rows", [])],
         "summary": dict(payload.get("summary", {})),
     }
-    if resolved and resolved.get("name"):
+    if is_us_like_code and stock_name:
+        payload["stock_name"] = str(stock_name).strip()
+    elif resolved and resolved.get("name"):
         payload["stock_name"] = resolved["name"]
     summary = payload.get("summary") or {}
-    payload["entry_markers"] = build_stock_sector_entry_markers(
-        code,
-        str(summary.get("start_date") or ""),
-        str(summary.get("end_date") or ""),
-    )
+    numeric_code = re.sub(r"\D", "", code).zfill(6)
+    if numeric_code and numeric_code != "000000" and re.fullmatch(r"\d{6}", numeric_code):
+        payload["entry_markers"] = build_stock_sector_entry_markers(
+            numeric_code,
+            str(summary.get("start_date") or ""),
+            str(summary.get("end_date") or ""),
+        )
+    else:
+        payload["entry_markers"] = []
     return payload
 
 
@@ -3433,9 +4521,9 @@ def load_fred_price_frame(series_id: str, start_date: date, end_date: date) -> p
     try:
         response = requests.get(
             "https://fred.stlouisfed.org/graph/fredgraph.csv",
-            params={"id": series_id},
+            params={"id": series_id, "cosd": start_date.isoformat(), "coed": end_date.isoformat()},
             headers={"User-Agent": "Mozilla/5.0"},
-            timeout=25,
+            timeout=8,
         )
         response.raise_for_status()
         csv_text = response.text
@@ -3472,6 +4560,39 @@ def load_fred_price_frame(series_id: str, start_date: date, end_date: date) -> p
         raise ValueError(f"FRED 가격 데이터가 없습니다: {series_id}")
     frame = frame.dropna(subset=["Date", "Close"]).sort_values("Date")
     return frame.reset_index(drop=True)
+
+
+ECONOMY_CYCLE_CATEGORY_META = {
+    "fundamental": {
+        "label": "펀더멘탈 강도",
+        "description": "수출, 소비, 생산, 심리처럼 실물 경기 방향을 보여주는 지표입니다.",
+    },
+    "liquidity": {
+        "label": "유동성 강도",
+        "description": "시장을 밀어 올리는 자금 공급과 단기 유동성 압력을 보는 지표입니다.",
+    },
+    "breadth": {
+        "label": "내부 마켓 Breadth",
+        "description": "소수 대형주 착시가 아니라 시장 내부가 같이 강한지 확인하는 지표입니다.",
+    },
+    "risk": {
+        "label": "위험 및 비용",
+        "description": "신용 스프레드, 실질금리, 단기자금 비용처럼 시장의 브레이크를 보는 지표입니다.",
+    },
+}
+
+
+ECONOMY_BREADTH_SYMBOLS = [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "ACWI",
+    "EWY",
+    "EEM",
+    "FEZ",
+    "EWJ",
+    "FXI",
+]
 
 
 ECONOMY_CYCLE_INDICATORS = [
@@ -3564,9 +4685,80 @@ ECONOMY_CYCLE_INDICATORS = [
         "value_column": "m2_billions",
         "kind": "raw_yoy",
         "group": "유동성",
+        "category_key": "liquidity",
         "source": "FRED/Eco3min",
         "description": "미국 M2 전년동월비입니다. 유동성 증가율이 개선되면 위험자산 환경을 우호적으로 봅니다.",
         "series_points": 60,
+    },
+    {
+        "key": "us_rrp_balance",
+        "name": "미국 역레포(RRP) 잔고",
+        "csv_url": "https://eco3min.fr/wp-content/uploads/2026/03/us-net-liquidity-index-2003-present.csv",
+        "date_column": "date",
+        "value_column": "rrp_t",
+        "kind": "risk_inverse",
+        "group": "유동성",
+        "category_key": "liquidity",
+        "source": "FRED/Eco3min",
+        "description": "RRP 잔고가 줄어들수록 시중 유동성 방출로 해석해 우호적으로 계산합니다.",
+        "display_unit": "조$",
+        "series_points": 180,
+    },
+    {
+        "key": "us_tga_balance",
+        "name": "미국 TGA 잔고",
+        "csv_url": "https://eco3min.fr/wp-content/uploads/2026/03/us-net-liquidity-index-2003-present.csv",
+        "date_column": "date",
+        "value_column": "tga_t",
+        "kind": "risk_inverse",
+        "group": "유동성",
+        "category_key": "liquidity",
+        "source": "FRED/Eco3min",
+        "description": "재무부 일반계정(TGA)이 줄어들수록 유동성 방출로 해석해 우호적으로 계산합니다.",
+        "display_unit": "조$",
+        "series_points": 180,
+    },
+    {
+        "key": "us_net_liquidity_yoy",
+        "name": "미국 순유동성 YoY",
+        "csv_url": "https://eco3min.fr/wp-content/uploads/2026/03/us-net-liquidity-index-2003-present.csv",
+        "date_column": "date",
+        "value_column": "net_liq_yoy_pct",
+        "kind": "growth",
+        "group": "유동성",
+        "category_key": "liquidity",
+        "source": "FRED/Eco3min",
+        "description": "글로벌 신용자극지수의 직접 데이터 대신 Fed balance sheet - TGA - RRP로 계산한 순유동성 YoY를 프록시로 사용합니다.",
+        "display_unit": "YoY %",
+        "series_points": 180,
+    },
+    {
+        "key": "global_etf_above_ma200",
+        "name": "글로벌 ETF 200일선 상회율",
+        "breadth_symbols": ECONOMY_BREADTH_SYMBOLS,
+        "breadth_metric": "above_ma200",
+        "kind": "level_neutral",
+        "neutral": 50,
+        "group": "Breadth",
+        "category_key": "breadth",
+        "source": "Yahoo Finance 계산",
+        "description": "주요 글로벌 ETF 바스켓 중 200일선 위에 있는 비율입니다. 50%를 기준선으로 봅니다.",
+        "display_unit": "%",
+        "series_points": 180,
+    },
+    {
+        "key": "global_etf_new_high_low",
+        "name": "글로벌 ETF 신고가-신저가",
+        "breadth_symbols": ECONOMY_BREADTH_SYMBOLS,
+        "breadth_metric": "new_high_low",
+        "kind": "level_neutral",
+        "neutral": 0,
+        "group": "Breadth",
+        "category_key": "breadth",
+        "source": "Yahoo Finance 계산",
+        "description": "주요 ETF 바스켓의 52주 신고가 비율에서 신저가 비율을 뺀 프록시 지표입니다.",
+        "display_unit": "%p",
+        "series_points": 180,
     },
     {
         "key": "usdkrw",
@@ -3574,6 +4766,7 @@ ECONOMY_CYCLE_INDICATORS = [
         "yahoo_symbol": "KRW=X",
         "kind": "risk_inverse",
         "group": "위험선호",
+        "category_key": "risk",
         "source": "Yahoo Finance",
         "description": "원/달러 환율이 낮아지거나 하락세일수록 위험선호 개선으로 계산합니다.",
         "display_unit": "원",
@@ -3588,10 +4781,39 @@ ECONOMY_CYCLE_INDICATORS = [
         "value_column": "hy_spread",
         "kind": "risk_inverse",
         "group": "위험선호",
+        "category_key": "risk",
         "source": "FRED/Eco3min",
         "description": "스프레드가 낮아지거나 축소될수록 신용위험 완화와 위험선호 개선으로 계산합니다.",
         "display_unit": "%p",
         "series_points": 120,
+    },
+    {
+        "key": "us_financial_conditions",
+        "name": "미국 금융여건지수(NFCI)",
+        "csv_url": "https://eco3min.fr/dataset/financial-conditions-index.csv",
+        "date_column": "date",
+        "value_column": "nfci",
+        "kind": "risk_inverse",
+        "group": "위험선호",
+        "category_key": "risk",
+        "source": "FRED/Eco3min",
+        "description": "TED/SOFR-FF 같은 단기자금 압력을 포함한 금융여건 종합 프록시입니다. 상승할수록 긴축적으로 봅니다.",
+        "display_unit": "지수",
+        "series_points": 180,
+    },
+    {
+        "key": "us_real_fed_funds",
+        "name": "미국 실질 정책금리",
+        "csv_url": "https://eco3min.fr/dataset/real-fed-funds-rate.csv",
+        "date_column": "date",
+        "value_column": "real_fed_funds",
+        "kind": "risk_inverse",
+        "group": "위험선호",
+        "category_key": "risk",
+        "source": "FRED/Eco3min",
+        "description": "Fed Funds에서 CPI YoY를 뺀 실질 정책금리입니다. 상승할수록 조달 비용 부담이 커지는 것으로 계산합니다.",
+        "display_unit": "%",
+        "series_points": 180,
     },
 ]
 
@@ -3675,6 +4897,104 @@ def load_economy_external_csv_frame(config: dict[str, Any], start_date: date, en
     return result.dropna(subset=["Date", "Close"]).sort_values("Date").reset_index(drop=True)
 
 
+def load_fred_spread_frame(config: dict[str, Any], start_date: date, end_date: date) -> pd.DataFrame:
+    series_ids = list(config.get("fred_spread") or [])
+    if len(series_ids) != 2:
+        raise ValueError("FRED 스프레드 설정은 2개 시리즈가 필요합니다.")
+    left = load_fred_price_frame(str(series_ids[0]), start_date, end_date)
+    right = load_fred_price_frame(str(series_ids[1]), start_date, end_date)
+    left_frame = left[["Date", "Close"]].copy()
+    right_frame = right[["Date", "Close"]].copy()
+    left_frame["Date"] = pd.to_datetime(left_frame["Date"], errors="coerce")
+    right_frame["Date"] = pd.to_datetime(right_frame["Date"], errors="coerce")
+    left_frame = left_frame.dropna(subset=["Date"]).sort_values("Date")
+    right_frame = right_frame.dropna(subset=["Date"]).sort_values("Date")
+    merged = pd.merge_asof(
+        left_frame.rename(columns={"Close": "left_close"}),
+        right_frame.rename(columns={"Close": "right_close"}),
+        on="Date",
+        direction="backward",
+    )
+    merged["Close"] = pd.to_numeric(merged["left_close"], errors="coerce") - pd.to_numeric(merged["right_close"], errors="coerce")
+    merged = merged.dropna(subset=["Close"])
+    if merged.empty:
+        raise ValueError("FRED 스프레드 계산 데이터가 없습니다.")
+    return pd.DataFrame({"Date": merged["Date"].dt.date, "Close": merged["Close"]}).reset_index(drop=True)
+
+
+def load_market_breadth_frame(config: dict[str, Any], start_date: date, end_date: date) -> pd.DataFrame:
+    raw_symbols = config.get("breadth_symbols") or []
+    if isinstance(raw_symbols, str):
+        raw_symbols = [raw_symbols]
+    symbols = [str(symbol).strip() for symbol in raw_symbols if str(symbol).strip()]
+    if not symbols:
+        raise ValueError("Breadth 계산 대상 심볼이 없습니다.")
+    fetch_start = start_date - timedelta(days=430)
+    rows: list[dict[str, Any]] = []
+    metric = str(config.get("breadth_metric") or "above_ma200")
+    for symbol in symbols:
+        try:
+            frame = load_global_index_price_frame(symbol, fetch_start, end_date)
+        except Exception:
+            continue
+        if frame.empty:
+            continue
+        series = frame[["Date", "Close"]].copy()
+        series["Date"] = pd.to_datetime(series["Date"], errors="coerce")
+        series["Close"] = pd.to_numeric(series["Close"], errors="coerce")
+        series = series.dropna(subset=["Date", "Close"]).sort_values("Date").reset_index(drop=True)
+        if len(series) < 160:
+            continue
+        series["ma200"] = series["Close"].rolling(200, min_periods=140).mean()
+        series["high252"] = series["Close"].rolling(252, min_periods=160).max()
+        series["low252"] = series["Close"].rolling(252, min_periods=160).min()
+        series = series[series["Date"].dt.date >= start_date]
+        for _, row in series.iterrows():
+            close = to_float(row.get("Close"))
+            ma200 = to_float(row.get("ma200"))
+            high252 = to_float(row.get("high252"))
+            low252 = to_float(row.get("low252"))
+            if close is None:
+                continue
+            above = 1.0 if ma200 is not None and close > ma200 else 0.0
+            high_signal = 1.0 if high252 is not None and close >= high252 * 0.995 else 0.0
+            low_signal = 1.0 if low252 is not None and close <= low252 * 1.005 else 0.0
+            rows.append(
+                {
+                    "Date": pd.to_datetime(row["Date"]).date(),
+                    "above_ma200": above,
+                    "new_high": high_signal,
+                    "new_low": low_signal,
+                }
+            )
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise ValueError("Breadth 계산 데이터가 없습니다.")
+    grouped = frame.groupby("Date", as_index=False).mean(numeric_only=True)
+    if metric == "new_high_low":
+        grouped["Close"] = (grouped["new_high"] - grouped["new_low"]) * 100.0
+    else:
+        grouped["Close"] = grouped["above_ma200"] * 100.0
+    result = grouped[["Date", "Close"]].dropna(subset=["Close"]).sort_values("Date").reset_index(drop=True)
+    if result.empty:
+        raise ValueError("Breadth 계산 결과가 없습니다.")
+    return result
+
+
+def economy_category_key(config: dict[str, Any]) -> str:
+    explicit = str(config.get("category_key") or "").strip()
+    if explicit in ECONOMY_CYCLE_CATEGORY_META:
+        return explicit
+    group = str(config.get("group") or "")
+    if "유동성" in group:
+        return "liquidity"
+    if "Breadth" in group:
+        return "breadth"
+    if "위험" in group:
+        return "risk"
+    return "fundamental"
+
+
 def economy_phase_from_xy(x_value: float, y_value: float) -> str:
     if x_value >= 0 and y_value >= 0:
         return "상승"
@@ -3708,6 +5028,10 @@ def build_economy_cycle_indicator(config: dict[str, Any], start_date: date, end_
         frame = load_economy_external_csv_frame(config, start_date, end_date)
     elif config.get("yahoo_symbol"):
         frame = load_global_index_price_frame(str(config["yahoo_symbol"]), start_date, end_date)
+    elif config.get("fred_spread"):
+        frame = load_fred_spread_frame(config, start_date, end_date)
+    elif config.get("breadth_symbols"):
+        frame = load_market_breadth_frame(config, start_date, end_date)
     else:
         frame = load_fred_price_frame(str(config["fred"]), start_date, end_date)
     if frame.empty:
@@ -3721,7 +5045,8 @@ def build_economy_cycle_indicator(config: dict[str, Any], start_date: date, end_
 
     kind = str(config.get("kind") or "normal_100")
     if kind == "raw_yoy":
-        series["metric"] = series["value"].pct_change(12) * 100.0
+        periods = int(to_float(config.get("yoy_periods")) or 12)
+        series["metric"] = series["value"].pct_change(max(1, periods)) * 100.0
     else:
         series["metric"] = series["value"]
     series = series.dropna(subset=["metric"]).reset_index(drop=True)
@@ -3748,6 +5073,12 @@ def build_economy_cycle_indicator(config: dict[str, Any], start_date: date, end_
         y_value = ((three_month_metric - latest_metric) / std_value) * 1.4
         display_value = latest_metric
         display_unit = str(config.get("display_unit") or "")
+    elif kind == "level_neutral":
+        neutral = float(to_float(config.get("neutral")) if to_float(config.get("neutral")) is not None else 0.0)
+        x_value = ((latest_metric - neutral) / std_value) * 1.2
+        y_value = ((latest_metric - three_month_metric) / std_value) * 1.4
+        display_value = latest_metric
+        display_unit = str(config.get("display_unit") or "")
     else:
         mean_value = float(window["metric"].mean())
         x_value = ((latest_metric - mean_value) / std_value) * 1.2
@@ -3760,6 +5091,8 @@ def build_economy_cycle_indicator(config: dict[str, Any], start_date: date, end_
     phase = economy_phase_from_xy(x_value, y_value)
     latest_date = latest["Date"].date()
     stale_days = (date.today() - latest_date).days
+    category_key = economy_category_key(config)
+    category = ECONOMY_CYCLE_CATEGORY_META.get(category_key, ECONOMY_CYCLE_CATEGORY_META["fundamental"])
     rows = []
     series_points = int(to_float(config.get("series_points")) or 36)
     for _, row in series.tail(max(12, min(240, series_points))).iterrows():
@@ -3780,6 +5113,9 @@ def build_economy_cycle_indicator(config: dict[str, Any], start_date: date, end_
         "key": config["key"],
         "name": config["name"],
         "group": config.get("group", ""),
+        "category_key": category_key,
+        "category": category["label"],
+        "category_description": category["description"],
         "fred": config.get("fred", ""),
         "oecd_key": config.get("oecd_key", ""),
         "source": config.get("source", "FRED"),
@@ -3830,6 +5166,10 @@ def build_economy_cycle_payload(force_refresh: bool = False) -> dict[str, Any]:
     phase_counts = {phase: 0 for phase in phase_order}
     for item in indicators:
         phase_counts[item.get("phase", "")] = phase_counts.get(item.get("phase", ""), 0) + 1
+    category_counts: dict[str, int] = {meta["label"]: 0 for meta in ECONOMY_CYCLE_CATEGORY_META.values()}
+    for item in indicators:
+        category_label = str(item.get("category") or "")
+        category_counts[category_label] = category_counts.get(category_label, 0) + 1
 
     core_indicators = [item for item in indicators if item.get("group") != "글로벌"]
     average_x = float(np.mean([float(item.get("x") or 0) for item in core_indicators])) if core_indicators else 0.0
@@ -3842,11 +5182,16 @@ def build_economy_cycle_payload(force_refresh: bool = False) -> dict[str, Any]:
     payload = {
         "loaded_at": datetime.now(timezone.utc).isoformat(),
         "source_label": "OECD Data Explorer / FRED",
-        "method_note": "100 기준 지표는 기준선 대비 위치와 3개월 변화, 성장률·유동성 지표는 최근 5년 z-score와 3개월 모멘텀으로 계산합니다. 환율·하이일드 스프레드는 낮아질수록 위험선호 개선으로 보도록 방향을 반대로 적용합니다.",
+        "method_note": "100 기준 지표는 기준선 대비 위치와 3개월 변화, 성장률·유동성 지표는 최근 5년 z-score와 3개월 모멘텀으로 계산합니다. RRP/TGA·환율·스프레드·실질금리는 낮아질수록 우호적으로 보도록 방향을 반대로 적용합니다. 글로벌 신용자극과 Breadth는 무료 공개 데이터 기반 프록시입니다.",
         "latest_date": max(latest_dates) if latest_dates else "",
         "current_phase": current_phase,
         "dominant_phase": dominant_phase,
         "phase_counts": phase_counts,
+        "category_counts": category_counts,
+        "categories": [
+            {"key": key, "label": meta["label"], "description": meta["description"]}
+            for key, meta in ECONOMY_CYCLE_CATEGORY_META.items()
+        ],
         "average_x": round(average_x, 3),
         "average_y": round(average_y, 3),
         "summary": economy_phase_comment(current_phase),
@@ -4259,9 +5604,18 @@ def indexed_return_series(frame: pd.DataFrame, start_date: date) -> list[dict[st
 
 def build_global_indices_payload(group: str | None = None) -> dict[str, Any]:
     today = date.today()
-    chart_start = today - timedelta(days=94)
-    fetch_start = today - timedelta(days=420)
     selected_group = str(group or "").strip()
+    if selected_group == "PPI":
+        chart_start = today - timedelta(days=365 * 3)
+    elif selected_group == "한국주식ETF":
+        chart_start = today - timedelta(days=365)
+    else:
+        chart_start = today - timedelta(days=94)
+    fetch_start = today - timedelta(days=420)
+    if selected_group == "PPI":
+        fetch_start = today - timedelta(days=365 * 6)
+    elif selected_group == "한국주식ETF":
+        fetch_start = today - timedelta(days=620)
     source_items = [
         item for item in GLOBAL_INDEX_ITEMS
         if not selected_group or (item.get("group") or "기타") == selected_group
@@ -4284,6 +5638,7 @@ def build_global_indices_payload(group: str | None = None) -> dict[str, Any]:
                 if len(closes) <= days:
                     return None
                 return float(closes[-days - 1])
+            is_monthly = str(item.get("frequency") or "").lower() == "monthly"
             year_frame = frame[frame["Date"] >= date(today.year, 1, 1)]
             ytd_base = to_float(year_frame.iloc[0].get("Close")) if not year_frame.empty else None
             ma20 = to_float(last.get("ma20"))
@@ -4296,11 +5651,11 @@ def build_global_indices_payload(group: str | None = None) -> dict[str, Any]:
                 "last_date": last["Date"].isoformat(),
                 "last_close": round(last_close or 0, 4),
                 "volume": int(to_float(last.get("Volume")) or 0),
-                "return_1w_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(5)) or 0, 2),
-                "return_1m_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(21)) or 0, 2),
-                "return_3m_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(63)) or 0, 2),
+                "return_1w_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(1 if is_monthly else 5)) or 0, 2),
+                "return_1m_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(3 if is_monthly else 21)) or 0, 2),
+                "return_3m_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(12 if is_monthly else 63)) or 0, 2),
                 "return_ytd_pct": None if last_close is None else round(pct_change_between(last_close, ytd_base) or 0, 2),
-                "return_1y_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(252)) or 0, 2),
+                "return_1y_pct": None if last_close is None else round(pct_change_between(last_close, lag_close(12 if is_monthly else 252)) or 0, 2),
                 "ma20_gap_pct": None if last_close is None else round(pct_change_between(last_close, ma20) or 0, 2),
                 "ma200_gap_pct": None if last_close is None else round(pct_change_between(last_close, ma200) or 0, 2),
                 "series": indexed_return_series(frame, chart_start),
@@ -4309,8 +5664,12 @@ def build_global_indices_payload(group: str | None = None) -> dict[str, Any]:
         except Exception as exc:
             return index, {**item, "fetch_symbol": fetch_symbol, "error": str(exc), "series": []}, f"{symbol}({fetch_symbol}): {exc}"
 
-    if len(source_items) > 8:
-        with ThreadPoolExecutor(max_workers=8) as executor:
+    if selected_group == "한국주식ETF":
+        max_workers = 6
+    else:
+        max_workers = 8
+    if len(source_items) > 8 and selected_group != "PPI":
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(build_item_row, index, item) for index, item in enumerate(source_items)]
             for future in as_completed(futures):
                 index, row, error = future.result()
@@ -4332,7 +5691,7 @@ def build_global_indices_payload(group: str | None = None) -> dict[str, Any]:
         "groups": list(dict.fromkeys((item.get("group") or "기타") for item in GLOBAL_INDEX_ITEMS)),
         "items": items,
         "errors": errors,
-        "source": "FinanceDataReader / Yahoo Finance / Eastmoney / BLS / Trading Economics / SMM / KOMIS. LME 비철금속은 공식 3M RIC 기준명을 표시하고 무료 선물 프록시를 사용하며, KOMIS 광물가격 탭은 한국자원정보서비스 광물자원가격 데이터를 사용합니다.",
+        "source": "FinanceDataReader / Yahoo Finance / FRED / BLS / Eastmoney / Trading Economics / SMM / KOMIS. PPI 탭은 FRED의 BLS Producer Price Index 월간 데이터를 사용합니다.",
     }
 
 
@@ -4369,11 +5728,413 @@ def strategy_signal(strategy: str, previous: pd.Series | None, current: pd.Serie
     return ""
 
 
+def build_leader_top10_score70_backtest(
+    index_key: str,
+    start_date: date,
+    end_date: date,
+    top_n: int = 10,
+    entry_threshold: float = 70.0,
+    exit_threshold: float = 70.0,
+    allocation_mode: str = "score_weight",
+) -> dict[str, Any]:
+    summaries = screening_backtest_source_summaries(start_date=start_date, end_date=end_date)
+    if len(summaries) < 2:
+        raise ValueError("주도주 기반 전략 백테스트에 필요한 캐시 데이터가 부족합니다.")
+    filtered = summaries
+    if len(filtered) < 2:
+        raise ValueError("선택 구간에 주도주 데이터가 부족합니다. 시작일/종료일을 다시 확인해 주세요.")
+    strategy_start_date = datetime.strptime(str(filtered[0].get("file_date") or ""), "%Y-%m-%d").date()
+    strategy_end_date = datetime.strptime(str(filtered[-1].get("file_date") or ""), "%Y-%m-%d").date()
+    all_stock_codes = sorted(
+        {
+            normalize_stock_code_value(raw.get("stock_code"))
+            for summary in filtered
+            for raw in summary.get("qualified_stocks", [])
+            if isinstance(raw, dict) and normalize_stock_code_value(raw.get("stock_code"))
+        }
+    )
+    close_map = load_screening_close_map(strategy_start_date, strategy_end_date, all_stock_codes)
+    benchmark_close_map = load_strategy_benchmark_close_map(index_key, strategy_start_date, strategy_end_date)
+
+    def stock_close_on_date(stock_code: str | None, target_date: date | str) -> float | None:
+        code = normalize_stock_code_value(stock_code)
+        if not code:
+            return None
+        date_key = pd.to_datetime(target_date).strftime("%Y%m%d")
+        value = to_float((close_map.get(date_key) or {}).get(code))
+        return float(value) if value not in (None, 0) else None
+
+    nav = 100.0
+    benchmark_nav = 100.0
+    previous_weights: dict[str, float] = {}
+    holdings: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    signals: list[dict[str, Any]] = []
+    total_turnover = 0.0
+    total_fee_pct = 0.0
+    trade_count = 0
+    position_state: dict[str, dict[str, float]] = {}
+    previous_benchmark_close = to_float(benchmark_close_map.get(strategy_start_date.isoformat()))
+
+    strict_all_mode = int(top_n or 0) >= 9999
+    allocation_mode_key = str(allocation_mode or "score_weight").strip().lower()
+    if allocation_mode_key not in {"score_weight", "fixed_20"}:
+        allocation_mode_key = "score_weight"
+
+    def build_target_weights(summary: dict[str, Any], current_holdings: set[str]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[str], list[str], dict[str, float]]:
+        current_rows: dict[str, dict[str, Any]] = {}
+        scored_rows: list[dict[str, Any]] = []
+        for raw in summary.get("qualified_stocks", []):
+            if not isinstance(raw, dict):
+                continue
+            key = sector_rotation_stock_key(raw)
+            if not key:
+                continue
+            score = to_float(raw.get("score"))
+            if score is None:
+                continue
+            current_rows[key] = raw
+            scored_rows.append(raw)
+        scored_rows.sort(key=lambda item: float(to_float(item.get("score")) or -99999), reverse=True)
+        if strict_all_mode:
+            candidate_pool = scored_rows
+        else:
+            candidate_pool = scored_rows[: max(1, int(top_n or 10))]
+        entry_candidates = {
+            sector_rotation_stock_key(item)
+            for item in candidate_pool
+            if item
+            and to_float(item.get("score")) is not None
+            and (
+                float(to_float(item.get("score")) or 0.0) > float(entry_threshold)
+                if strict_all_mode
+                else float(to_float(item.get("score")) or 0.0) >= float(entry_threshold)
+            )
+        }
+        buys: list[str] = []
+        sells: list[str] = []
+        next_holdings = set(current_holdings)
+        for stock_key in sorted(current_holdings):
+            row = current_rows.get(stock_key)
+            score = to_float(row.get("score")) if row else None
+            if score is None or float(score) <= float(exit_threshold):
+                sells.append(stock_key)
+                next_holdings.discard(stock_key)
+        for stock_key in sorted(entry_candidates):
+            if stock_key not in next_holdings:
+                next_holdings.add(stock_key)
+                buys.append(stock_key)
+        target_weights: dict[str, float] = {}
+        scored_holdings = []
+        for stock_key in next_holdings:
+            row = current_rows.get(stock_key)
+            score = float(to_float(row.get("score")) or 0.0) if row else 0.0
+            if score > 0:
+                scored_holdings.append((stock_key, score))
+        if scored_holdings:
+            if allocation_mode_key == "fixed_20":
+                for stock_key, _score in scored_holdings:
+                    target_weights[stock_key] = 0.2
+            else:
+                score_sum = sum(score for _, score in scored_holdings)
+                if score_sum > 0:
+                    for stock_key, score in scored_holdings:
+                        target_weights[stock_key] = score / score_sum
+                else:
+                    equal_weight = 1.0 / len(scored_holdings)
+                    for stock_key, _score in scored_holdings:
+                        target_weights[stock_key] = equal_weight
+        return current_rows, scored_rows, buys, sells, target_weights
+
+    def build_holdings_payload(target_weights: dict[str, float], current_rows: dict[str, dict[str, Any]], current_dt: date) -> tuple[list[dict[str, Any]], list[dict[str, float | str]]]:
+        holdings_payload: list[dict[str, Any]] = []
+        sector_weight_map: dict[str, float] = {}
+        for stock_key, weight in sorted(target_weights.items(), key=lambda item: item[1], reverse=True):
+            current_row = current_rows.get(stock_key) or {}
+            stock_name = str(current_row.get("resolved_name") or current_row.get("stock_name") or stock_key)
+            stock_code = str(current_row.get("stock_code") or "")
+            score_val = float(to_float(current_row.get("score")) or 0.0)
+            sector_name = str(current_row.get("manual_sector") or current_row.get("theme") or "").strip()
+            if not sector_name:
+                sector_name = "기타"
+            sector_weight_map[sector_name] = sector_weight_map.get(sector_name, 0.0) + weight * 100.0
+            cur_price = float(stock_close_on_date(stock_code, current_dt) or 0.0)
+            state = position_state.get(stock_key)
+            if not state:
+                state = {"avg_buy_price": cur_price, "stock_code": stock_code}
+                position_state[stock_key] = state
+            avg_buy_price = float(state.get("avg_buy_price") or cur_price)
+            avg_buy_return_pct = ((cur_price / avg_buy_price) - 1.0) * 100.0 if avg_buy_price else 0.0
+            holdings_payload.append(
+                {
+                    "stock_key": stock_key,
+                    "stock_code": stock_code,
+                    "stock_name": stock_name,
+                    "score": round(score_val, 2),
+                    "weight_pct": round(weight * 100.0, 2),
+                    "daily_contribution_pct": None,
+                    "alpha_contribution_pct": None,
+                    "avg_buy_price": round(avg_buy_price, 2),
+                    "avg_buy_return_pct": round(avg_buy_return_pct, 2),
+                    "sector": sector_name,
+                    "status": "유지",
+                }
+            )
+        sector_weights = [
+            {"sector": sector, "weight_pct": round(weight_pct, 2)}
+            for sector, weight_pct in sorted(sector_weight_map.items(), key=lambda item: item[1], reverse=True)
+        ]
+        return holdings_payload, sector_weights
+
+    first_summary = filtered[0]
+    first_date = datetime.strptime(str(first_summary.get("file_date") or ""), "%Y-%m-%d").date()
+    first_rows, _first_scored, first_buys, first_sells, first_weights = build_target_weights(first_summary, holdings)
+    first_turnover = sum(abs(first_weights.get(key, 0.0)) for key in first_weights)
+    first_fee = first_turnover * STRATEGY_TRADE_FEE_RATE
+    total_turnover += first_turnover
+    total_fee_pct += first_fee * 100.0
+    if first_buys or first_sells:
+        trade_count += len(first_buys) + len(first_sells)
+    nav *= (1.0 - first_fee)
+    holdings = set(first_weights.keys())
+    for stock_key, target_weight in first_weights.items():
+        row_for_code = first_rows.get(stock_key) or {}
+        stock_code_for_price = str(row_for_code.get("stock_code") or "")
+        buy_price = stock_close_on_date(stock_code_for_price, first_date)
+        if buy_price not in (None, 0):
+            position_state[stock_key] = {"avg_buy_price": float(buy_price), "stock_code": stock_code_for_price}
+    first_holdings_payload, first_sector_weights = build_holdings_payload(first_weights, first_rows, first_date)
+    for item in first_holdings_payload:
+        if item["stock_key"] in first_buys:
+            item["status"] = "신규"
+    base_benchmark_close = to_float(benchmark_close_map.get(first_date.isoformat())) or 0.0
+    rows.append(
+        {
+            "date": first_date.isoformat(),
+            "close": round(float(base_benchmark_close), 4),
+            "ma20": None,
+            "ma60": None,
+            "ma200": None,
+            "rsi14": None,
+            "benchmark_return_pct": 0.0,
+            "strategy_return_pct": round(nav - 100.0, 3),
+            "benchmark_daily_return_pct": 0.0,
+            "position": 1 if first_weights else 0,
+            "signal": "buy" if first_buys else "",
+            "signal_date": first_date.isoformat(),
+            "daily_return_pct": round(-first_fee * 100.0, 3),
+            "exposure_pct": round(sum(first_weights.values()) * 100.0, 2),
+            "turnover_pct": round(first_turnover * 100.0, 2),
+            "fee_pct": round(first_fee * 100.0, 3),
+            "holdings_count": len(first_weights),
+            "holdings": first_holdings_payload,
+            "sector_weights": first_sector_weights,
+            "sector_weight_sum_pct": round(sum(item["weight_pct"] for item in first_sector_weights), 2),
+            "entry_exit": {
+                "buy": [str((first_rows.get(key) or {}).get("resolved_name") or (first_rows.get(key) or {}).get("stock_name") or key) for key in first_buys],
+                "sell": [],
+                "sell_details": [],
+            },
+            "buy_count": len(first_buys),
+            "sell_count": 0,
+            "signal_reason": "초기 편입",
+        }
+    )
+    previous_weights = first_weights
+
+    for index_no in range(1, len(filtered)):
+        previous_summary = filtered[index_no - 1]
+        current_summary = filtered[index_no]
+        previous_date = datetime.strptime(str(previous_summary.get("file_date") or ""), "%Y-%m-%d").date()
+        current_date = datetime.strptime(str(current_summary.get("file_date") or ""), "%Y-%m-%d").date()
+        current_rows, _current_scored, buys, sells, target_weights = build_target_weights(current_summary, holdings)
+        sell_state_snapshot = {stock_key: dict(position_state.get(stock_key) or {}) for stock_key in sells}
+        benchmark_close = to_float(benchmark_close_map.get(current_date.isoformat()))
+        benchmark_daily_return = 0.0
+        if previous_benchmark_close not in (None, 0) and benchmark_close not in (None, 0):
+            benchmark_daily_return = float(benchmark_close / previous_benchmark_close - 1.0)
+            benchmark_nav *= (1.0 + benchmark_daily_return)
+        if benchmark_close not in (None, 0):
+            previous_benchmark_close = benchmark_close
+
+        holdings_payload_before: list[dict[str, Any]] = []
+        portfolio_move = 0.0
+        for stock_key, weight in sorted(previous_weights.items(), key=lambda item: item[1], reverse=True):
+            source_row = (previous_summary.get("qualified_stocks") or [])
+            prev_row = next((item for item in source_row if sector_rotation_stock_key(item) == stock_key), {})
+            stock_code = normalize_stock_code_value(prev_row.get("stock_code"))
+            prev_close = stock_close_on_date(stock_code, previous_date)
+            curr_close = stock_close_on_date(stock_code, current_date)
+            daily_stock_return = None
+            if prev_close not in (None, 0) and curr_close not in (None, 0):
+                daily_stock_return = (float(curr_close) / float(prev_close) - 1.0) * 100.0
+                portfolio_move += weight * (float(curr_close) / float(prev_close) - 1.0)
+            else:
+                fallback_change = to_float((current_rows.get(stock_key) or {}).get("change_pct"))
+                if fallback_change is not None:
+                    daily_stock_return = float(fallback_change)
+                    portfolio_move += weight * (float(fallback_change) / 100.0)
+            state = position_state.get(stock_key) or {}
+            avg_buy_price = to_float(state.get("avg_buy_price"))
+            avg_buy_return_pct = None
+            if avg_buy_price not in (None, 0) and curr_close not in (None, 0):
+                avg_buy_return_pct = ((float(curr_close) / float(avg_buy_price)) - 1.0) * 100.0
+            holdings_payload_before.append(
+                {
+                    "stock_key": stock_key,
+                    "stock_code": stock_code,
+                    "stock_name": str((current_rows.get(stock_key) or prev_row).get("stock_name") or stock_key),
+                    "score": round(float(to_float((current_rows.get(stock_key) or prev_row).get("score")) or 0.0), 2),
+                    "weight_pct": round(weight * 100.0, 2),
+                    "daily_contribution_pct": round(weight * float(daily_stock_return or 0.0), 3) if daily_stock_return is not None else None,
+                    "alpha_contribution_pct": round(weight * (float(daily_stock_return or 0.0) - benchmark_daily_return * 100.0), 3) if daily_stock_return is not None else None,
+                    "avg_buy_price": round(float(avg_buy_price), 2) if avg_buy_price is not None else None,
+                    "avg_buy_return_pct": round(float(avg_buy_return_pct), 2) if avg_buy_return_pct is not None else None,
+                    "sector": str((current_rows.get(stock_key) or prev_row).get("manual_sector") or (current_rows.get(stock_key) or prev_row).get("theme") or "기타"),
+                    "status": "유지",
+                }
+            )
+        turnover = sum(abs(target_weights.get(key, 0.0) - previous_weights.get(key, 0.0)) for key in (set(target_weights) | set(previous_weights)))
+        fee = turnover * STRATEGY_TRADE_FEE_RATE
+        total_turnover += turnover
+        total_fee_pct += fee * 100.0
+        if buys or sells:
+            trade_count += len(buys) + len(sells)
+        period_return = (1.0 + portfolio_move) * (1.0 - fee) - 1.0
+        nav *= (1.0 + period_return)
+
+        sell_details: list[dict[str, Any]] = []
+        for stock_key in sells:
+            current_row = current_rows.get(stock_key) or {}
+            state = sell_state_snapshot.get(stock_key) or {}
+            sell_code = str(current_row.get("stock_code") or state.get("stock_code") or "")
+            sell_name = str(current_row.get("resolved_name") or current_row.get("stock_name") or stock_key)
+            avg_buy_price = to_float(state.get("avg_buy_price"))
+            sell_price = stock_close_on_date(sell_code, current_date)
+            sell_return_pct = None
+            if avg_buy_price not in (None, 0) and sell_price not in (None, 0):
+                sell_return_pct = ((float(sell_price) / float(avg_buy_price)) - 1.0) * 100.0
+            sell_details.append(
+                {
+                    "stock_key": stock_key,
+                    "stock_code": sell_code,
+                    "stock_name": sell_name,
+                    "avg_buy_price": round(float(avg_buy_price), 2) if avg_buy_price is not None else None,
+                    "sell_price": round(float(sell_price), 2) if sell_price is not None else None,
+                    "sell_return_pct": round(float(sell_return_pct), 2) if sell_return_pct is not None else None,
+                }
+            )
+            position_state.pop(stock_key, None)
+
+        rebalance_keys = set(previous_weights.keys()) | set(target_weights.keys())
+        for stock_key in rebalance_keys:
+            row_for_code = current_rows.get(stock_key) or {}
+            stock_code_for_price = str(row_for_code.get("stock_code") or "")
+            rebalance_price = float(stock_close_on_date(stock_code_for_price, current_date) or 0.0)
+            prev_weight = float(previous_weights.get(stock_key, 0.0) or 0.0)
+            target_weight = float(target_weights.get(stock_key, 0.0) or 0.0)
+            state = position_state.get(stock_key)
+            if target_weight <= 0.0:
+                position_state.pop(stock_key, None)
+                continue
+            if state is None or prev_weight <= 0.0:
+                position_state[stock_key] = {"avg_buy_price": rebalance_price, "stock_code": stock_code_for_price}
+                continue
+            avg_buy_price = float(state.get("avg_buy_price") or rebalance_price or 0.0)
+            if target_weight > prev_weight and rebalance_price > 0:
+                add_weight = target_weight - prev_weight
+                new_avg_buy_price = ((avg_buy_price * prev_weight) + (rebalance_price * add_weight)) / target_weight
+                state["avg_buy_price"] = float(new_avg_buy_price)
+            state["stock_code"] = stock_code_for_price
+            position_state[stock_key] = state
+
+        holdings = set(target_weights.keys())
+        next_holdings_payload, next_sector_weights = build_holdings_payload(target_weights, current_rows, current_date)
+        for item in next_holdings_payload:
+            if item["stock_key"] in buys:
+                item["status"] = "신규"
+        signal = "buy" if buys else ("sell" if sells else "")
+        signal_reason = ""
+        if buys or sells:
+            signal_reason = "매수 " + str(len(buys)) + " / 매도 " + str(len(sells)) + " · 점수비중 리밸런싱"
+            signals.append(
+                {
+                    "date": current_date.isoformat(),
+                    "type": signal or "rebalance",
+                    "price": round(float(benchmark_close or 0.0), 4),
+                    "strategy_return_pct": round(nav - 100.0, 3),
+                    "benchmark_return_pct": round(benchmark_nav - 100.0, 3),
+                    "reason": signal_reason,
+                }
+            )
+
+        rows.append(
+            {
+                "date": current_date.isoformat(),
+                "close": round(float(benchmark_close or 0.0), 4),
+                "ma20": None,
+                "ma60": None,
+                "ma200": None,
+                "rsi14": None,
+                "benchmark_return_pct": round(benchmark_nav - 100.0, 3),
+                "strategy_return_pct": round(nav - 100.0, 3),
+                "benchmark_daily_return_pct": round(benchmark_daily_return * 100.0, 3),
+                "position": 1 if target_weights else 0,
+                "signal": signal,
+                "signal_date": previous_date.isoformat(),
+                "daily_return_pct": round(period_return * 100.0, 3),
+                "exposure_pct": round(sum(target_weights.values()) * 100.0, 2),
+                "turnover_pct": round(turnover * 100.0, 2),
+                "fee_pct": round(fee * 100.0, 3),
+                "holdings_count": len(target_weights),
+                "holdings": next_holdings_payload,
+                "holdings_before_close": holdings_payload_before,
+                "sector_weights": next_sector_weights,
+                "sector_weight_sum_pct": round(sum(item["weight_pct"] for item in next_sector_weights), 2),
+                "entry_exit": {
+                    "buy": [str((current_rows.get(key) or {}).get("resolved_name") or (current_rows.get(key) or {}).get("stock_name") or key) for key in buys],
+                    "sell": [str((current_rows.get(key) or {}).get("resolved_name") or (current_rows.get(key) or {}).get("stock_name") or key) for key in sells],
+                    "sell_details": sell_details,
+                },
+                "buy_count": len(buys),
+                "sell_count": len(sells),
+                "signal_reason": signal_reason,
+            }
+        )
+        previous_weights = target_weights
+
+    final_strategy = rows[-1]["strategy_return_pct"] if rows else 0.0
+    final_benchmark = rows[-1]["benchmark_return_pct"] if rows else 0.0
+    summary = {
+        "index_return_pct": round(final_benchmark, 2),
+        "strategy_return_pct": round(final_strategy, 2),
+        "excess_return_pct": round(final_strategy - final_benchmark, 2),
+        "signal_count": len(signals),
+        "trade_count": int(trade_count),
+        "win_rate_pct": None,
+        "trade_fee_rate_pct": round(STRATEGY_TRADE_FEE_RATE * 100.0, 2),
+        "total_fee_pct_points": round(total_fee_pct, 2),
+        "avg_exposure_pct": round(float(np.mean([float(row.get("exposure_pct") or 0.0) for row in rows])) if rows else 0.0, 2),
+        "avg_holdings_count": round(float(np.mean([float(row.get("holdings_count") or 0.0) for row in rows])) if rows else 0.0, 2),
+    }
+    return {
+        "rows": rows,
+        "signals": signals,
+        "summary": summary,
+        "start_date": rows[0]["date"] if rows else str(filtered[0].get("file_date") or ""),
+        "end_date": rows[-1]["date"] if rows else str(filtered[-1].get("file_date") or ""),
+    }
+
+
 def build_strategy_backtest(
     index: str = "KS11",
     strategy: str = "ma20_cross",
     start: str | None = None,
     end: str | None = None,
+    top_n: int | None = None,
+    entry_threshold: float | None = None,
+    exit_threshold: float | None = None,
+    allocation_mode: str = "score_weight",
 ) -> dict[str, Any]:
     index_key = str(index or "KS11").upper()
     if index_key not in STRATEGY_INDEXES:
@@ -4381,6 +6142,59 @@ def build_strategy_backtest(
     strategy_key = str(strategy or "ma20_cross").strip()
     if strategy_key not in STRATEGY_TYPES:
         strategy_key = "ma20_cross"
+    if strategy_key in LEADER_STRATEGY_PRESETS or strategy_key == "leader_custom":
+        preset = LEADER_STRATEGY_PRESETS.get(strategy_key) or {}
+        effective_top_n = int(top_n if top_n is not None else (preset.get("top_n") or 10))
+        effective_entry_threshold = float(entry_threshold if entry_threshold is not None else (preset.get("entry_threshold") or 70.0))
+        effective_exit_threshold = float(exit_threshold if exit_threshold is not None else (preset.get("exit_threshold") or effective_entry_threshold))
+        effective_allocation_mode = str(allocation_mode or "score_weight").strip().lower()
+        if effective_allocation_mode not in {"score_weight", "fixed_20"}:
+            effective_allocation_mode = "score_weight"
+        top10_payload = build_leader_top10_score70_backtest(
+            index_key=index_key,
+            start_date=safe_strategy_date(start, date.today() - timedelta(days=365)),
+            end_date=safe_strategy_date(end, date.today()),
+            top_n=effective_top_n,
+            entry_threshold=effective_entry_threshold,
+            exit_threshold=effective_exit_threshold,
+            allocation_mode=effective_allocation_mode,
+        )
+        allocation_label = "점수 비중" if effective_allocation_mode == "score_weight" else "종목당 20%"
+        return {
+            "index": index_key,
+            "index_name": STRATEGY_INDEXES[index_key]["name"],
+            "strategy": strategy_key,
+            "strategy_name": (
+                f"주도주 점수 전략 (매수 {effective_entry_threshold:g} / 매도 {effective_exit_threshold:g} / "
+                + (f"Top{effective_top_n}" if effective_top_n < 9999 else "전종목")
+                + f" / {allocation_label})"
+            ) if strategy_key == "leader_custom" else STRATEGY_TYPES[strategy_key]["name"],
+            "strategy_description": (
+                "종합점수가 매수 기준 이상이면 편입하고, 보유 종목 점수가 매도 기준 이하로 내려가면 편출합니다. "
+                + ("보유 종목은 매일 점수 비율로 리밸런싱하며 "
+                   if effective_allocation_mode == "score_weight"
+                   else "보유 종목은 종목당 20%씩 배분하며, 5종목 미만은 현금 보유, 5종목 초과는 레버리지 사용으로 가정하고 ")
+                + "회전 비용 0.2%를 반영합니다."
+            ) if strategy_key == "leader_custom" else STRATEGY_TYPES[strategy_key]["description"],
+            "start_date": top10_payload["start_date"],
+            "end_date": top10_payload["end_date"],
+            "rows": top10_payload["rows"],
+            "signals": top10_payload["signals"],
+            "summary": top10_payload["summary"],
+            "params": {
+                "top_n": effective_top_n,
+                "entry_threshold": effective_entry_threshold,
+                "exit_threshold": effective_exit_threshold,
+                "allocation_mode": effective_allocation_mode,
+            },
+            "available_indexes": [
+                {"key": key, "name": value["name"]} for key, value in STRATEGY_INDEXES.items()
+            ],
+            "available_strategies": [
+                {"key": key, "name": value["name"], "description": value["description"]}
+                for key, value in STRATEGY_TYPES.items()
+            ],
+        }
     today = date.today()
     end_date = safe_strategy_date(end, today)
     start_date = safe_strategy_date(start, end_date - timedelta(days=365))
@@ -4505,23 +6319,566 @@ def build_strategy_backtest(
     }
 
 
-def screening_backtest_source_summaries() -> list[dict[str, Any]]:
-    cache = load_screening_cache()
-    summaries = cache.get("summaries", {}) if isinstance(cache, dict) else {}
-    by_date: dict[str, dict[str, Any]] = {}
-    for key, summary in summaries.items():
-        if not isinstance(summary, dict):
+@lru_cache(maxsize=32)
+def _screening_backtest_source_summaries_cached(start_key: str, end_key: str) -> tuple[dict[str, Any], ...]:
+    ensure_screening_db_indexes()
+    if not SCREENING_FAST_DB_PATH.exists():
+        return ()
+    with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+        query = """
+            SELECT
+                file_date,
+                file_date_key,
+                stock_code,
+                stock_name,
+                sector,
+                industry,
+                market_cap_100m,
+                trading_value_100m,
+                change_pct,
+                score_o,
+                score_s,
+                sortino_norm,
+                avg_1w,
+                avg_1m,
+                avg_3m,
+                note
+            FROM screening_rows
+            WHERE file_date_key BETWEEN ? AND ?
+            ORDER BY file_date_key ASC, score_s DESC, stock_code ASC
+        """
+        frame = pd.read_sql_query(query, conn, params=[start_key, end_key])
+    if frame.empty:
+        return ()
+    grouped: list[dict[str, Any]] = []
+    for file_date, group in frame.groupby("file_date", sort=True):
+        qualified_stocks: list[dict[str, Any]] = []
+        for _, row in group.iterrows():
+            qualified_stocks.append(
+                {
+                    "file_date": str(row.get("file_date") or ""),
+                    "file_date_key": str(row.get("file_date_key") or ""),
+                    "stock_code": normalize_stock_code_value(row.get("stock_code")),
+                    "stock_name": str(row.get("stock_name") or ""),
+                    "resolved_name": str(row.get("stock_name") or ""),
+                    "manual_sector": str(row.get("sector") or ""),
+                    "theme": str(row.get("sector") or ""),
+                    "industry": str(row.get("industry") or ""),
+                    "market_cap_100m": to_float(row.get("market_cap_100m")),
+                    "trading_value_100m": to_float(row.get("trading_value_100m")),
+                    "change_pct": to_float(row.get("change_pct")) or 0.0,
+                    "score_o": to_float(row.get("score_o")) or 0.0,
+                    "score": to_float(row.get("score_s")) or 0.0,
+                    "sortino_norm": to_float(row.get("sortino_norm")) or 0.0,
+                    "avg_1w": to_float(row.get("avg_1w")) or 0.0,
+                    "avg_1m": to_float(row.get("avg_1m")) or 0.0,
+                    "avg_3m": to_float(row.get("avg_3m")) or 0.0,
+                    "note": str(row.get("note") or ""),
+                }
+            )
+        grouped.append(
+            {
+                "file_date": str(file_date or ""),
+                "file_date_key": datetime.strptime(str(file_date), "%Y-%m-%d").strftime("%Y%m%d") if file_date else "",
+                "qualified_stocks": qualified_stocks,
+            }
+        )
+    return tuple(grouped)
+
+
+def screening_backtest_source_summaries(
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[dict[str, Any]]:
+    start_key = (start_date or date(2000, 1, 1)).strftime("%Y%m%d")
+    end_key = (end_date or date.today()).strftime("%Y%m%d")
+    return list(_screening_backtest_source_summaries_cached(start_key, end_key))
+
+
+@lru_cache(maxsize=1)
+def ensure_screening_db_indexes() -> bool:
+    if not SCREENING_FAST_DB_PATH.exists():
+        return False
+    with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date ON screening_rows(file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_code_date ON screening_rows(stock_code, file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date_score_code ON screening_rows(file_date_key, score_s DESC, stock_code)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_close_cache_date ON daily_close_cache(file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_close_cache_code_date ON daily_close_cache(stock_code, file_date_key)")
+        conn.commit()
+    return True
+
+
+def screening_available_file_entries(limit: int | None = None) -> list[dict[str, str]]:
+    ensure_screening_db_indexes()
+    if not SCREENING_FAST_DB_PATH.exists():
+        return []
+    query = """
+        SELECT file_date_key, file_name
+        FROM file_meta
+        ORDER BY file_date_key DESC
+    """
+    if limit is not None:
+        query += f" LIMIT {max(1, int(limit))}"
+    with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+        rows = conn.execute(query).fetchall()
+    result: list[dict[str, str]] = []
+    for file_date_key, file_name in rows:
+        date_key = str(file_date_key or "")
+        if not re.fullmatch(r"20\d{6}", date_key):
             continue
-        parts = str(key).split("|")
-        if len(parts) != 2:
+        result.append(
+            {
+                "file_date_key": date_key,
+                "file_date": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}",
+                "file_name": str(file_name or f"{date_key}_데일리_기업스크리닝.xlsx"),
+            }
+        )
+    return result
+
+
+def load_screening_summaries_for_dates(file_dates: list[str]) -> list[dict[str, Any]]:
+    ensure_screening_db_indexes()
+    if not SCREENING_FAST_DB_PATH.exists():
+        return []
+    normalized_dates = []
+    for file_date in file_dates:
+        digits = re.sub(r"\D", "", str(file_date or ""))
+        if re.fullmatch(r"20\d{6}", digits):
+            normalized_dates.append(digits)
+    normalized_dates = sorted(set(normalized_dates))
+    if not normalized_dates:
+        return []
+    placeholders = ",".join(["?"] * len(normalized_dates))
+    with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+        existing_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(screening_rows)").fetchall()
+            if row and len(row) > 1
+        }
+        rank_select = "rank" if "rank" in existing_columns else "NULL AS rank"
+        query = f"""
+        SELECT
+            file_date,
+            file_date_key,
+            {rank_select},
+            stock_code,
+            stock_name,
+            sector,
+            industry,
+            market_cap_100m,
+            trading_value_100m,
+            change_pct,
+            score_o,
+            score_s,
+            sortino_norm,
+            is_52w_high,
+            avg_1w,
+            avg_1m,
+            avg_3m,
+            note
+        FROM screening_rows
+        WHERE file_date_key IN ({placeholders})
+        ORDER BY file_date_key ASC, score_s DESC, stock_code ASC
+    """
+        frame = pd.read_sql_query(query, conn, params=normalized_dates)
+    if frame.empty:
+        return []
+    grouped: list[dict[str, Any]] = []
+    for file_date, group in frame.groupby("file_date", sort=True):
+        qualified_stocks: list[dict[str, Any]] = []
+        for index_no, (_, row) in enumerate(group.iterrows(), start=1):
+            qualified_stocks.append(
+                {
+                    "file_date": str(row.get("file_date") or ""),
+                    "file_date_key": str(row.get("file_date_key") or ""),
+                    "rank": int(to_float(row.get("rank")) or index_no),
+                    "stock_code": normalize_stock_code_value(row.get("stock_code")),
+                    "stock_name": str(row.get("stock_name") or ""),
+                    "resolved_name": str(row.get("stock_name") or ""),
+                    "manual_sector": str(row.get("sector") or ""),
+                    "theme": str(row.get("sector") or ""),
+                    "industry": str(row.get("industry") or ""),
+                    "market_cap_100m": to_float(row.get("market_cap_100m")),
+                    "trading_value_100m": to_float(row.get("trading_value_100m")),
+                    "change_pct": to_float(row.get("change_pct")) or 0.0,
+                    "score_o": to_float(row.get("score_o")) or 0.0,
+                    "score": to_float(row.get("score_s")) or 0.0,
+                    "sortino_norm": to_float(row.get("sortino_norm")) or 0.0,
+                    "is_52w_high": int(to_float(row.get("is_52w_high")) or 0),
+                    "avg_1w": to_float(row.get("avg_1w")) or 0.0,
+                    "avg_1m": to_float(row.get("avg_1m")) or 0.0,
+                    "avg_3m": to_float(row.get("avg_3m")) or 0.0,
+                    "note": str(row.get("note") or ""),
+                }
+            )
+        grouped.append(
+            {
+                "file_date": str(file_date or ""),
+                "file_date_key": datetime.strptime(str(file_date), "%Y-%m-%d").strftime("%Y%m%d") if file_date else "",
+                "qualified_stocks": qualified_stocks,
+            }
+        )
+    return grouped
+
+
+def load_screening_close_map(
+    start_date: date,
+    end_date: date,
+    stock_codes: list[str],
+) -> dict[str, dict[str, float]]:
+    if not SCREENING_FAST_DB_PATH.exists():
+        return {}
+    normalized_codes = sorted({normalize_stock_code_value(code) for code in stock_codes if normalize_stock_code_value(code)})
+    if not normalized_codes:
+        return {}
+    placeholders = ",".join(["?"] * len(normalized_codes))
+    params: list[Any] = [start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"), *normalized_codes]
+    query = f"""
+        SELECT file_date_key, stock_code, close_price
+        FROM daily_close_cache
+        WHERE file_date_key BETWEEN ? AND ?
+          AND stock_code IN ({placeholders})
+    """
+    with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+        rows = conn.execute(query, params).fetchall()
+    result: dict[str, dict[str, float]] = {}
+    for file_date_key, stock_code, close_price in rows:
+        key = str(file_date_key or "")
+        code = normalize_stock_code_value(stock_code)
+        price = to_float(close_price)
+        if not key or not code or price in (None, 0):
             continue
-        file_date = str(summary.get("file_date") or parts[0])
-        score_key = parts[1]
-        if score_key == "0.0000":
-            by_date[file_date] = summary
-        elif file_date not in by_date:
-            by_date[file_date] = summary
-    return [by_date[date_key] for date_key in sorted(by_date)]
+        result.setdefault(key, {})[code] = float(price)
+    return result
+
+
+@lru_cache(maxsize=1)
+def ensure_us_screening_db_indexes() -> bool:
+    if not US_SCREENING_FAST_DB_PATH.exists():
+        return False
+    with sqlite3.connect(str(US_SCREENING_FAST_DB_PATH)) as conn:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date ON screening_rows(file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_code_date ON screening_rows(stock_code, file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date_score_code ON screening_rows(file_date_key, score_s DESC, stock_code)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_close_cache_date ON daily_close_cache(file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_close_cache_code_date ON daily_close_cache(stock_code, file_date_key)")
+        conn.commit()
+    return True
+
+
+def us_screening_available_file_entries(limit: int | None = None) -> list[dict[str, str]]:
+    ensure_us_screening_db_indexes()
+    if not US_SCREENING_FAST_DB_PATH.exists():
+        return []
+    query = """
+        SELECT file_date_key, file_name
+        FROM file_meta
+        ORDER BY file_date_key DESC
+    """
+    if limit is not None:
+        query += f" LIMIT {max(1, int(limit))}"
+    with sqlite3.connect(str(US_SCREENING_FAST_DB_PATH)) as conn:
+        rows = conn.execute(query).fetchall()
+    result: list[dict[str, str]] = []
+    for file_date_key, file_name in rows:
+        date_key = str(file_date_key or "")
+        if not re.fullmatch(r"20\d{6}", date_key):
+            continue
+        result.append(
+            {
+                "file_date_key": date_key,
+                "file_date": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}",
+                "file_name": str(file_name or f"{date_key}_us_daily_screening.xlsx"),
+            }
+        )
+    return result
+
+
+def load_us_screening_summaries_for_dates(file_dates: list[str]) -> list[dict[str, Any]]:
+    ensure_us_screening_db_indexes()
+    if not US_SCREENING_FAST_DB_PATH.exists():
+        return []
+    normalized_dates = []
+    for file_date in file_dates:
+        digits = re.sub(r"\D", "", str(file_date or ""))
+        if re.fullmatch(r"20\d{6}", digits):
+            normalized_dates.append(digits)
+    normalized_dates = sorted(set(normalized_dates))
+    if not normalized_dates:
+        return []
+    placeholders = ",".join(["?"] * len(normalized_dates))
+    with sqlite3.connect(str(US_SCREENING_FAST_DB_PATH)) as conn:
+        existing_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(screening_rows)").fetchall()
+            if row and len(row) > 1
+        }
+        rank_select = "rank" if "rank" in existing_columns else "NULL AS rank"
+        query = f"""
+        SELECT
+            file_date,
+            file_date_key,
+            {rank_select},
+            stock_code,
+            stock_name,
+            sector,
+            industry,
+            market_cap_100m,
+            trading_value_100m,
+            change_pct,
+            score_o,
+            score_s,
+            sortino_norm,
+            is_52w_high,
+            avg_1w,
+            avg_3m,
+            note
+        FROM screening_rows
+        WHERE file_date_key IN ({placeholders})
+        ORDER BY file_date_key ASC, score_s DESC, stock_code ASC
+    """
+        frame = pd.read_sql_query(query, conn, params=normalized_dates)
+    if frame.empty:
+        return []
+    grouped: list[dict[str, Any]] = []
+    for file_date, group in frame.groupby("file_date", sort=True):
+        qualified_stocks: list[dict[str, Any]] = []
+        for index_no, (_, row) in enumerate(group.iterrows(), start=1):
+            major_sector = str(row.get("sector") or "").strip()
+            detailed_sector = str(row.get("industry") or "").strip()
+            qualified_stocks.append(
+                {
+                    "file_date": str(row.get("file_date") or ""),
+                    "file_date_key": str(row.get("file_date_key") or ""),
+                    "rank": int(to_float(row.get("rank")) or index_no),
+                    "stock_code": str(row.get("stock_code") or "").strip().upper(),
+                    "stock_name": str(row.get("stock_name") or ""),
+                    "resolved_name": str(row.get("stock_name") or ""),
+                    "manual_sector": detailed_sector or major_sector,
+                    "theme": detailed_sector or major_sector,
+                    "industry": major_sector,
+                    "market_cap_100m": to_float(row.get("market_cap_100m")),
+                    "trading_value_100m": to_float(row.get("trading_value_100m")),
+                    "change_pct": to_float(row.get("change_pct")) or 0.0,
+                    "score_o": to_float(row.get("score_o")) or 0.0,
+                    "score": to_float(row.get("score_s")) or 0.0,
+                    "sortino_norm": to_float(row.get("sortino_norm")) or 0.0,
+                    "is_52w_high": int(to_float(row.get("is_52w_high")) or 0),
+                    "avg_1w": to_float(row.get("avg_1w")) or 0.0,
+                    "avg_3m": to_float(row.get("avg_3m")) or 0.0,
+                    "note": str(row.get("note") or ""),
+                }
+            )
+        grouped.append(
+            {
+                "file_date": str(file_date or ""),
+                "file_date_key": datetime.strptime(str(file_date), "%Y-%m-%d").strftime("%Y%m%d") if file_date else "",
+                "qualified_stocks": qualified_stocks,
+            }
+        )
+    return grouped
+
+
+def load_us_screening_close_map(
+    start_date: date,
+    end_date: date,
+    stock_codes: list[str],
+) -> dict[str, dict[str, float]]:
+    if not US_SCREENING_FAST_DB_PATH.exists():
+        return {}
+    normalized_codes = sorted({str(code or "").strip().upper() for code in stock_codes if str(code or "").strip()})
+    if not normalized_codes:
+        return {}
+    placeholders = ",".join(["?"] * len(normalized_codes))
+    params: list[Any] = [start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"), *normalized_codes]
+    query = f"""
+        SELECT file_date_key, stock_code, close_price
+        FROM daily_close_cache
+        WHERE file_date_key BETWEEN ? AND ?
+          AND stock_code IN ({placeholders})
+    """
+    with sqlite3.connect(str(US_SCREENING_FAST_DB_PATH)) as conn:
+        rows = conn.execute(query, params).fetchall()
+    result: dict[str, dict[str, float]] = {}
+    for file_date_key, stock_code, close_price in rows:
+        key = str(file_date_key or "")
+        code = str(stock_code or "").strip().upper()
+        price = to_float(close_price)
+        if not key or not code or price in (None, 0):
+            continue
+        result.setdefault(key, {})[code] = float(price)
+    return result
+
+
+@lru_cache(maxsize=1)
+def ensure_asia_screening_db_indexes() -> bool:
+    if not ASIA_SCREENING_FAST_DB_PATH.exists():
+        return False
+    with sqlite3.connect(str(ASIA_SCREENING_FAST_DB_PATH)) as conn:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date ON screening_rows(file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_code_date ON screening_rows(stock_code, file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date_score_code ON screening_rows(file_date_key, score_s DESC, stock_code)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_close_cache_date ON daily_close_cache(file_date_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_close_cache_code_date ON daily_close_cache(stock_code, file_date_key)")
+        conn.commit()
+    return True
+
+
+def asia_screening_available_file_entries(limit: int | None = None) -> list[dict[str, str]]:
+    ensure_asia_screening_db_indexes()
+    if not ASIA_SCREENING_FAST_DB_PATH.exists():
+        return []
+    query = """
+        SELECT file_date_key, file_name
+        FROM file_meta
+        ORDER BY file_date_key DESC
+    """
+    if limit is not None:
+        query += f" LIMIT {max(1, int(limit))}"
+    with sqlite3.connect(str(ASIA_SCREENING_FAST_DB_PATH)) as conn:
+        rows = conn.execute(query).fetchall()
+    result: list[dict[str, str]] = []
+    for file_date_key, file_name in rows:
+        date_key = str(file_date_key or "")
+        if not re.fullmatch(r"20\d{6}", date_key):
+            continue
+        result.append(
+            {
+                "file_date_key": date_key,
+                "file_date": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}",
+                "file_name": str(file_name or f"{date_key}_asia_daily_screening.xlsx"),
+            }
+        )
+    return result
+
+
+def load_asia_screening_summaries_for_dates(file_dates: list[str]) -> list[dict[str, Any]]:
+    ensure_asia_screening_db_indexes()
+    if not ASIA_SCREENING_FAST_DB_PATH.exists():
+        return []
+    normalized_dates = []
+    for file_date in file_dates:
+        digits = re.sub(r"\D", "", str(file_date or ""))
+        if re.fullmatch(r"20\d{6}", digits):
+            normalized_dates.append(digits)
+    normalized_dates = sorted(set(normalized_dates))
+    if not normalized_dates:
+        return []
+    placeholders = ",".join(["?"] * len(normalized_dates))
+    with sqlite3.connect(str(ASIA_SCREENING_FAST_DB_PATH)) as conn:
+        existing_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(screening_rows)").fetchall()
+            if row and len(row) > 1
+        }
+        rank_select = "rank" if "rank" in existing_columns else "NULL AS rank"
+        query = f"""
+        SELECT
+            file_date,
+            file_date_key,
+            {rank_select},
+            stock_code,
+            stock_name,
+            sector,
+            industry,
+            market_cap_100m,
+            trading_value_100m,
+            change_pct,
+            score_o,
+            score_s,
+            sortino_norm,
+            is_52w_high,
+            avg_1w,
+            avg_3m,
+            note
+        FROM screening_rows
+        WHERE file_date_key IN ({placeholders})
+        ORDER BY file_date_key ASC, score_s DESC, stock_code ASC
+    """
+        frame = pd.read_sql_query(query, conn, params=normalized_dates)
+    if frame.empty:
+        return []
+    grouped: list[dict[str, Any]] = []
+    for file_date, group in frame.groupby("file_date", sort=True):
+        qualified_stocks: list[dict[str, Any]] = []
+        for index_no, (_, row) in enumerate(group.iterrows(), start=1):
+            qualified_stocks.append(
+                {
+                    "file_date": str(row.get("file_date") or ""),
+                    "file_date_key": str(row.get("file_date_key") or ""),
+                    "rank": int(to_float(row.get("rank")) or index_no),
+                    "stock_code": str(row.get("stock_code") or "").strip().upper(),
+                    "stock_name": str(row.get("stock_name") or ""),
+                    "resolved_name": str(row.get("stock_name") or ""),
+                    "manual_sector": str(row.get("sector") or ""),
+                    "theme": str(row.get("sector") or ""),
+                    "industry": str(row.get("industry") or ""),
+                    "market_cap_100m": to_float(row.get("market_cap_100m")),
+                    "trading_value_100m": to_float(row.get("trading_value_100m")),
+                    "change_pct": to_float(row.get("change_pct")) or 0.0,
+                    "score_o": to_float(row.get("score_o")) or 0.0,
+                    "score": to_float(row.get("score_s")) or 0.0,
+                    "sortino_norm": to_float(row.get("sortino_norm")) or 0.0,
+                    "is_52w_high": int(to_float(row.get("is_52w_high")) or 0),
+                    "avg_1w": to_float(row.get("avg_1w")) or 0.0,
+                    "avg_3m": to_float(row.get("avg_3m")) or 0.0,
+                    "note": str(row.get("note") or ""),
+                }
+            )
+        grouped.append(
+            {
+                "file_date": str(file_date or ""),
+                "file_date_key": datetime.strptime(str(file_date), "%Y-%m-%d").strftime("%Y%m%d") if file_date else "",
+                "qualified_stocks": qualified_stocks,
+            }
+        )
+    return grouped
+
+
+def load_strategy_benchmark_close_map(index_key: str, start_date: date, end_date: date) -> dict[str, float]:
+    mapping = {"KS11": "1001", "KQ11": "2001"}
+    if index_key not in mapping:
+        return {}
+
+    def close_map_from_frame(frame: pd.DataFrame, close_col_hint: str | None = None) -> dict[str, float]:
+        if frame is None or frame.empty:
+            return {}
+        working = frame.reset_index()
+        date_col = "Date" if "Date" in working.columns else working.columns[0]
+        close_col = close_col_hint if close_col_hint and close_col_hint in working.columns else None
+        if close_col is None:
+            close_col = "Close" if "Close" in working.columns else ("종가" if "종가" in working.columns else working.columns[-1])
+        output: dict[str, float] = {}
+        for _, row in working.iterrows():
+            dt = pd.to_datetime(row.get(date_col), errors="coerce")
+            close_val = to_float(row.get(close_col))
+            if pd.isna(dt) or close_val in (None, 0):
+                continue
+            output[dt.date().isoformat()] = float(close_val)
+        return output
+
+    if pykrx_stock is not None:
+        try:
+            frame = pykrx_stock.get_index_ohlcv_by_date(
+                start_date.strftime("%Y%m%d"),
+                end_date.strftime("%Y%m%d"),
+                mapping[index_key],
+            )
+            output = close_map_from_frame(frame, close_col_hint="종가")
+            if output:
+                return output
+        except Exception:
+            pass
+
+    symbol = str((STRATEGY_INDEXES.get(index_key) or {}).get("symbol") or "").strip()
+    if not symbol:
+        return {}
+    try:
+        frame = load_strategy_price_frame(symbol, start_date, end_date)
+        return close_map_from_frame(frame, close_col_hint="Close")
+    except Exception:
+        return {}
 
 
 def sector_rotation_sector_key(row: dict[str, Any], sector_db: dict[str, Any]) -> str:
@@ -4575,7 +6932,6 @@ def build_sector_rotation_signals(summary: dict[str, Any], min_score: float, sec
             stocks,
             key=lambda item: (
                 float(to_float(item.get("score")) or -9999),
-                float(to_float(item.get("avg_1w")) or -9999),
                 float(to_float(item.get("trading_value_100m")) or 0),
             ),
             reverse=True,
@@ -4964,8 +7320,6 @@ def stock_technical_on_date(stock_code: str, target_date: str) -> dict[str, Any]
 
 def advanced_stock_trend_score(stock: dict[str, Any], technical: dict[str, Any], beta: float | None = None, max_disparity: float = 110.0) -> float:
     score = float(to_float(stock.get("score")) or 0.0)
-    avg_1w = float(to_float(stock.get("avg_1w")) or 0.0)
-    avg_1m = float(to_float(stock.get("avg_1m")) or 0.0)
     trading_value = float(to_float(stock.get("trading_value_100m")) or 0.0)
     market_cap = float(to_float(stock.get("market_cap_100m")) or 0.0)
     turnover_pct = trading_value / market_cap * 100.0 if market_cap > 0 else 0.0
@@ -4981,8 +7335,6 @@ def advanced_stock_trend_score(stock: dict[str, Any], technical: dict[str, Any],
         disparity_penalty = abs(disparity - 104.0) * 0.7
     return round(
         score
-        + avg_1w * 0.28
-        + avg_1m * 0.12
         + min(turnover_pct, 12.0) * 2.0
         + trend_bonus
         + beta_score
@@ -5532,15 +7884,30 @@ def build_sector_entry_signals(
                     "turnover_ratio_pct": signal.get("turnover_ratio_pct"),
                     "strength_score": signal.get("strength_score"),
                     "entry_score": round(entry_score, 2),
-                    "reason": f"5일 거래대금 {trading_rank}위 · 평균점수 {signal.get('avg_score')} · 70점 이상 {signal.get('strong_count')}개",
+                    "reason": f"5일 거래대금 {trading_rank}위 · 평균 종합점수 {signal.get('avg_score')} · 70점 이상 {signal.get('strong_count')}개",
                 }
+            signal_payload["entry_phase"] = "유지"
             active_payload.append(enrich_sector_entry_signal_leaders(signal_payload, signal.get("stocks", []), beta_window=beta_window))
 
         active_payload = sorted(active_payload, key=lambda item: item["entry_score"], reverse=True)
         active_sectors = {item["sector"] for item in active_payload}
         for item in active_payload:
             if item["sector"] not in previous_active:
+                item["entry_phase"] = "신규진입"
                 rows.append(dict(item, signal="신규 진입"))
+            else:
+                item["entry_phase"] = "유지"
+        for exited in sorted(previous_active - active_sectors):
+            rows.append(
+                {
+                    "date": current_date,
+                    "sector": exited,
+                    "signal": "이탈",
+                    "signal_level": "이탈",
+                    "entry_phase": "이탈",
+                    "reason": f"종합점수 대역 이탈({min_avg_score:.0f} 미만) 또는 필터 미충족",
+                }
+            )
         previous_active = active_sectors
         latest_active = active_payload
 
@@ -5694,6 +8061,511 @@ def enrich_sector_entry_signal_leaders(signal_payload: dict[str, Any], source_st
     return signal_payload
 
 
+SIGNAL_RADAR_DEFINITIONS = {
+    "smart_money_combo": {
+        "label": "외인+기관 동반 순매수",
+        "short_label": "쌍끌이",
+        "description": "외국인과 기관이 같은 날 동시에 순매수한 종목입니다.",
+    },
+    "retail_overheat": {
+        "label": "개인 순매수 과열",
+        "short_label": "개인 과열",
+        "description": "개인이 강하게 받고 외국인+기관은 매도 우위인 종목입니다.",
+    },
+    "flow_reversal": {
+        "label": "어제 매도→오늘 매수 반전",
+        "short_label": "수급 반전",
+        "description": "전일 스마트머니 순매도에서 당일 순매수로 방향이 바뀐 종목입니다.",
+    },
+    "flow_5d_streak": {
+        "label": "5일 연속 외인/기관 매수",
+        "short_label": "5일 연속",
+        "description": "최근 5거래일 동안 외국인 또는 기관 중 한 주체가 연속 순매수한 종목입니다.",
+    },
+    "high_52w": {
+        "label": "52주 신고가",
+        "short_label": "신고가",
+        "description": "52주 신고가 또는 신고가권에 진입한 추세 강세 종목입니다.",
+    },
+    "golden_cross": {
+        "label": "골든크로스",
+        "short_label": "골든",
+        "description": "5일선이 20일선을 상향 돌파한 종목입니다.",
+    },
+    "ma20_reclaim": {
+        "label": "20일선 재돌파",
+        "short_label": "20일선",
+        "description": "주가가 20일선을 다시 상향 돌파한 종목입니다.",
+    },
+}
+
+
+def signal_radar_cache_key(
+    latest_date: str,
+    lookback_days: int,
+    max_stocks: int,
+    min_score: float,
+    max_history_events: int,
+) -> str:
+    return "|".join([
+        latest_date,
+        str(int(lookback_days)),
+        str(int(max_stocks)),
+        f"{float(min_score):.2f}",
+        str(int(max_history_events)),
+        "v6",
+    ])
+
+
+def load_signal_radar_cache() -> dict[str, Any]:
+    if not SIGNAL_RADAR_CACHE_PATH.exists():
+        return {}
+    try:
+        return json.loads(SIGNAL_RADAR_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_signal_radar_cache(cache: dict[str, Any]) -> dict[str, Any]:
+    SIGNAL_RADAR_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    return cache
+
+
+def latest_portfolio_stock_codes() -> set[str]:
+    try:
+        blocks = parse_portfolio_blocks()
+    except Exception:
+        return set()
+    if not blocks:
+        return set()
+    latest = blocks[-1]
+    return {
+        normalize_stock_code_value(item.get("stock_code"))
+        for item in latest.get("holdings", [])
+        if normalize_stock_code_value(item.get("stock_code"))
+    }
+
+
+def sector_db_stock_codes() -> set[str]:
+    db = load_sector_db()
+    stock_map = db.get("stock_map", {}) if isinstance(db, dict) else {}
+    codes: set[str] = set()
+    for item in stock_map.values():
+        code = normalize_stock_code_value((item or {}).get("stock_code"))
+        if code:
+            codes.add(code)
+    return codes
+
+
+def price_close_after_trading_days(frame: pd.DataFrame, signal_date: str, horizon: int) -> tuple[str, float | None, list[float]]:
+    if frame is None or frame.empty or "Date" not in frame.columns or "Close" not in frame.columns:
+        return "", None, []
+    try:
+        target = pd.to_datetime(signal_date).date()
+    except Exception:
+        return "", None, []
+    working = frame[["Date", "Close"]].copy()
+    working["Date"] = pd.to_datetime(working["Date"], errors="coerce")
+    working["Close"] = pd.to_numeric(working["Close"], errors="coerce")
+    working = working.dropna(subset=["Date", "Close"]).sort_values("Date").reset_index(drop=True)
+    candidates = working[working["Date"].dt.date >= target]
+    if candidates.empty:
+        return "", None, []
+    start_index = int(candidates.index[0])
+    end_index = min(len(working) - 1, start_index + max(0, int(horizon)))
+    close_value = to_float(working.iloc[end_index].get("Close"))
+    close_date = pd.Timestamp(working.iloc[end_index].get("Date")).strftime("%Y-%m-%d")
+    path = [float(value) for value in working.iloc[start_index : end_index + 1]["Close"].tolist() if to_float(value) is not None]
+    return close_date, close_value, path
+
+
+def signal_forward_performance(stock_code: str, signal_date: str, horizons: tuple[int, ...] = (5, 20, 60)) -> dict[str, Any]:
+    code = normalize_stock_code_value(stock_code)
+    if not code:
+        return {}
+    try:
+        frame = fetch_price_frame(code)
+    except Exception:
+        return {}
+    base_date, base_close, _path = price_close_after_trading_days(frame, signal_date, 0)
+    if base_close in (None, 0):
+        return {}
+    result: dict[str, Any] = {"base_date": base_date, "base_close": base_close}
+    for horizon in horizons:
+        end_date, end_close, path = price_close_after_trading_days(frame, signal_date, horizon)
+        if end_close is None:
+            continue
+        returns = (float(end_close) / float(base_close) - 1.0) * 100.0
+        if path:
+            nav_path = [value / float(base_close) * 100.0 for value in path if base_close]
+            mdd = max_drawdown_pct(nav_path)
+        else:
+            mdd = None
+        result[f"return_{horizon}d_pct"] = round(returns, 2)
+        result[f"mdd_{horizon}d_pct"] = mdd
+        result[f"end_{horizon}d_date"] = end_date
+    return result
+
+
+def stock_technical_signal_flags(stock_code: str, row: dict[str, Any] | None = None, as_of: str | None = None) -> dict[str, Any]:
+    code = normalize_stock_code_value(stock_code)
+    row = row or {}
+    if not code:
+        return {"signals": [], "close": None, "ma20": None, "disparity": None}
+    try:
+        frame = fetch_price_frame(code)
+    except Exception:
+        frame = pd.DataFrame()
+    if frame.empty or "Date" not in frame.columns or "Close" not in frame.columns:
+        return {"signals": [], "close": None, "ma20": None, "disparity": None}
+    working = frame.copy()
+    working["Date"] = pd.to_datetime(working["Date"], errors="coerce")
+    working["Close"] = pd.to_numeric(working["Close"], errors="coerce")
+    working = working.dropna(subset=["Date", "Close"]).sort_values("Date").reset_index(drop=True)
+    if as_of:
+        try:
+            target = pd.to_datetime(as_of).date()
+            working = working[working["Date"].dt.date <= target].copy()
+        except Exception:
+            pass
+    if len(working) < 25:
+        return {"signals": [], "close": None, "ma20": None, "disparity": None}
+    close = float(working["Close"].iloc[-1])
+    ma5 = working["Close"].rolling(5).mean()
+    ma20 = working["Close"].rolling(20).mean()
+    latest_ma20 = to_float(ma20.iloc[-1])
+    prev_close = to_float(working["Close"].iloc[-2]) if len(working) >= 2 else None
+    prev_ma20 = to_float(ma20.iloc[-2]) if len(working) >= 2 else None
+    latest_ma5 = to_float(ma5.iloc[-1])
+    prev_ma5 = to_float(ma5.iloc[-2]) if len(working) >= 2 else None
+    high_window = working["Close"].tail(252)
+    high_52 = float(high_window.max()) if not high_window.empty else None
+    raw_high = str(row.get("is_52w_high") or "").strip().upper()
+    signals: list[str] = []
+    if raw_high in {"O", "Y", "TRUE", "1"} or (high_52 and close >= high_52 * 0.99):
+        signals.append("high_52w")
+    if prev_ma5 is not None and prev_ma20 is not None and latest_ma5 is not None and latest_ma20 is not None:
+        if prev_ma5 <= prev_ma20 and latest_ma5 > latest_ma20:
+            signals.append("golden_cross")
+    if prev_close is not None and prev_ma20 is not None and latest_ma20 is not None:
+        if prev_close <= prev_ma20 and close > latest_ma20:
+            signals.append("ma20_reclaim")
+    disparity = (close / latest_ma20 * 100.0) if latest_ma20 else None
+    return {
+        "signals": signals,
+        "close": round(close, 2),
+        "ma20": round(latest_ma20, 2) if latest_ma20 else None,
+        "disparity": round(disparity, 2) if disparity is not None else None,
+    }
+
+
+def flow_signal_flags_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted([row for row in rows if row.get("date")], key=lambda item: str(item.get("date") or ""))
+    if not ordered:
+        return {"signals": [], "latest": {}, "source_rows": 0}
+    latest = ordered[-1]
+    previous = ordered[-2] if len(ordered) >= 2 else {}
+    foreigner = int(latest.get("foreigner") or 0)
+    institution = int(latest.get("institution") or 0)
+    individual = int(latest.get("individual") or 0)
+    smart = foreigner + institution
+    prev_smart = int(previous.get("foreigner") or 0) + int(previous.get("institution") or 0)
+    individual_abs_values = [abs(int(row.get("individual") or 0)) for row in ordered[-6:] if row.get("individual") is not None]
+    individual_threshold = float(np.median(individual_abs_values)) if individual_abs_values else 0.0
+    signals: list[str] = []
+    if foreigner > 0 and institution > 0:
+        signals.append("smart_money_combo")
+    if individual > 0 and smart < 0 and (individual_threshold <= 0 or individual >= individual_threshold):
+        signals.append("retail_overheat")
+    if prev_smart <= 0 and smart > 0:
+        signals.append("flow_reversal")
+    recent5 = ordered[-5:]
+    if len(recent5) >= 5:
+        foreigner_streak = all(int(row.get("foreigner") or 0) > 0 for row in recent5)
+        institution_streak = all(int(row.get("institution") or 0) > 0 for row in recent5)
+        if foreigner_streak or institution_streak:
+            signals.append("flow_5d_streak")
+    return {
+        "signals": signals,
+        "latest": {
+            "date": latest.get("date"),
+            "individual": individual,
+            "foreigner": foreigner,
+            "institution": institution,
+            "smart_money": smart,
+            "previous_smart_money": prev_smart,
+        },
+        "source_rows": len(ordered),
+    }
+
+
+def stock_flow_signal_payload(stock: dict[str, Any], days: int = 12) -> dict[str, Any]:
+    code = normalize_stock_code_value(stock.get("stock_code"))
+    name = str(stock.get("resolved_name") or stock.get("stock_name") or code).strip()
+    if not code:
+        return {"signals": [], "flow_error": "종목코드 없음"}
+    try:
+        # The radar needs fast breadth, not full investor-detail history. Query Naver
+        # directly here so one slow KIS request cannot stall the whole page.
+        rows = fetch_naver_investor_flow_rows(code, pages=1)
+        if days and rows:
+            cutoff = (datetime.now().date() - timedelta(days=max(1, int(days)))).isoformat()
+            rows = [row for row in rows if str(row.get("date") or "") >= cutoff] or rows[:12]
+        flags = flow_signal_flags_from_rows(rows)
+        return {
+            **flags,
+            "flow_source": "Naver Finance 외국인/기관 매매현황",
+            "flow_note": "레이더 응답 속도를 위해 네이버 공개 수급표를 직접 사용합니다. 개인은 외국인+기관계 잔차 기준 추정치입니다.",
+        }
+    except Exception as exc:
+        return {"signals": [], "flow_error": str(exc)}
+
+
+def summarize_signal_performance(events: list[dict[str, Any]]) -> dict[str, Any]:
+    by_signal: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        for signal_key in event.get("signals") or []:
+            by_signal.setdefault(signal_key, []).append(event)
+    rows: list[dict[str, Any]] = []
+    for signal_key in SIGNAL_RADAR_DEFINITIONS.keys():
+        signal_events = by_signal.get(signal_key, [])
+        definition = SIGNAL_RADAR_DEFINITIONS.get(signal_key, {})
+        row: dict[str, Any] = {
+            "signal_key": signal_key,
+            "label": definition.get("label") or signal_key,
+            "short_label": definition.get("short_label") or signal_key,
+            "description": definition.get("description") or "",
+            "event_count": len(signal_events),
+        }
+        for horizon in (5, 20, 60):
+            values = [
+                to_float(event.get(f"return_{horizon}d_pct"))
+                for event in signal_events
+                if to_float(event.get(f"return_{horizon}d_pct")) is not None
+            ]
+            mdds = [
+                to_float(event.get(f"mdd_{horizon}d_pct"))
+                for event in signal_events
+                if to_float(event.get(f"mdd_{horizon}d_pct")) is not None
+            ]
+            if values:
+                row[f"avg_return_{horizon}d_pct"] = round(float(np.mean(values)), 2)
+                row[f"win_rate_{horizon}d_pct"] = round(sum(1 for value in values if value > 0) / len(values) * 100.0, 1)
+            else:
+                row[f"avg_return_{horizon}d_pct"] = None
+                row[f"win_rate_{horizon}d_pct"] = None
+            row[f"mdd_{horizon}d_pct"] = round(min(mdds), 2) if mdds else None
+        rows.append(row)
+    rows.sort(key=lambda item: (item.get("event_count") or 0, item.get("avg_return_20d_pct") or -9999), reverse=True)
+    return {
+        "rows": rows,
+        "event_count": len(events),
+    }
+
+
+def build_historical_signal_events(
+    summaries: list[dict[str, Any]],
+    start_date: str,
+    end_date: str,
+    min_score: float,
+    max_events: int = 900,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for summary in summaries:
+        signal_date = str(summary.get("file_date") or "")
+        if not signal_date or signal_date < start_date or signal_date > end_date:
+            continue
+        for row in summary.get("qualified_stocks", []):
+            if len(events) >= max_events:
+                break
+            if not isinstance(row, dict):
+                continue
+            score = to_float(row.get("score"))
+            if score is None or score < min_score:
+                continue
+            code = normalize_stock_code_value(row.get("stock_code"))
+            if not code:
+                continue
+            technical = stock_technical_signal_flags(code, row, as_of=signal_date)
+            signals = technical.get("signals") or []
+            if not signals:
+                continue
+            perf = signal_forward_performance(code, signal_date)
+            if not perf:
+                continue
+            sector = resolve_sector_for_stock(code, row.get("stock_name"), load_sector_db()) or str(row.get("manual_sector") or row.get("theme") or "")
+            for signal_key in signals:
+                key = (signal_date, code, signal_key)
+                if key in seen:
+                    continue
+                seen.add(key)
+            events.append(
+                {
+                    "date": signal_date,
+                    "stock_code": code,
+                    "stock_name": row.get("resolved_name") or row.get("stock_name") or code,
+                    "sector": sector,
+                    "score": score,
+                    "signals": signals,
+                    **perf,
+                }
+            )
+        if len(events) >= max_events:
+            break
+    return events
+
+
+def build_signal_radar(
+    lookback_days: int = 120,
+    max_stocks: int = 45,
+    min_score: float = 50.0,
+    max_history_events: int = 220,
+) -> dict[str, Any]:
+    summaries = screening_backtest_source_summaries()
+    if not summaries:
+        return {
+            "summary": {"signal_count": 0, "stock_count": 0},
+            "signals": [],
+            "performance": {"rows": [], "event_count": 0},
+            "message": "오늘의 주도주 캐시가 없습니다.",
+        }
+    available_dates = [str(item.get("file_date") or "") for item in summaries if item.get("file_date")]
+    latest_date = available_dates[-1]
+    lookback_days = max(20, min(int(lookback_days or 120), 260))
+    max_stocks = max(10, min(int(max_stocks or 45), 80))
+    min_score = max(0.0, min(float(min_score or 50.0), 100.0))
+    max_history_events = max(60, min(int(max_history_events or 220), 900))
+    cache_key = signal_radar_cache_key(latest_date, lookback_days, max_stocks, min_score, max_history_events)
+    cache = load_signal_radar_cache()
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and time.time() - float(cached.get("_cached_at") or 0) < 30 * 60:
+        return {key: value for key, value in cached.items() if key != "_cached_at"}
+
+    latest_summary = summaries[-1]
+    sector_db = load_sector_db()
+    portfolio_codes = latest_portfolio_stock_codes()
+    watch_codes = sector_db_stock_codes()
+    candidates = []
+    for row in latest_summary.get("qualified_stocks", []):
+        if not isinstance(row, dict):
+            continue
+        score = to_float(row.get("score"))
+        if score is None or score < min_score:
+            continue
+        code = normalize_stock_code_value(row.get("stock_code"))
+        if not code:
+            continue
+        enriched = dict(row)
+        enriched["stock_code"] = code
+        enriched["sector"] = resolve_sector_for_stock(code, row.get("stock_name"), sector_db) or str(row.get("manual_sector") or row.get("theme") or "")
+        candidates.append(enriched)
+    candidates.sort(
+        key=lambda item: (
+            to_float(item.get("score")) or 0.0,
+            to_float(item.get("trading_value_100m")) or 0.0,
+            to_float(item.get("market_cap_100m")) or 0.0,
+        ),
+        reverse=True,
+    )
+    candidates = candidates[:max_stocks]
+
+    flow_payload_by_code: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(stock_flow_signal_payload, stock, 12): stock for stock in candidates}
+        for future in as_completed(futures):
+            stock = futures[future]
+            code = normalize_stock_code_value(stock.get("stock_code"))
+            try:
+                flow_payload_by_code[code] = future.result()
+            except Exception as exc:
+                flow_payload_by_code[code] = {"signals": [], "flow_error": str(exc)}
+
+    signal_rows: list[dict[str, Any]] = []
+    for stock in candidates:
+        code = normalize_stock_code_value(stock.get("stock_code"))
+        technical = stock_technical_signal_flags(code, stock, as_of=latest_date)
+        flow = flow_payload_by_code.get(code, {"signals": []})
+        signal_keys = sorted(set((technical.get("signals") or []) + (flow.get("signals") or [])))
+        if not signal_keys:
+            continue
+        labels = [SIGNAL_RADAR_DEFINITIONS.get(key, {}).get("short_label") or key for key in signal_keys]
+        signal_rows.append(
+            {
+                "date": latest_date,
+                "stock_code": code,
+                "stock_name": stock.get("resolved_name") or stock.get("stock_name") or code,
+                "sector": stock.get("sector") or "",
+                "score": stock.get("score"),
+                "change_pct": stock.get("change_pct"),
+                "market_cap_100m": stock.get("market_cap_100m"),
+                "trading_value_100m": stock.get("trading_value_100m"),
+                "execution_strength": stock.get("execution_strength"),
+                "signals": signal_keys,
+                "signal_labels": labels,
+                "signal_count": len(signal_keys),
+                "is_portfolio": code in portfolio_codes,
+                "is_watch": code in watch_codes,
+                "technical": {key: technical.get(key) for key in ["close", "ma20", "disparity"]},
+                "flow": flow.get("latest") or {},
+                "flow_source": flow.get("flow_source") or "",
+                "flow_error": flow.get("flow_error") or "",
+            }
+        )
+    signal_rows.sort(
+        key=lambda item: (
+            1 if item.get("is_portfolio") else 0,
+            1 if item.get("is_watch") else 0,
+            item.get("signal_count") or 0,
+            to_float(item.get("score")) or 0.0,
+        ),
+        reverse=True,
+    )
+
+    start_date = (datetime.strptime(latest_date, "%Y-%m-%d") - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    historical_events = build_historical_signal_events(
+        summaries=summaries,
+        start_date=start_date,
+        end_date=latest_date,
+        min_score=min_score,
+        max_events=max_history_events,
+    )
+    performance = summarize_signal_performance(historical_events)
+    signal_counts: dict[str, int] = {}
+    for row in signal_rows:
+        for signal_key in row.get("signals") or []:
+            signal_counts[signal_key] = signal_counts.get(signal_key, 0) + 1
+    payload = {
+        "date": latest_date,
+        "start_date": start_date,
+        "summary": {
+            "stock_count": len(signal_rows),
+            "candidate_count": len(candidates),
+            "signal_count": sum(len(row.get("signals") or []) for row in signal_rows),
+            "portfolio_hit_count": sum(1 for row in signal_rows if row.get("is_portfolio")),
+            "watch_hit_count": sum(1 for row in signal_rows if row.get("is_watch")),
+        },
+        "definitions": [
+            {"key": key, **value, "today_count": signal_counts.get(key, 0)}
+            for key, value in SIGNAL_RADAR_DEFINITIONS.items()
+        ],
+        "signals": signal_rows[:120],
+        "performance": performance,
+        "params": {
+            "lookback_days": lookback_days,
+            "max_stocks": max_stocks,
+            "min_score": min_score,
+            "max_history_events": max_history_events,
+            "source": "오늘의 주도주 DB + FinanceDataReader + KIS/Naver 투자자 매매동향",
+        },
+        "description": "오늘의 주도주 후보를 기준으로 수급/차트 신호를 포착하고, 과거 동일 신호의 5/20/60거래일 성과를 함께 보여줍니다.",
+    }
+    cache[cache_key] = {**payload, "_cached_at": time.time()}
+    cache = dict(list(cache.items())[-12:])
+    save_signal_radar_cache(cache)
+    return payload
+
+
 def open_tradingview_desktop(stock_code: str | None, stock_name: str | None) -> dict[str, Any]:
     code, symbol, web_url = build_tradingview_symbol(stock_code, stock_name)
     protocol_url = f"tradingview://chart/?symbol={quote(symbol, safe='')}"
@@ -5773,6 +8645,35 @@ def fetch_price_frame(code: str) -> pd.DataFrame:
         frame = frame.rename(columns={frame.columns[0]: "Date"})
     frame["Date"] = pd.to_datetime(frame["Date"])
     return frame.sort_values("Date").reset_index(drop=True)
+
+
+def chart_preview_cache_path(code: str, months: int) -> Path:
+    cache_seed = f"{str(code or '').strip().upper()}|{int(months or 3)}"
+    return CHART_PREVIEW_CACHE_DIR / f"{hashlib.sha1(cache_seed.encode('utf-8')).hexdigest()[:24]}.json"
+
+
+def load_chart_preview_disk_cache(code: str, months: int) -> dict[str, Any] | None:
+    cache_path = chart_preview_cache_path(code, months)
+    if not cache_path.exists():
+        return None
+    age_seconds = time.time() - cache_path.stat().st_mtime
+    if age_seconds > 12 * 60 * 60:
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        return None
+    return payload
+
+
+def save_chart_preview_disk_cache(code: str, months: int, payload: dict[str, Any]) -> None:
+    CHART_PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = chart_preview_cache_path(code, months)
+    temp_path = cache_path.with_name(f"{cache_path.stem}_{uuid.uuid4().hex[:8]}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temp_path.replace(cache_path)
 
 
 def get_return_between(closes: pd.Series, from_offset: int, to_offset: int) -> float | None:
@@ -7233,7 +10134,7 @@ def default_real_estate_db() -> dict[str, Any]:
         "bank_memo_unit_map": {},
         "bank_memo_category_map": {},
         "bank_import": {
-            "data_dir": str(REAL_ESTATE_DATA_DIR),
+            "data_dir": str(REAL_ESTATE_BANK_IMPORT_DIR),
             "last_imported_at": "",
             "file_results": [],
             "total_files": 0,
@@ -8733,14 +11634,10 @@ def repair_mojibake_recursive(value: Any) -> Any:
 
 
 def real_estate_bank_file_candidates() -> list[Path]:
-    if not REAL_ESTATE_DATA_DIR.exists():
+    if not REAL_ESTATE_BANK_IMPORT_DIR.exists():
         return []
-    excluded_stems = {
-        REAL_ESTATE_EXCEL_PATH.stem,
-        f"{REAL_ESTATE_EXCEL_PATH.stem}_백업",
-    }
-    files = []
-    for path in REAL_ESTATE_DATA_DIR.iterdir():
+    files: list[tuple[tuple[int, str], Path]] = []
+    for path in REAL_ESTATE_BANK_IMPORT_DIR.iterdir():
         if not path.is_file():
             continue
         if path.name.startswith("~$"):
@@ -8748,11 +11645,17 @@ def real_estate_bank_file_candidates() -> list[Path]:
         suffix = path.suffix.lower()
         if suffix not in {".xlsx", ".xlsm", ".xls", ".csv", ".tsv"}:
             continue
-        stem = path.stem
-        if stem in excluded_stems or "corrupt_before_restore" in stem or "상가 관리" in stem:
+        stem = str(path.stem or "").strip()
+        if not stem or "corrupt_before_restore" in stem:
             continue
-        files.append(path)
-    return sorted(files, key=lambda item: (item.stat().st_mtime, item.name))
+        if re.fullmatch(r"거래내역조회_기본", stem):
+            files.append(((0, stem), path))
+            continue
+        month_match = re.fullmatch(r"거래내역조회_(20\d{4})", stem)
+        if month_match:
+            files.append(((1, month_match.group(1)), path))
+            continue
+    return [path for _, path in sorted(files, key=lambda item: item[0])]
 
 
 def read_bank_file_table(path: Path) -> pd.DataFrame:
@@ -8887,6 +11790,28 @@ def bank_transaction_id(row: dict[str, Any]) -> str:
     return hashlib.sha1(source.encode("utf-8")).hexdigest()[:24]
 
 
+def normalize_bank_memo_key(value: Any) -> str:
+    text = repair_mojibake_text(str(value or ""))
+    text = " ".join(str(text or "").strip().split())
+    if not text:
+        return ""
+    if " / " in text:
+        left, _, _right = text.partition(" / ")
+        text = left.strip() or text
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def normalize_bank_memo_match_key(value: Any) -> str:
+    text = normalize_bank_memo_key(value)
+    if not text:
+        return ""
+    text = re.sub(r"[^0-9A-Za-z가-힣]", "", text)
+    text = re.sub(r"(\D)\d+$", r"\1", text)
+    return text.strip().lower()
+
+
 def default_bank_transaction_category(kind: str, target: str = "", category: str = "") -> str:
     source = str(category or "").strip()
     is_expense = str(kind or "") == "expense"
@@ -8973,6 +11898,24 @@ def import_real_estate_bank_files() -> dict[str, Any]:
     existing = db.get("bank_transactions") if isinstance(db.get("bank_transactions"), list) else []
     memo_unit_map = db.get("bank_memo_unit_map") if isinstance(db.get("bank_memo_unit_map"), dict) else {}
     memo_category_map = db.get("bank_memo_category_map") if isinstance(db.get("bank_memo_category_map"), dict) else {}
+    normalized_unit_map: dict[str, str] = {}
+    normalized_category_map: dict[str, str] = {}
+    match_unit_map: dict[str, str] = {}
+    match_category_map: dict[str, str] = {}
+    for memo_key, target in memo_unit_map.items():
+        normalized_key = normalize_bank_memo_key(memo_key)
+        match_key = normalize_bank_memo_match_key(memo_key)
+        if normalized_key and str(target or "").strip():
+            normalized_unit_map[normalized_key] = str(target or "").strip()
+        if match_key and str(target or "").strip():
+            match_unit_map[match_key] = str(target or "").strip()
+    for memo_key, category in memo_category_map.items():
+        normalized_key = normalize_bank_memo_key(memo_key)
+        match_key = normalize_bank_memo_match_key(memo_key)
+        if normalized_key and str(category or "").strip():
+            normalized_category_map[normalized_key] = str(category or "").strip()
+        if match_key and str(category or "").strip():
+            match_category_map[match_key] = str(category or "").strip()
     candidate_names = {path.name for path in candidates}
     exclusions = {
         str(item)
@@ -8980,9 +11923,27 @@ def import_real_estate_bank_files() -> dict[str, Any]:
         if str(item or "").strip()
     }
     by_key: dict[str, dict[str, Any]] = {}
+    historical_target_by_norm_key: dict[str, str] = {}
+    historical_category_by_norm_key: dict[str, str] = {}
+    historical_target_by_match_key: dict[str, str] = {}
+    historical_category_by_match_key: dict[str, str] = {}
     for item in existing:
         if not isinstance(item, dict):
             continue
+        memo_key = str(item.get("memo") or "").strip()
+        normalized_memo_key = normalize_bank_memo_key(memo_key)
+        match_memo_key = normalize_bank_memo_match_key(memo_key)
+        if normalized_memo_key:
+            target_value = str(item.get("target") or "").strip()
+            category_value = str(item.get("category") or "").strip()
+            if target_value and normalized_memo_key not in historical_target_by_norm_key:
+                historical_target_by_norm_key[normalized_memo_key] = target_value
+            if category_value and normalized_memo_key not in historical_category_by_norm_key:
+                historical_category_by_norm_key[normalized_memo_key] = category_value
+            if target_value and match_memo_key and match_memo_key not in historical_target_by_match_key:
+                historical_target_by_match_key[match_memo_key] = target_value
+            if category_value and match_memo_key and match_memo_key not in historical_category_by_match_key:
+                historical_category_by_match_key[match_memo_key] = category_value
         if item.get("source") == "bank_file" and str(item.get("source_file") or "") in candidate_names:
             continue
         key = str(item.get("id") or "") or bank_transaction_id(item)
@@ -8996,10 +11957,30 @@ def import_real_estate_bank_files() -> dict[str, Any]:
         key = str(item.get("id") or "") or bank_transaction_id(item)
         item["id"] = key
         memo_key = str(item.get("memo") or "").strip()
-        if memo_key and str(memo_unit_map.get(memo_key) or "").strip():
-            item["target"] = str(memo_unit_map.get(memo_key) or "").strip()
-        if str(item.get("kind") or "") == "expense" and memo_key and str(memo_category_map.get(memo_key) or "").strip():
-            item["category"] = str(memo_category_map.get(memo_key) or "").strip()
+        normalized_memo_key = normalize_bank_memo_key(memo_key)
+        match_memo_key = normalize_bank_memo_match_key(memo_key)
+        target_value = str(memo_unit_map.get(memo_key) or "").strip()
+        if not target_value and normalized_memo_key:
+            target_value = str(normalized_unit_map.get(normalized_memo_key) or historical_target_by_norm_key.get(normalized_memo_key) or "").strip()
+        if not target_value and match_memo_key:
+            target_value = str(match_unit_map.get(match_memo_key) or historical_target_by_match_key.get(match_memo_key) or "").strip()
+        if target_value:
+            item["target"] = target_value
+        if normalized_memo_key and target_value:
+            historical_target_by_norm_key.setdefault(normalized_memo_key, target_value)
+        if match_memo_key and target_value:
+            historical_target_by_match_key.setdefault(match_memo_key, target_value)
+        category_value = str(memo_category_map.get(memo_key) or "").strip()
+        if not category_value and normalized_memo_key:
+            category_value = str(normalized_category_map.get(normalized_memo_key) or historical_category_by_norm_key.get(normalized_memo_key) or "").strip()
+        if not category_value and match_memo_key:
+            category_value = str(match_category_map.get(match_memo_key) or historical_category_by_match_key.get(match_memo_key) or "").strip()
+        if category_value:
+            item["category"] = category_value
+        if normalized_memo_key and category_value:
+            historical_category_by_norm_key.setdefault(normalized_memo_key, category_value)
+        if match_memo_key and category_value:
+            historical_category_by_match_key.setdefault(match_memo_key, category_value)
         item["category"] = default_bank_transaction_category(
             str(item.get("kind") or ""),
             str(item.get("target") or ""),
@@ -9010,7 +11991,7 @@ def import_real_estate_bank_files() -> dict[str, Any]:
         by_key[key] = item
     db["bank_transactions"] = sorted(by_key.values(), key=lambda row: (str(row.get("date") or ""), str(row.get("time") or "")), reverse=True)
     db["bank_import"] = {
-        "data_dir": str(REAL_ESTATE_DATA_DIR),
+        "data_dir": str(REAL_ESTATE_BANK_IMPORT_DIR),
         "last_imported_at": datetime.now().isoformat(timespec="seconds"),
         "file_results": file_results,
         "total_files": len(candidates),
@@ -10290,18 +13271,80 @@ def create_sector_snapshot_workbook(payload: dict[str, Any]) -> Path:
 
 
 def list_screening_files(limit: int | None = None) -> list[Path]:
+    if SCREENING_SQL_ONLY and SCREENING_FAST_DB_PATH.exists():
+        try:
+            with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT file_date_key, file_name
+                    FROM file_meta
+                    ORDER BY file_date_key DESC
+                    """
+                ).fetchall()
+            candidates_sql = []
+            for date_key, file_name in rows:
+                if file_name:
+                    candidates_sql.append(SCREENING_DIR / str(file_name))
+                else:
+                    candidates_sql.append(SCREENING_DIR / f"{date_key}_데일리_기업스크리닝.xlsx")
+            if limit is None:
+                return candidates_sql
+            return candidates_sql[:limit]
+        except Exception:
+            # SQL 조회 실패 시에만 파일 시스템 경로로 폴백
+            pass
+
+    def _is_valid_screening_file(path: Path) -> bool:
+        return is_valid_excel_file_header(path)
+
+    def _name_date_key(path: Path) -> tuple[int, str]:
+        match = re.search(r"(20\d{6})", path.name)
+        if match:
+            return (int(match.group(1)), path.name)
+        return (0, path.name)
+
     candidates = sorted(
         [
             path
             for path in SCREENING_DIR.glob("*\ub370\uc77c\ub9ac_\uae30\uc5c5\uc2a4\ud06c\ub9ac\ub2dd.xls*")
-            if not path.name.startswith("~$") and path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
+            if (
+                not path.name.startswith("~$")
+                and path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
+                and _is_valid_screening_file(path)
+            )
         ],
-        key=lambda item: item.stat().st_mtime,
+        key=_name_date_key,
         reverse=True,
     )
     if limit is None:
         return candidates
     return candidates[:limit]
+
+
+def is_valid_excel_file_header(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            sig = f.read(4)
+        ext = path.suffix.lower()
+        if ext in {".xlsx", ".xlsm"}:
+            if not sig.startswith(b"PK"):
+                return False
+            try:
+                with zipfile.ZipFile(path, "r") as zf:
+                    names = set(zf.namelist())
+                    if "[Content_Types].xml" not in names:
+                        return False
+                    bad_member = zf.testzip()
+                    if bad_member is not None:
+                        return False
+            except Exception:
+                return False
+            return True
+        if ext == ".xls":
+            return sig == b"\xD0\xCF\x11\xE0"
+        return False
+    except Exception:
+        return False
 
 
 def get_latest_screening_file() -> Path:
@@ -11074,6 +14117,38 @@ def calculate_portfolio_performance() -> dict[str, Any]:
     }
 
 
+def portfolio_performance_cache_key() -> str:
+    try:
+        portfolio_mtime = PORTFOLIO_PATH.stat().st_mtime if PORTFOLIO_PATH.exists() else 0
+    except Exception:
+        portfolio_mtime = 0
+    try:
+        sector_mtime = SECTOR_DB_PATH.stat().st_mtime if SECTOR_DB_PATH.exists() else 0
+    except Exception:
+        sector_mtime = 0
+    return f"{portfolio_mtime:.0f}:{sector_mtime:.0f}:{date.today().isoformat()}"
+
+
+def get_cached_portfolio_performance(force_refresh: bool = False) -> dict[str, Any]:
+    cache_key = portfolio_performance_cache_key()
+    now = time.time()
+    with PORTFOLIO_PERFORMANCE_CACHE_LOCK:
+        cached_key = PORTFOLIO_PERFORMANCE_CACHE.get("key")
+        cached_at = float(PORTFOLIO_PERFORMANCE_CACHE.get("cached_at") or 0)
+        cached_payload = PORTFOLIO_PERFORMANCE_CACHE.get("payload")
+        if (
+            not force_refresh
+            and cached_key == cache_key
+            and isinstance(cached_payload, dict)
+            and now - cached_at < PORTFOLIO_PERFORMANCE_CACHE_TTL_SECONDS
+        ):
+            return cached_payload
+        payload = calculate_portfolio_performance()
+        PORTFOLIO_PERFORMANCE_CACHE.clear()
+        PORTFOLIO_PERFORMANCE_CACHE.update({"key": cache_key, "cached_at": now, "payload": payload})
+        return payload
+
+
 def summarize_portfolio_diagnostic_series(
     key: str,
     name: str,
@@ -11614,7 +14689,7 @@ def build_portfolio_diagnostic() -> dict[str, Any]:
 
 
 def latest_stock_alert_holdings(min_weight_pct: float = 0.0, latest_non_empty: bool = True) -> list[dict[str, Any]]:
-    performance = calculate_portfolio_performance()
+    performance = get_cached_portfolio_performance()
     allocations = performance.get("daily_allocations") or []
     rebalances = performance.get("rebalances") or []
     if not allocations:
@@ -12045,17 +15120,223 @@ def canonicalize_theme(note: Any, stock_name: str = "") -> tuple[str, list[str]]
 
 
 def load_screening_frame(path: Path) -> pd.DataFrame:
-    screening_path = safe_copy_to_temp(path)
-    df = pd.read_excel(screening_path, sheet_name=SCREENING_SHEET, engine=excel_engine_for_path(screening_path))
+    def _date_key_from_path(target_path: Path) -> str:
+        m = re.match(r"^(20\d{6})_", target_path.name)
+        return m.group(1) if m else ""
+
+    def _try_load_fast_db(target_path: Path) -> pd.DataFrame | None:
+        date_key = _date_key_from_path(target_path)
+        if not date_key or not SCREENING_FAST_DB_PATH.exists():
+            return None
+        try:
+            with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+                q = """
+                SELECT
+                    stock_code AS 종목코드,
+                    stock_name AS 종목명,
+                    sector AS 섹터,
+                    industry AS 업종구분,
+                    market_cap_100m AS 시가총액,
+                    trading_value_100m AS 거래대금,
+                    trading_value_100m AS [거래대금.1],
+                    change_pct AS 등락률,
+                    score_o AS O열점수,
+                    avg_1w AS [1W 평균],
+                    avg_1m AS [1M 평균],
+                    avg_3m AS [3M 평균],
+                    sortino_norm AS 소르티노_정규화,
+                    score_s AS [종합 점수],
+                    note AS 비고
+                FROM screening_rows
+                WHERE file_date_key = ?
+                """
+                fast_df = pd.read_sql_query(q, conn, params=[date_key])
+            if fast_df is None or fast_df.empty:
+                return None
+            fast_df["점수"] = pd.to_numeric(fast_df["종합 점수"], errors="coerce")
+            fast_df["_market_cap_100m"] = pd.to_numeric(fast_df["시가총액"], errors="coerce")
+            fast_df["_code_norm"] = fast_df["종목코드"].map(normalize_stock_code_value)
+            return fast_df
+        except Exception:
+            return None
+
+    fast_df = _try_load_fast_db(path)
+    if fast_df is not None and not fast_df.empty:
+        return fast_df
+    if SCREENING_SQL_ONLY:
+        date_key = _date_key_from_path(path)
+        raise FileNotFoundError(f"SQL 캐시에 해당 날짜 데이터가 없습니다: {date_key or path.name}")
+
+    try:
+        screening_path = safe_copy_to_temp(path)
+    except PermissionError:
+        # Excel이 파일을 점유 중이면 임시 복사 대신 원본 직접 읽기를 시도한다.
+        screening_path = path
+    try:
+        df = pd.read_excel(screening_path, sheet_name=SCREENING_SHEET, engine=excel_engine_for_path(screening_path))
+    except Exception:
+        # 신형 Stock_Daily 파일은 첫 번째 시트 기준으로 로드
+        df = pd.read_excel(screening_path, sheet_name=0, engine=excel_engine_for_path(screening_path))
     df = df.rename(columns=lambda col: str(col).strip())
-    df["\uc810\uc218"] = pd.to_numeric(df["\uc810\uc218"], errors="coerce")
-    df["\ub4f1\ub77d\ub960"] = pd.to_numeric(df["\ub4f1\ub77d\ub960"], errors="coerce")
+
+    # 신형 Stock_Daily 스키마를 내부 표준 컬럼으로 정규화
+    renamed = {
+        "종목 이름": "종목명",
+        "업종": "업종구분",
+        "시총 (억원)": "시가총액",
+        "거래대금 (억원)": "거래대금",
+        "1W 평균 점수": "1W 평균",
+        "1M 평균 점수": "1M 평균",
+        "3M 평균 점수": "1M 평균",
+        "60일 기준 Sortino 정규화 점수": "소르티노_정규화",
+    }
+    apply_rename = {k: v for k, v in renamed.items() if k in df.columns}
+    if apply_rename:
+        df = df.rename(columns=apply_rename)
+    has_new_schema_score = "종합 점수" in df.columns
+    if has_new_schema_score:
+        df["점수"] = pd.to_numeric(df["종합 점수"], errors="coerce")
+
+    if "\uc885\ubaa9\ucf54\ub4dc" in df.columns:
+        df["_code_norm"] = df["\uc885\ubaa9\ucf54\ub4dc"].map(normalize_stock_code_value)
+    elif df.shape[1] >= 3:
+        df["_code_norm"] = df.iloc[:, 2].map(normalize_stock_code_value)
+    else:
+        df["_code_norm"] = ""
+
+    daily_map: dict[str, dict[str, Any]] = {}
+    if not has_new_schema_score:
+        # 구형 스키마는 데일리데이터/S열 캐시 기반 로직 사용
+        try:
+            daily_df = pd.read_excel(screening_path, sheet_name="\ub370\uc77c\ub9ac\ub370\uc774\ud130", engine=excel_engine_for_path(screening_path))
+            daily_df = daily_df.rename(columns=lambda col: str(col).strip())
+            for _, row in daily_df.iterrows():
+                code = normalize_stock_code_value(row.get("\uc885\ubaa9\ucf54\ub4dc"))
+                if not code:
+                    continue
+                daily_map[code] = {
+                    "name": row.get("\uc885\ubaa9\uba85"),
+                    "industry": row.get("\uc5c5\uc885\uad6c\ubd84"),
+                    "market": row.get("\ub300\uc0c1"),
+                    "change_pct": row.get("\ub4f1\ub77d\ub960"),
+                    "trading_value": row.get("\uac70\ub798\ub300\uae08"),
+                    "market_cap": row.get("\uc2dc\uac00\ucd1d\uc561"),
+                }
+        except Exception:
+            daily_map = {}
+
+        # 구형은 S열 계산 결과(value cache)를 점수로 사용
+        s_score_map = read_screening_s_values(screening_path)
+        df["\uc810\uc218"] = pd.to_numeric(df["_code_norm"].map(s_score_map), errors="coerce")
+
+    def _safe_fill_string_column(
+        column_name: str,
+        resolver: Callable[[str], Any],
+    ) -> None:
+        if column_name not in df.columns:
+            df[column_name] = ""
+        try:
+            df[column_name] = df[column_name].astype("object")
+        except Exception:
+            df[column_name] = df[column_name].astype(str)
+        missing = df[column_name].isna() | (df[column_name].astype(str).str.strip() == "")
+        if not missing.any():
+            return
+        for idx in df.index[missing]:
+            code = normalize_stock_code_value(df.at[idx, "_code_norm"])
+            if not code:
+                continue
+            try:
+                value = resolver(code)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            text_value = str(value).strip()
+            if not text_value:
+                continue
+            try:
+                df.at[idx, column_name] = text_value
+            except Exception:
+                # 일부 행/셀 dtype 충돌이 있어도 전체 로드는 계속 진행한다.
+                continue
+
+    _safe_fill_string_column(
+        "\uc885\ubaa9\uba85",
+        lambda code: daily_map.get(code, {}).get("name") if daily_map else None,
+    )
+
+    missing_name = df["\uc885\ubaa9\uba85"].isna() | (df["\uc885\ubaa9\uba85"].astype(str).str.strip() == "")
+    if missing_name.any():
+        def _resolve_name_from_code(code: Any) -> str:
+            normalized = normalize_stock_code_value(code)
+            if not normalized:
+                return ""
+            resolved_code, resolved_name = resolve_stock(normalized)
+            return str(resolved_name or "").strip()
+
+        for idx in df.index[missing_name]:
+            code = normalize_stock_code_value(df.at[idx, "_code_norm"])
+            if not code:
+                continue
+            try:
+                resolved_name = _resolve_name_from_code(code)
+            except Exception:
+                continue
+            if not resolved_name:
+                continue
+            try:
+                df.at[idx, "\uc885\ubaa9\uba85"] = resolved_name
+            except Exception:
+                continue
+
+    if "\uc5c5\uc885\uad6c\ubd84" in df.columns:
+        _safe_fill_string_column(
+            "\uc5c5\uc885\uad6c\ubd84",
+            lambda code: daily_map.get(code, {}).get("industry") if daily_map else None,
+        )
+    if "\ub300\uc0c1" in df.columns:
+        _safe_fill_string_column(
+            "\ub300\uc0c1",
+            lambda code: daily_map.get(code, {}).get("market") if daily_map else None,
+        )
+
+    if "\ub4f1\ub77d\ub960" in df.columns:
+        change_series = pd.to_numeric(df["\ub4f1\ub77d\ub960"], errors="coerce")
+        if daily_map:
+            mapped_change = pd.to_numeric(
+                df["_code_norm"].map(lambda code: daily_map.get(code, {}).get("change_pct")),
+                errors="coerce",
+            )
+            change_series = change_series.fillna(mapped_change)
+        df["\ub4f1\ub77d\ub960"] = change_series
     if "\uc2dc\uac00\ucd1d\uc561.1" in df.columns:
-        df["_market_cap_100m"] = pd.to_numeric(df["\uc2dc\uac00\ucd1d\uc561.1"], errors="coerce")
+        primary_cap = pd.to_numeric(df["\uc2dc\uac00\ucd1d\uc561.1"], errors="coerce")
+        fallback_cap = None
+        if "\uc2dc\uac00\ucd1d\uc561" in df.columns:
+            if daily_map:
+                missing_cap = df["\uc2dc\uac00\ucd1d\uc561"].isna() | (df["\uc2dc\uac00\ucd1d\uc561"].astype(str).str.strip() == "")
+                if missing_cap.any():
+                    df.loc[missing_cap, "\uc2dc\uac00\ucd1d\uc561"] = df.loc[missing_cap, "_code_norm"].map(lambda code: daily_map.get(code, {}).get("market_cap"))
+            fallback_cap = df["\uc2dc\uac00\ucd1d\uc561"].map(parse_korean_number)
+        if fallback_cap is not None:
+            df["_market_cap_100m"] = primary_cap.where(primary_cap.notna(), fallback_cap)
+        else:
+            df["_market_cap_100m"] = primary_cap
     elif "\uc2dc\uac00\ucd1d\uc561" in df.columns:
+        if daily_map:
+            missing_cap = df["\uc2dc\uac00\ucd1d\uc561"].isna() | (df["\uc2dc\uac00\ucd1d\uc561"].astype(str).str.strip() == "")
+            if missing_cap.any():
+                df.loc[missing_cap, "\uc2dc\uac00\ucd1d\uc561"] = df.loc[missing_cap, "_code_norm"].map(lambda code: daily_map.get(code, {}).get("market_cap"))
         df["_market_cap_100m"] = df["\uc2dc\uac00\ucd1d\uc561"].map(parse_korean_number)
     else:
         df["_market_cap_100m"] = np.nan
+
+    if "\uac70\ub798\ub300\uae08" in df.columns and daily_map:
+        missing_tv = df["\uac70\ub798\ub300\uae08"].isna() | (df["\uac70\ub798\ub300\uae08"].astype(str).str.strip() == "")
+        if missing_tv.any():
+            df.loc[missing_tv, "\uac70\ub798\ub300\uae08"] = df.loc[missing_tv, "_code_norm"].map(lambda code: daily_map.get(code, {}).get("trading_value"))
+
     return df.dropna(subset=["\uc885\ubaa9\uba85", "\uc810\uc218"]).copy()
 
 
@@ -12085,6 +15366,176 @@ def get_screening_file_by_date(file_date: str | None = None, fallback_latest: bo
         return get_latest_screening_file()
 
     raise FileNotFoundError(f"해당 일자의 데일리 기업스크리닝 파일을 찾을 수 없습니다: {file_date}")
+
+
+SCREENING_AVERAGE_FILE_RE = re.compile(r"^(20\d{6})_\ub370\uc77c\ub9ac_\uae30\uc5c5\uc2a4\ud06c\ub9ac\ub2dd\.(?:xlsx|xlsm)$", re.IGNORECASE)
+
+
+def screening_compact_date_from_path(path: Path) -> str:
+    match = SCREENING_AVERAGE_FILE_RE.match(path.name)
+    if match:
+        return match.group(1)
+    digits = re.sub(r"\D", "", parse_screening_date(path))
+    return digits if re.fullmatch(r"20\d{6}", digits) else ""
+
+
+def list_screening_average_source_files() -> list[Path]:
+    files: list[tuple[str, Path]] = []
+    for path in SCREENING_DIR.glob("*\ub370\uc77c\ub9ac_\uae30\uc5c5\uc2a4\ud06c\ub9ac\ub2dd.xls*"):
+        if path.name.startswith("~$"):
+            continue
+        if not is_valid_excel_file_header(path):
+            continue
+        compact = screening_compact_date_from_path(path)
+        if compact:
+            files.append((compact, path))
+    return [path for _, path in sorted(files, key=lambda item: item[0])]
+
+
+def screening_header_positions(values: list[Any]) -> dict[str, list[int]]:
+    positions: dict[str, list[int]] = {}
+    for index, value in enumerate(values, start=1):
+        key = str(value or "").strip()
+        if not key:
+            continue
+        positions.setdefault(key, []).append(index)
+    return positions
+
+
+def find_screening_header_row_and_columns(sheet: Any) -> tuple[int, dict[str, list[int]]]:
+    max_header_scan = min(getattr(sheet, "max_row", 30) or 30, 30)
+    for row_index, values in enumerate(sheet.iter_rows(min_row=1, max_row=max_header_scan, values_only=True), start=1):
+        header_values = list(values or [])
+        positions = screening_header_positions(header_values)
+        if "\uc885\ubaa9\ucf54\ub4dc" in positions and "\uc810\uc218" in positions:
+            return row_index, positions
+    raise ValueError(f"엑셀에서 '{SCREENING_SHEET}' 시트의 종목코드/점수 헤더를 찾지 못했습니다.")
+
+
+def screening_score_candidate_columns(header_positions: dict[str, list[int]]) -> list[int]:
+    score_columns = header_positions.get("\uc810\uc218", [])
+    q_columns = header_positions.get("1M \ud3c9\uade0", [])
+    q_column = q_columns[0] if q_columns else 17
+    before_average = [column for column in score_columns if column < q_column]
+    after_average = [column for column in score_columns if column >= q_column]
+    # 기존 VBA는 Q/R 앞의 점수 열을 사용한다. 새 테스트 양식처럼 위치가 바뀐 경우는 뒤쪽 점수 열을 보조로 사용한다.
+    return list(reversed(before_average)) + list(reversed(after_average)) or [15]
+
+
+def extract_excel_digits_number(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    digits = re.sub(r"\D", "", str(value))
+    return float(digits) if digits else None
+
+
+def read_screening_scores_from_daily_data_formula(path: Path) -> dict[str, float]:
+    workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
+    try:
+        if "\ub370\uc77c\ub9ac\ub370\uc774\ud130" not in workbook.sheetnames:
+            return {}
+        daily_sheet = workbook["\ub370\uc77c\ub9ac\ub370\uc774\ud130"]
+        high_names: set[str] = set()
+        if "52\uc8fc\uc2e0\uace0\uac00" in workbook.sheetnames:
+            high_sheet = workbook["52\uc8fc\uc2e0\uace0\uac00"]
+            for values in high_sheet.iter_rows(min_row=1, values_only=True):
+                row_values = list(values or [])
+                if len(row_values) >= 3:
+                    normalized_name = normalize_text(row_values[2])
+                    if normalized_name:
+                        high_names.add(normalized_name)
+
+        scores: dict[str, float] = {}
+        for values in daily_sheet.iter_rows(min_row=2, values_only=True):
+            row_values = list(values or [])
+            if len(row_values) < 10:
+                continue
+            stock_code = normalize_stock_code_value(row_values[1])
+            stock_name = normalize_text(row_values[2])
+            change_rate = to_float(row_values[5])
+            trading_amount_digits = extract_excel_digits_number(row_values[7])
+            market_cap_digits = extract_excel_digits_number(row_values[9])
+            if not stock_code or change_rate is None or not trading_amount_digits or not market_cap_digits:
+                continue
+            trading_amount_score_unit = trading_amount_digits / 100000
+            if trading_amount_score_unit <= 0 or market_cap_digits <= 0 or (1.1 + change_rate) <= 0:
+                continue
+            high_adjustment = -4 if stock_name and stock_name in high_names else 4
+            try:
+                score = (
+                    math.log(
+                        (trading_amount_score_unit * trading_amount_score_unit)
+                        / (market_cap_digits**0.8)
+                        * ((1.1 + change_rate) ** 4),
+                        1.1,
+                    )
+                    + high_adjustment
+                    - 13
+                )
+            except (ValueError, ZeroDivisionError, OverflowError):
+                continue
+            if math.isfinite(score):
+                scores[stock_code] = score
+        return scores
+    finally:
+        workbook.close()
+
+
+def read_screening_s_values(path: Path) -> dict[str, float]:
+    """
+    '주도주 찾기' 시트 S열(종합점수)의 계산 결과(value cache)만 읽는다.
+    수식 문자열은 읽지 않는다.
+    """
+    workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
+    try:
+        if SCREENING_SHEET in workbook.sheetnames:
+            sheet = workbook[SCREENING_SHEET]
+        else:
+            fallback_name = next((name for name in workbook.sheetnames if "주도주" in str(name)), None)
+            if not fallback_name:
+                return {}
+            sheet = workbook[fallback_name]
+
+        header_row, header_positions = find_screening_header_row_and_columns(sheet)
+        code_columns = header_positions.get("\uc885\ubaa9\ucf54\ub4dc", [])
+        if not code_columns:
+            return {}
+        code_column = code_columns[0]
+
+        s_column = SCREENING_SCORE_COLUMN_INDEX + 1  # pandas 0-based index -> excel 1-based col index
+        scores: dict[str, float] = {}
+        for values in sheet.iter_rows(min_row=header_row + 1, values_only=True):
+            row_values = list(values or [])
+            code_value = row_values[code_column - 1] if len(row_values) >= code_column else None
+            stock_code = normalize_stock_code_value(code_value)
+            if not stock_code:
+                continue
+            raw_s = row_values[s_column - 1] if len(row_values) >= s_column else None
+            score = to_float(raw_s)
+            if score is None or not math.isfinite(score):
+                continue
+            scores[stock_code] = float(score)
+        return scores
+    finally:
+        workbook.close()
+
+
+def update_screening_score_average_columns(selected_file: Path) -> dict[str, Any]:
+    return {
+        "qr_updated": False,
+        "file_name": selected_file.name,
+        "file_date": parse_screening_date(selected_file),
+        "updated_rows": 0,
+        "source_files": 0,
+        "numeric_score_files": 0,
+        "db_source_files": 0,
+        "db_changed_files": 0,
+        "db_total_scores": 0,
+        "disabled": True,
+        "mode": "sql_only",
+    }
 
 
 def find_screening_note_cell(workbook: Any, stock_code: str | None, stock_name: str) -> tuple[Any, int, int]:
@@ -12435,7 +15886,11 @@ def update_screening_note_cache(file_date: str, stock_code: str | None, stock_na
     target_name = normalize_text(stock_name)
     changed = False
     for key, summary in list(summaries.items()):
-        if not str(key).startswith(file_date + "|") or not isinstance(summary, dict):
+        if not isinstance(summary, dict):
+            continue
+        summary_file_date = str(summary.get("file_date") or "")
+        key_text = str(key)
+        if summary_file_date != file_date and file_date not in key_text:
             continue
         rows = summary.get("qualified_stocks")
         if not isinstance(rows, list):
@@ -12453,45 +15908,74 @@ def update_screening_note_cache(file_date: str, stock_code: str | None, stock_na
         save_screening_cache(cache)
 
 
+def update_screening_note_sql(file_date: str, stock_code: str | None, stock_name: str, note: str) -> None:
+    if not SCREENING_FAST_DB_PATH.exists():
+        return
+    target_code = normalize_stock_code_value(stock_code)
+    target_name = str(stock_name or "").strip()
+    with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+        updated = 0
+        if target_code:
+            updated = conn.execute(
+                """
+                UPDATE screening_rows
+                SET note = ?
+                WHERE file_date_key = ?
+                  AND stock_code = ?
+                """,
+                (note, re.sub(r"\D", "", file_date), target_code),
+            ).rowcount or 0
+        if updated <= 0 and target_name:
+            updated = conn.execute(
+                """
+                UPDATE screening_rows
+                SET note = ?
+                WHERE file_date_key = ?
+                  AND stock_name = ?
+                """,
+                (note, re.sub(r"\D", "", file_date), target_name),
+            ).rowcount or 0
+        conn.commit()
+
+
+def resolve_screening_file_date(file_date: str | None = None) -> tuple[str, str]:
+    available_entries = screening_available_file_entries(limit=None)
+    if not available_entries:
+        raise FileNotFoundError("SQL 캐시에 주도주 데이터가 없습니다.")
+    available_map = {str(item.get("file_date") or ""): str(item.get("file_name") or "") for item in available_entries}
+    requested_date = ""
+    if file_date:
+        digits = re.sub(r"\D", "", str(file_date))
+        if len(digits) == 8:
+            requested_date = datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d")
+        else:
+            requested_date = str(file_date).strip()
+    selected_date = requested_date if requested_date in available_map else str(available_entries[0].get("file_date") or "")
+    if not selected_date:
+        raise FileNotFoundError("SQL 캐시에 주도주 데이터가 없습니다.")
+    return selected_date, str(available_map.get(selected_date) or f"{selected_date.replace('-', '')}_데일리_기업스크리닝.xlsx")
+
+
 def update_screening_note(request: ThemeNoteUpdateRequest) -> dict[str, Any]:
-    selected_file = get_screening_file_by_date(request.file_date)
-    file_date = parse_screening_date(selected_file)
+    file_date, file_name = resolve_screening_file_date(request.file_date)
     note = str(request.note or "").strip()
     stock_name = str(request.stock_name or "").strip()
     if not stock_name and not request.stock_code:
         raise ValueError("비고를 수정할 종목 정보가 없습니다.")
-    try:
-        excel_result = write_screening_note_to_excel(
-            selected_file=selected_file,
-            stock_code=request.stock_code,
-            stock_name=stock_name,
-            note=note,
-            close_open_excel=bool(request.close_open_excel),
-            write_open_excel=bool(request.write_open_excel),
-        )
-    except PermissionError as exc:
-        return {
-            "ok": False,
-            "locked": True,
-            "error": "엑셀 파일이 열려 있어 바로 저장할 수 없습니다.",
-            "detail": str(exc),
-            "file_name": selected_file.name,
-            "file_date": file_date,
-        }
-
+    update_screening_note_sql(file_date, request.stock_code, stock_name, note)
     update_screening_note_cache(file_date, request.stock_code, stock_name, note)
     return {
         "ok": True,
         "locked": False,
-        "file_name": selected_file.name,
+        "file_name": file_name,
         "file_date": file_date,
         "stock_code": normalize_stock_code_value(request.stock_code),
         "stock_name": stock_name,
         "note": note,
-        "closed_excel": bool(excel_result.get("closed_excel")),
-        "written_open_excel": bool(excel_result.get("written_open_excel")),
-        "written_with_excel": bool(excel_result.get("written_with_excel")),
-        "row": excel_result.get("row"),
+        "closed_excel": False,
+        "written_open_excel": False,
+        "written_with_excel": False,
+        "row": None,
     }
 
 
@@ -12544,9 +16028,366 @@ def build_recent_leader_stats(files: list[Path], min_score: float) -> list[dict[
     return grouped.to_dict(orient="records")
 
 
+def build_recent_leader_stats_from_summaries(
+    summaries: list[dict[str, Any]],
+    min_score: float,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for summary in summaries:
+        file_date = str(summary.get("file_date") or "")
+        for item in summary.get("qualified_stocks", []):
+            score = to_float(item.get("score"))
+            if score is None or score < min_score:
+                continue
+            stock_name = str(item.get("stock_name") or "").strip()
+            stock_code = normalize_stock_code_value(item.get("stock_code"))
+            canonical_theme, _ = canonicalize_theme(item.get("note"), stock_name)
+            rows.append(
+                {
+                    "date": file_date,
+                    "stock_code": stock_code or "",
+                    "stock_name": stock_name,
+                    "score": float(score),
+                    "change_pct": float(to_float(item.get("change_pct")) or 0.0),
+                    "note": str(item.get("note") or "").strip(),
+                    "theme": canonical_theme,
+                }
+            )
+
+    if not rows:
+        return []
+
+    recent_df = pd.DataFrame(rows)
+    grouped = (
+        recent_df.groupby("stock_name", as_index=False)
+        .agg(
+            stock_code=("stock_code", lambda s: next((str(item).strip() for item in s if str(item).strip()), "")),
+            appearances=("date", "count"),
+            strong_days=("score", lambda s: int((s >= 80).sum())),
+            avg_score=("score", "mean"),
+            max_score=("score", "max"),
+            avg_change_pct=("change_pct", "mean"),
+            latest_date=("date", "max"),
+            theme_signature=("theme", lambda s: ", ".join(pd.Series(s).value_counts().head(3).index.tolist())),
+            note_signature=("note", lambda s: ", ".join([item for item in pd.Series(s).value_counts().index.tolist() if item][:2])),
+        )
+        .sort_values(["appearances", "strong_days", "avg_score", "max_score"], ascending=[False, False, False, False])
+        .head(20)
+    )
+    grouped["avg_score"] = grouped["avg_score"].round(2)
+    grouped["max_score"] = grouped["max_score"].round(2)
+    grouped["avg_change_pct"] = grouped["avg_change_pct"].round(2)
+    return grouped.to_dict(orient="records")
+
+
+def build_screening_summary_from_sql(file_date: str, min_score: float) -> dict[str, Any]:
+    summaries = load_screening_summaries_for_dates([file_date])
+    selected_summary = summaries[0] if summaries else None
+    if not selected_summary:
+        raise FileNotFoundError(f"SQL 캐시에 해당 날짜 데이터가 없습니다: {file_date}")
+
+    available_file_map = {item["file_date"]: item["file_name"] for item in screening_available_file_entries(limit=None)}
+    qualified_rows: list[dict[str, Any]] = []
+    for row in selected_summary.get("qualified_stocks", []):
+        market_cap_100m = to_float(row.get("market_cap_100m"))
+        if market_cap_100m is None or market_cap_100m < SCREENING_MIN_MARKET_CAP_100M:
+            continue
+        stock_name = str(row.get("stock_name") or "").strip()
+        stock_code = normalize_stock_code_value(row.get("stock_code"))
+        resolved_code = stock_code or ""
+        resolved_name = stock_name
+        if not resolved_code:
+            resolved_code, resolved_name = resolve_stock(stock_name)
+        canonical_theme, matched_keywords = canonicalize_theme(row.get("note"), stock_name)
+        qualified_rows.append(
+            {
+                "theme": canonical_theme,
+                "theme_keywords": matched_keywords,
+                "stock_name": stock_name,
+                "stock_code": stock_code or resolved_code or "",
+                "resolved_name": resolved_name or stock_name,
+                "score": round(float(to_float(row.get("score")) or 0.0), 2),
+                "score_o": round(float(to_float(row.get("score_o")) or 0.0), 2),
+                "change_pct": round(float(to_float(row.get("change_pct")) or 0.0), 2),
+                "is_52w_high": int(to_float(row.get("is_52w_high")) or 0),
+                "market_cap_100m": round(float(market_cap_100m), 1),
+                "trading_value_100m": round(float(to_float(row.get("trading_value_100m")) or 0.0), 1),
+                "market": "" if pd.isna(row.get("market")) else str(row.get("market") or ""),
+                "industry": "" if pd.isna(row.get("industry")) else str(row.get("industry") or "").strip(),
+                "execution_strength": None,
+                "avg_1m": round(float(to_float(row.get("avg_1m")) or 0.0), 2) if to_float(row.get("avg_1m")) is not None else None,
+                "avg_1w": round(float(to_float(row.get("avg_1w")) or 0.0), 2) if to_float(row.get("avg_1w")) is not None else None,
+                "avg_3m": round(float(to_float(row.get("avg_3m")) or 0.0), 2) if to_float(row.get("avg_3m")) is not None else None,
+                "sortino_norm": round(float(to_float(row.get("sortino_norm")) or 0.0), 4),
+                "note": str(row.get("note") or "").strip(),
+                "lead_count": int(row.get("lead_count") or 0),
+                "avg_lead_score": round(float(row.get("avg_lead_score") or 0.0), 2),
+                "rank": len(qualified_rows) + 1,
+            }
+        )
+
+    theme_df = pd.DataFrame(qualified_rows)
+    grouped_records: list[dict[str, Any]] = []
+    if not theme_df.empty:
+        grouped = (
+            theme_df.groupby("theme", as_index=False)
+            .agg(
+                count=("stock_name", "count"),
+                avg_score=("score", "mean"),
+                max_score=("score", "max"),
+                leaders=("stock_name", lambda items: ", ".join(list(items)[:5])),
+                keywords=("theme_keywords", lambda items: ", ".join(sorted({token for sub in items for token in sub if token})[:5])),
+            )
+            .sort_values(["count", "avg_score", "max_score"], ascending=[False, False, False])
+            .head(15)
+        )
+        grouped["avg_score"] = grouped["avg_score"].round(2)
+        grouped["max_score"] = grouped["max_score"].round(2)
+        grouped_records = grouped.to_dict(orient="records")
+
+    return {
+        "file_name": available_file_map.get(file_date, f"{str(file_date).replace('-', '')}_데일리_기업스크리닝.xlsx"),
+        "file_date": file_date,
+        "min_score": min_score,
+        "score_basis": "sql_score_s",
+        "score_column": "screening_rows.score_s",
+        "qualified_count": len(qualified_rows),
+        "qualified_stocks": qualified_rows,
+        "theme_summary": grouped_records,
+    }
+
+
+def build_us_screening_summary_from_sql(file_date: str, min_score: float) -> dict[str, Any]:
+    summaries = load_us_screening_summaries_for_dates([file_date])
+    selected_summary = summaries[0] if summaries else None
+    if not selected_summary:
+        raise FileNotFoundError(f"US SQL 캐시에 해당 날짜 데이터가 없습니다: {file_date}")
+
+    available_file_map = {item["file_date"]: item["file_name"] for item in us_screening_available_file_entries(limit=None)}
+    qualified_rows: list[dict[str, Any]] = []
+    for row in selected_summary.get("qualified_stocks", []):
+        market_cap_100m = to_float(row.get("market_cap_100m"))
+        if market_cap_100m is None or market_cap_100m <= 0:
+            continue
+        stock_name = str(row.get("stock_name") or "").strip()
+        stock_code = str(row.get("stock_code") or "").strip().upper()
+        theme_name = str(row.get("manual_sector") or row.get("theme") or row.get("industry") or "Other").strip() or "Other"
+        industry_name = str(row.get("industry") or "").strip()
+        qualified_rows.append(
+            {
+                "theme": theme_name,
+                "theme_keywords": [theme_name] if theme_name else [],
+                "stock_name": stock_name,
+                "stock_code": stock_code,
+                "resolved_name": stock_name,
+                "score": round(float(to_float(row.get("score")) or 0.0), 2),
+                "score_o": round(float(to_float(row.get("score_o")) or 0.0), 2),
+                "change_pct": round(float(to_float(row.get("change_pct")) or 0.0), 2),
+                "is_52w_high": int(to_float(row.get("is_52w_high")) or 0),
+                "market_cap_100m": round(float(market_cap_100m), 2),
+                "trading_value_100m": round(float(to_float(row.get("trading_value_100m")) or 0.0), 2),
+                "market_cap_usd": round(float(market_cap_100m) * 100000000.0, 2),
+                "trading_value_usd": round(float(to_float(row.get("trading_value_100m")) or 0.0) * 100000000.0, 2),
+                "display_currency": "USD",
+                "local_currency": "USD",
+                "market": "US",
+                "industry": industry_name,
+                "execution_strength": None,
+                "avg_1m": round(float(to_float(row.get("avg_1m")) or 0.0), 2) if to_float(row.get("avg_1m")) is not None else None,
+                "avg_3m": round(float(to_float(row.get("avg_3m")) or 0.0), 2) if to_float(row.get("avg_3m")) is not None else None,
+                "avg_1w": round(float(to_float(row.get("avg_1w")) or 0.0), 2) if to_float(row.get("avg_1w")) is not None else None,
+                "sortino_norm": round(float(to_float(row.get("sortino_norm")) or 0.0), 4),
+                "note": str(row.get("note") or "").strip(),
+                "lead_count": int(row.get("lead_count") or 0),
+                "avg_lead_score": round(float(row.get("avg_lead_score") or 0.0), 2),
+                "rank": len(qualified_rows) + 1,
+                "manual_sector": theme_name,
+            }
+        )
+    theme_df = pd.DataFrame(qualified_rows)
+    grouped_records: list[dict[str, Any]] = []
+    if not theme_df.empty:
+        grouped = (
+            theme_df.groupby("theme", as_index=False)
+            .agg(
+                count=("stock_name", "count"),
+                avg_score=("score", "mean"),
+                max_score=("score", "max"),
+                leaders=("stock_name", lambda items: ", ".join(list(items)[:5])),
+                keywords=("theme_keywords", lambda items: ", ".join(sorted({token for sub in items for token in sub if token})[:5])),
+            )
+            .sort_values(["count", "avg_score", "max_score"], ascending=[False, False, False])
+            .head(15)
+        )
+        grouped["avg_score"] = grouped["avg_score"].round(2)
+        grouped["max_score"] = grouped["max_score"].round(2)
+        grouped_records = grouped.to_dict(orient="records")
+    return {
+        "file_name": available_file_map.get(file_date, f"{str(file_date).replace('-', '')}_us_daily_screening.xlsx"),
+        "file_date": file_date,
+        "min_score": min_score,
+        "score_basis": "sql_score_s",
+        "score_column": "screening_rows.score_s",
+        "qualified_count": len(qualified_rows),
+        "qualified_stocks": qualified_rows,
+        "theme_summary": grouped_records,
+    }
+
+
+ASIA_THEME_REGION_OPTIONS = [
+    {"code": "jp", "label": "일본"},
+    {"code": "cn", "label": "중국"},
+    {"code": "tw", "label": "대만"},
+]
+
+
+def normalize_asia_theme_region(region: str | None) -> str:
+    value = str(region or "").strip().lower()
+    if value in {"jp", "japan", "tse"}:
+        return "jp"
+    if value in {"cn", "china", "sse", "szse"}:
+        return "cn"
+    if value in {"tw", "taiwan", "twse"}:
+        return "tw"
+    return "jp"
+
+
+def infer_asia_theme_region(stock_code: Any, industry: Any = "", manual_sector: Any = "") -> str:
+    code = str(stock_code or "").strip().upper()
+    industry_text = str(industry or "").strip().upper()
+    sector_text = str(manual_sector or "").strip().upper()
+    combined = " ".join(part for part in [code, industry_text, sector_text] if part)
+    if combined.startswith("TWSE:") or "TWSE" in combined:
+        return "tw"
+    if combined.startswith("TSE:") or "TSE" in combined:
+        return "jp"
+    if combined.startswith("SSE:") or combined.startswith("SZSE:") or "SSE" in combined or "SZSE" in combined:
+        return "cn"
+    return "jp"
+
+
+def asia_theme_region_currency(region: str) -> str:
+    normalized = normalize_asia_theme_region(region)
+    if normalized == "tw":
+        return "TWD"
+    if normalized == "cn":
+        return "CNY"
+    return "JPY"
+
+
+def screening_value_100m_to_usd(value_100m: Any, currency: str) -> float | None:
+    amount_100m = to_float(value_100m)
+    if amount_100m is None:
+        return None
+    usd_value = convert_currency_value(float(amount_100m) * 100000000.0, currency, "USD")
+    if usd_value is None:
+        return None
+    return round(float(usd_value), 2)
+
+
+def build_asia_screening_summary_from_sql(file_date: str, min_score: float, region: str = "jp") -> dict[str, Any]:
+    normalized_region = normalize_asia_theme_region(region)
+    region_currency = asia_theme_region_currency(normalized_region)
+    summaries = load_asia_screening_summaries_for_dates([file_date])
+    selected_summary = summaries[0] if summaries else None
+    if not selected_summary:
+        raise FileNotFoundError(f"ASIA SQL 캐시에 해당 날짜 데이터가 없습니다: {file_date}")
+
+    available_file_map = {item["file_date"]: item["file_name"] for item in asia_screening_available_file_entries(limit=None)}
+    qualified_rows: list[dict[str, Any]] = []
+    for row in selected_summary.get("qualified_stocks", []):
+        market_cap_100m = to_float(row.get("market_cap_100m"))
+        if market_cap_100m is None or market_cap_100m <= 0:
+            continue
+        if infer_asia_theme_region(row.get("stock_code"), row.get("industry"), row.get("manual_sector") or row.get("theme")) != normalized_region:
+            continue
+        stock_name = str(row.get("stock_name") or "").strip()
+        stock_code = str(row.get("stock_code") or "").strip().upper()
+        theme_name = str(row.get("manual_sector") or row.get("theme") or "Other").strip() or "Other"
+        market_name = str(row.get("industry") or "").strip()
+        market_cap_usd = screening_value_100m_to_usd(market_cap_100m, region_currency)
+        trading_value_usd = screening_value_100m_to_usd(row.get("trading_value_100m"), region_currency)
+        qualified_rows.append(
+            {
+                "theme": theme_name,
+                "theme_keywords": [theme_name] if theme_name else [],
+                "stock_name": stock_name,
+                "stock_code": stock_code,
+                "resolved_name": stock_name,
+                "score": round(float(to_float(row.get("score")) or 0.0), 2),
+                "score_o": round(float(to_float(row.get("score_o")) or 0.0), 2),
+                "change_pct": round(float(to_float(row.get("change_pct")) or 0.0), 2),
+                "is_52w_high": int(to_float(row.get("is_52w_high")) or 0),
+                "market_cap_100m": round(float(market_cap_100m), 2),
+                "trading_value_100m": round(float(to_float(row.get("trading_value_100m")) or 0.0), 2),
+                "market_cap_usd": market_cap_usd,
+                "trading_value_usd": trading_value_usd,
+                "display_currency": "USD",
+                "local_currency": region_currency,
+                "market": "ASIA",
+                "industry": market_name,
+                "execution_strength": None,
+                "avg_1m": round(float(to_float(row.get("avg_1m")) or 0.0), 2) if to_float(row.get("avg_1m")) is not None else None,
+                "avg_3m": round(float(to_float(row.get("avg_3m")) or 0.0), 2) if to_float(row.get("avg_3m")) is not None else None,
+                "avg_1w": round(float(to_float(row.get("avg_1w")) or 0.0), 2) if to_float(row.get("avg_1w")) is not None else None,
+                "sortino_norm": round(float(to_float(row.get("sortino_norm")) or 0.0), 4),
+                "note": str(row.get("note") or "").strip(),
+                "lead_count": int(row.get("lead_count") or 0),
+                "avg_lead_score": round(float(row.get("avg_lead_score") or 0.0), 2),
+                "rank": len(qualified_rows) + 1,
+                "manual_sector": theme_name,
+            }
+        )
+    theme_df = pd.DataFrame(qualified_rows)
+    grouped_records: list[dict[str, Any]] = []
+    if not theme_df.empty:
+        grouped = (
+            theme_df.groupby("theme", as_index=False)
+            .agg(
+                count=("stock_name", "count"),
+                avg_score=("score", "mean"),
+                max_score=("score", "max"),
+                leaders=("stock_name", lambda items: ", ".join(list(items)[:5])),
+                keywords=("theme_keywords", lambda items: ", ".join(sorted({token for sub in items for token in sub if token})[:5])),
+            )
+            .sort_values(["count", "avg_score", "max_score"], ascending=[False, False, False])
+            .head(15)
+        )
+        grouped["avg_score"] = grouped["avg_score"].round(2)
+        grouped["max_score"] = grouped["max_score"].round(2)
+        grouped_records = grouped.to_dict(orient="records")
+    return {
+        "file_name": available_file_map.get(file_date, f"{str(file_date).replace('-', '')}_asia_daily_screening.xlsx"),
+        "file_date": file_date,
+        "min_score": min_score,
+        "selected_region": normalized_region,
+        "region_options": ASIA_THEME_REGION_OPTIONS,
+        "score_basis": "sql_score_s",
+        "score_column": "screening_rows.score_s",
+        "qualified_count": len(qualified_rows),
+        "qualified_stocks": qualified_rows,
+        "theme_summary": grouped_records,
+    }
+
+
 def build_screening_summary_from_excel(selected_file: Path, min_score: float) -> dict[str, Any]:
     df = load_screening_frame(selected_file)
-    df = df[df["\uc810\uc218"] >= min_score].sort_values("\uc810\uc218", ascending=False)
+    if "_market_cap_100m" not in df.columns:
+        if "시가총액" in df.columns:
+            df["_market_cap_100m"] = pd.to_numeric(df["시가총액"], errors="coerce")
+            if df["_market_cap_100m"].isna().all():
+                df["_market_cap_100m"] = df["시가총액"].map(parse_korean_number)
+        else:
+            df["_market_cap_100m"] = np.nan
+    if "점수" not in df.columns:
+        if "종합 점수" in df.columns:
+            df["점수"] = pd.to_numeric(df["종합 점수"], errors="coerce")
+        elif "O열점수" in df.columns:
+            df["점수"] = pd.to_numeric(df["O열점수"], errors="coerce")
+        else:
+            df["점수"] = np.nan
+    # 점수 컷은 적용하지 않고, 시총 필터(2000억 이상)만 유지한다.
+    df = df.sort_values("\uc810\uc218", ascending=False)
     df = df[df["_market_cap_100m"] >= SCREENING_MIN_MARKET_CAP_100M]
 
     qualified_rows: list[dict[str, Any]] = []
@@ -12562,6 +16403,19 @@ def build_screening_summary_from_excel(selected_file: Path, min_score: float) ->
         execution_strength = to_float(row.get("\uccb4\uacb0\uac15\ub3c4"))
         avg_1m = to_float(row.get("1M \ud3c9\uade0"))
         avg_1w = to_float(row.get("1W \ud3c9\uade0"))
+        raw_change_pct = to_float(row.get("\ub4f1\ub77d\ub960"))
+        if raw_change_pct is None:
+            normalized_change_pct = 0.0
+        else:
+            # 신형 Stock_Daily(종합 점수 컬럼 존재)는 등락률이 이미 퍼센트 단위다.
+            # 구형 스키마에서만 소수 비율 표기를 퍼센트로 보정한다.
+            if "종합 점수" in df.columns:
+                normalized_change_pct = raw_change_pct
+            elif abs(raw_change_pct) <= 1.0:
+                normalized_change_pct = raw_change_pct * 100.0
+            else:
+                normalized_change_pct = raw_change_pct
+
         qualified_rows.append(
             {
                 "theme": canonical_theme,
@@ -12570,7 +16424,8 @@ def build_screening_summary_from_excel(selected_file: Path, min_score: float) ->
                 "stock_code": stock_code or "",
                 "resolved_name": resolved_name,
                 "score": round(float(row.get("\uc810\uc218")), 2),
-                "change_pct": round(float(row.get("\ub4f1\ub77d\ub960", 0) or 0) * 100, 2),
+                "score_o": round(float(to_float(row.get("O열점수")) or 0.0), 2),
+                "change_pct": round(float(normalized_change_pct), 2),
                 "is_52w_high": str(row.get("52\uc2e0\uace0") or "").strip(),
                 "market_cap_100m": round(float(row.get("_market_cap_100m")), 1),
                 "trading_value_100m": round(float(trading_value or 0.0), 1),
@@ -12579,6 +16434,7 @@ def build_screening_summary_from_excel(selected_file: Path, min_score: float) ->
                 "execution_strength": round(execution_strength * 100, 2) if execution_strength is not None else None,
                 "avg_1m": round(avg_1m, 2) if avg_1m is not None else None,
                 "avg_1w": round(avg_1w, 2) if avg_1w is not None else None,
+                "sortino_norm": round(float(to_float(row.get("소르티노_정규화")) or 0.0), 4),
                 "note": "" if pd.isna(row.get("\ube44\uace0")) else str(row.get("\ube44\uace0")).strip(),
                 "lead_count": int(row.get("\uc8fc\ub3c4\ud69f\uc218", 0) or 0),
                 "avg_lead_score": round(float(row.get("\ud3c9\uade0\uc810\uc218", 0) or 0), 2),
@@ -12609,6 +16465,8 @@ def build_screening_summary_from_excel(selected_file: Path, min_score: float) ->
         "file_name": selected_file.name,
         "file_date": parse_screening_date(selected_file),
         "min_score": min_score,
+        "score_basis": "excel_column_s",
+        "score_column": SCREENING_SCORE_COLUMN_NAME,
         "qualified_count": len(qualified_rows),
         "qualified_stocks": qualified_rows,
         "theme_summary": grouped_records,
@@ -12618,16 +16476,125 @@ def build_screening_summary_from_excel(selected_file: Path, min_score: float) ->
 def attach_screening_runtime_fields(summary: dict[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(summary, ensure_ascii=False))
     sector_db = load_sector_db()
+    file_date = str(payload.get("file_date") or "")
+    signal_state_map = build_stock_entry_state_map(file_date, threshold=65.0, exit_threshold=50.0, lookback_days=365) if file_date else {}
+    prev_scores_by_key: dict[str, float] = {}
+    has_prev_day_scores = False
+    if file_date:
+        available_entries = screening_available_file_entries(limit=None)
+        available_dates = [item["file_date"] for item in reversed(available_entries)]
+        prev_summary: dict[str, Any] | None = None
+        for index_no, date_text in enumerate(available_dates):
+            if date_text == file_date and index_no > 0:
+                previous_date = available_dates[index_no - 1]
+                summaries = load_screening_summaries_for_dates([previous_date])
+                prev_summary = summaries[0] if summaries else None
+                break
+        if isinstance(prev_summary, dict):
+            has_prev_day_scores = True
+            for prev_row in prev_summary.get("qualified_stocks", []):
+                if not isinstance(prev_row, dict):
+                    continue
+                prev_key = sector_rotation_stock_key(prev_row)
+                prev_score = to_float(prev_row.get("score"))
+                if prev_key and prev_score is not None:
+                    prev_scores_by_key[prev_key] = float(prev_score)
     for row in payload.get("qualified_stocks", []):
         row["manual_sector"] = resolve_sector_for_stock(row.get("stock_code"), row.get("stock_name"), sector_db)
+        stock_key = sector_rotation_stock_key(row)
+        current_score = to_float(row.get("score"))
+        prev_score = prev_scores_by_key.get(stock_key)
+        entry_signal_today = (
+            has_prev_day_scores
+            and current_score is not None
+            and float(current_score) > 65.0
+            and (prev_score is None or float(prev_score) <= 65.0)
+        )
+        signal_state = signal_state_map.get(stock_key, {}) if stock_key else {}
+        exit_signal_today = (
+            bool(signal_state)
+            and not bool(signal_state.get("active"))
+            and str(signal_state.get("end_date") or "") == file_date
+            and current_score is not None
+            and float(current_score) <= 50.0
+        )
+        signal_type = "entry" if entry_signal_today else "exit" if exit_signal_today else ""
+        row["entry_signal_type"] = signal_type
+        row["entry_signal_active"] = bool(signal_type)
+        row["entry_signal_start_date"] = file_date if entry_signal_today else str(signal_state.get("start_date") or "")
+        row["entry_signal_end_date"] = file_date if exit_signal_today else str(signal_state.get("end_date") or "")
+        row["entry_signal_label"] = "진입 시그널" if entry_signal_today else "편출 시그널" if exit_signal_today else ""
     return payload
+
+
+@lru_cache(maxsize=128)
+def build_stock_entry_state_map(
+    end_date: str,
+    threshold: float = 70.0,
+    lookback_days: int = 140,
+    exit_threshold: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    if not end_date:
+        return {}
+    try:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except Exception:
+        return {}
+    lookback_span = max(10, int(lookback_days or 140))
+    start_dt = end_dt - timedelta(days=lookback_span + 10)
+    summaries = screening_backtest_source_summaries(start_date=start_dt, end_date=end_dt)
+    filtered = [item for item in summaries if str(item.get("file_date") or "") <= end_date]
+    if not filtered:
+        return {}
+    filtered = filtered[-max(10, min(lookback_span, len(filtered))):]
+    state_by_stock: dict[str, dict[str, Any]] = {}
+    for summary in filtered:
+        date_text = str(summary.get("file_date") or "")
+        day_scores: dict[str, float] = {}
+        for row in summary.get("qualified_stocks", []):
+            score = to_float(row.get("score"))
+            if score is None:
+                continue
+            stock_key = sector_rotation_stock_key(row)
+            if stock_key:
+                day_scores[stock_key] = float(score)
+        all_keys = set(state_by_stock.keys()) | set(day_scores.keys())
+        for stock_key in all_keys:
+            prev = state_by_stock.get(stock_key, {"active": False, "start_date": "", "end_date": ""})
+            score = day_scores.get(stock_key)
+            if prev.get("active"):
+                active_now = score is not None and score > (float(exit_threshold) if exit_threshold is not None else threshold)
+            else:
+                active_now = score is not None and score >= threshold
+            if active_now and not prev.get("active"):
+                prev["active"] = True
+                prev["start_date"] = date_text
+                prev["end_date"] = ""
+            elif (not active_now) and prev.get("active"):
+                prev["active"] = False
+                prev["end_date"] = date_text
+            state_by_stock[stock_key] = prev
+    for stock_key, state in state_by_stock.items():
+        if state.get("active") and state.get("start_date"):
+            try:
+                start_dt = datetime.strptime(str(state["start_date"]), "%Y-%m-%d").date()
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+                days = (end_dt - start_dt).days + 1
+                state["label"] = f"진입 {max(days, 1)}일차"
+            except Exception:
+                state["label"] = "진입중"
+        elif state.get("end_date"):
+            state["label"] = f"이탈({state.get('end_date')})"
+        else:
+            state["label"] = ""
+    return state_by_stock
 
 
 def screening_summary_has_table_fields(summary: dict[str, Any]) -> bool:
     rows = summary.get("qualified_stocks", [])
     if not rows:
         return True
-    required_fields = {"is_52w_high", "execution_strength", "avg_1m", "avg_1w"}
+    required_fields = {"is_52w_high", "execution_strength", "avg_1m", "avg_1w", "sortino_norm", "score_o"}
     return required_fields.issubset(set(rows[0].keys()))
 
 
@@ -12641,75 +16608,858 @@ def load_screening_summary(
     if file_date:
         digits = re.sub(r"\D", "", str(file_date))
         requested_date = datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d") if len(digits) == 8 else str(file_date).strip()
-    selected_file = get_screening_file_by_date(file_date, fallback_latest=True)
-    selected_date = parse_screening_date(selected_file)
+    available_entries = screening_available_file_entries(limit=None)
+    available_dates = [item["file_date"] for item in available_entries]
+    if not available_dates:
+        raise FileNotFoundError("SQL 캐시에 주도주 데이터가 없습니다.")
+    selected_date = requested_date if requested_date in available_dates else available_dates[0]
     fallback_used = bool(requested_date and requested_date != selected_date)
     cache = load_screening_cache()
-    summaries = cache.setdefault("summaries", {})
-    recent_cache = cache.setdefault("recent_leaders", {})
-    key = screening_cache_key(selected_date, min_score)
-    recent_key = f"{float(min_score):.4f}|{int(recent_limit)}"
-    source = "cache"
+    summaries_cache = cache.setdefault("summaries", {})
+    payload_cache_key = screening_summary_payload_cache_key(selected_date, min_score, recent_limit)
+    if not force_reload:
+        cached_payload = summaries_cache.get(payload_cache_key)
+        if isinstance(cached_payload, dict):
+            payload = json.loads(json.dumps(cached_payload, ensure_ascii=False))
+            payload["requested_file_date"] = requested_date
+            payload["fallback_file_date"] = selected_date if fallback_used else ""
+            payload["fallback_reason"] = "requested_file_missing" if fallback_used else ""
+            payload["cache_source"] = "sql_cache"
+            payload["cache_loaded_at"] = datetime.now().isoformat(timespec="seconds")
+            return payload
 
-    if force_reload or key not in summaries or not screening_summary_has_table_fields(summaries.get(key, {})):
-        summaries[key] = build_screening_summary_from_excel(selected_file, min_score)
-        source = "excel"
-
-    if force_reload or recent_key not in recent_cache:
-        recent_cache[recent_key] = build_recent_leader_stats(list_recent_screening_files(limit=recent_limit), min_score=min_score)
-        source = "excel"
-
-    if source == "excel":
-        cache = save_screening_cache(cache)
-
-    payload = attach_screening_runtime_fields(summaries[key])
-    payload["recent_leaders"] = recent_cache.get(recent_key, [])
+    payload = attach_screening_runtime_fields(build_screening_summary_from_sql(selected_date, min_score))
+    recent_dates = [item["file_date"] for item in reversed(available_entries[: max(1, int(recent_limit))])]
+    recent_summaries = load_screening_summaries_for_dates(recent_dates)
+    payload["recent_leaders"] = build_recent_leader_stats_from_summaries(recent_summaries, min_score=min_score)
     payload["available_files"] = [
         {
-            "file_name": path.name,
-            "file_date": parse_screening_date(path),
+            "file_name": item["file_name"],
+            "file_date": item["file_date"],
         }
-        for path in list_screening_files()
+        for item in available_entries
     ]
-    payload["cache_loaded_at"] = cache.get("loaded_at", "")
-    payload["cache_source"] = source
+    payload["cache_loaded_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["cache_source"] = "sql"
+    payload["requested_file_date"] = requested_date
+    payload["fallback_file_date"] = selected_date if fallback_used else ""
+    payload["fallback_reason"] = "requested_file_missing" if fallback_used else ""
+    summaries_cache[payload_cache_key] = json.loads(json.dumps(payload, ensure_ascii=False))
+    save_screening_cache(cache)
+    return payload
+
+
+def attach_us_screening_runtime_fields(summary: dict[str, Any]) -> dict[str, Any]:
+    payload = json.loads(json.dumps(summary, ensure_ascii=False))
+    file_date = str(payload.get("file_date") or "")
+    prev_scores_by_key: dict[str, float] = {}
+    has_prev_day_scores = False
+    if file_date:
+        available_entries = us_screening_available_file_entries(limit=None)
+        available_dates = [item["file_date"] for item in reversed(available_entries)]
+        prev_summary: dict[str, Any] | None = None
+        for index_no, date_text in enumerate(available_dates):
+            if date_text == file_date and index_no > 0:
+                previous_date = available_dates[index_no - 1]
+                summaries = load_us_screening_summaries_for_dates([previous_date])
+                prev_summary = summaries[0] if summaries else None
+                break
+        if isinstance(prev_summary, dict):
+            has_prev_day_scores = True
+            for prev_row in prev_summary.get("qualified_stocks", []):
+                if not isinstance(prev_row, dict):
+                    continue
+                prev_key = sector_rotation_stock_key(prev_row)
+                prev_score = to_float(prev_row.get("score"))
+                if prev_key and prev_score is not None:
+                    prev_scores_by_key[prev_key] = float(prev_score)
+    for row in payload.get("qualified_stocks", []):
+        row["manual_sector"] = str(row.get("manual_sector") or row.get("theme") or "Other").strip() or "Other"
+        stock_key = sector_rotation_stock_key(row)
+        current_score = to_float(row.get("score"))
+        prev_score = prev_scores_by_key.get(stock_key)
+        first_breakout_80 = (
+            has_prev_day_scores
+            and current_score is not None
+            and float(current_score) >= 80.0
+            and (prev_score is None or float(prev_score) < 80.0)
+        )
+        row["entry_signal_active"] = bool(first_breakout_80)
+        row["entry_signal_start_date"] = file_date if first_breakout_80 else ""
+        row["entry_signal_end_date"] = file_date if first_breakout_80 else ""
+        row["entry_signal_label"] = "80 신규 돌파" if first_breakout_80 else ""
+    return payload
+
+
+def load_us_screening_summary(
+    min_score: float = 50.0,
+    recent_limit: int = RECENT_SCREENING_LOOKBACK,
+    file_date: str | None = None,
+) -> dict[str, Any]:
+    requested_date = ""
+    if file_date:
+        digits = re.sub(r"\D", "", str(file_date))
+        requested_date = datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d") if len(digits) == 8 else str(file_date).strip()
+    available_entries = us_screening_available_file_entries(limit=None)
+    available_dates = [item["file_date"] for item in available_entries]
+    if not available_dates:
+        raise FileNotFoundError("US SQL 캐시에 주도주 데이터가 없습니다.")
+    selected_date = requested_date if requested_date in available_dates else available_dates[0]
+    fallback_used = bool(requested_date and requested_date != selected_date)
+    payload = attach_us_screening_runtime_fields(build_us_screening_summary_from_sql(selected_date, min_score))
+    recent_dates = [item["file_date"] for item in reversed(available_entries[: max(1, int(recent_limit))])]
+    recent_summaries = load_us_screening_summaries_for_dates(recent_dates)
+    payload["recent_leaders"] = build_recent_leader_stats_from_summaries(recent_summaries, min_score=min_score)
+    payload["available_files"] = [{"file_name": item["file_name"], "file_date": item["file_date"]} for item in available_entries]
+    payload["cache_loaded_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["cache_source"] = "sql"
     payload["requested_file_date"] = requested_date
     payload["fallback_file_date"] = selected_date if fallback_used else ""
     payload["fallback_reason"] = "requested_file_missing" if fallback_used else ""
     return payload
 
 
-def reload_screening_cache(request: ThemeReloadRequest) -> dict[str, Any]:
-    selected_file = get_screening_file_by_date(request.file_date, fallback_latest=True)
-    cache = load_screening_cache()
-    summaries = cache.setdefault("summaries", {})
-    recent_cache = cache.setdefault("recent_leaders", {})
-    targets = list_screening_files(limit=120) if request.reload_all else [selected_file]
-
-    for path in targets:
-        file_date = parse_screening_date(path)
-        if not file_date:
+def build_us_theme_sector_calendar(min_score: float = 50.0, limit: int = 60) -> dict[str, Any]:
+    cache = load_us_screening_cache()
+    calendar_cache = cache.setdefault("calendar", {})
+    calendar_key = f"v{US_SCREENING_CALENDAR_CACHE_VERSION}|{float(min_score):.4f}|{int(limit)}"
+    cached_calendar = calendar_cache.get(calendar_key)
+    if isinstance(cached_calendar, dict):
+        return cached_calendar
+    available_entries = us_screening_available_file_entries(limit=max(1, int(limit)))
+    source_summaries = load_us_screening_summaries_for_dates([item["file_date"] for item in reversed(available_entries)])
+    days: list[dict[str, Any]] = []
+    for summary in source_summaries:
+        file_date = str(summary.get("file_date") or "")
+        rows = summary.get("qualified_stocks") or []
+        if not file_date or not rows:
             continue
-        try:
-            summaries[screening_cache_key(file_date, request.min_score)] = build_screening_summary_from_excel(path, request.min_score)
-        except Exception:
-            if not request.reload_all:
-                raise
-            continue
-
-    recent_key = f"{float(request.min_score):.4f}|{int(request.recent_limit)}"
-    if request.reload_all or recent_key not in recent_cache:
-        recent_cache[recent_key] = build_recent_leader_stats(
-            list_recent_screening_files(limit=request.recent_limit),
-            min_score=request.min_score,
+        sector_map: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            sector = str(row.get("manual_sector") or row.get("theme") or "Other").strip() or "Other"
+            bucket = sector_map.setdefault(
+                sector,
+                {
+                    "sector": sector,
+                    "count": 0,
+                    "score_total": 0.0,
+                    "rank_total": 0.0,
+                    "top20_count": 0,
+                    "top50_count": 0,
+                    "trading_value_100m": 0.0,
+                    "market_cap_100m": 0.0,
+                    "leaders": [],
+                },
+            )
+            rank_value = int(to_float(row.get("rank")) or (len(rows) + 1))
+            bucket["count"] += 1
+            bucket["score_total"] += float(row.get("score") or 0.0)
+            bucket["rank_total"] += rank_value
+            if rank_value <= 20:
+                bucket["top20_count"] += 1
+            if rank_value <= 50:
+                bucket["top50_count"] += 1
+            bucket["trading_value_100m"] += float(row.get("trading_value_100m") or 0.0)
+            bucket["market_cap_100m"] += float(row.get("market_cap_100m") or 0.0)
+            if len(bucket["leaders"]) < 4:
+                bucket["leaders"].append(str(row.get("stock_name") or ""))
+        sectors = []
+        for item in sector_map.values():
+            turnover_ratio = item["trading_value_100m"] / item["market_cap_100m"] if item["market_cap_100m"] else 0.0
+            top20_ratio = item["top20_count"] / item["count"] if item["count"] else 0.0
+            top50_ratio = item["top50_count"] / item["count"] if item["count"] else 0.0
+            sector_strength = (
+                (item["score_total"] / item["count"] if item["count"] else 0.0) * 0.6
+                + top20_ratio * 100.0 * 0.2
+                + min(max(turnover_ratio * 100.0, 0.0), 10.0) * 10.0 * 0.2
+            )
+            sectors.append(
+                {
+                    "sector": item["sector"],
+                    "count": item["count"],
+                    "avg_score": round(item["score_total"] / item["count"], 2) if item["count"] else 0.0,
+                    "rank_strength": 0.0,
+                    "sector_strength": round(sector_strength, 2),
+                    "rank_power": 0.0,
+                    "avg_rank": round(item["rank_total"] / item["count"], 1) if item["count"] else 0.0,
+                    "top20_count": item["top20_count"],
+                    "top50_count": item["top50_count"],
+                    "top20_ratio": round(top20_ratio, 4),
+                    "top50_ratio": round(top50_ratio, 4),
+                    "trading_value_100m": round(item["trading_value_100m"], 2),
+                    "market_cap_100m": round(item["market_cap_100m"], 2),
+                    "turnover_ratio": round(turnover_ratio, 6),
+                    "turnover_score": round(min(max(turnover_ratio * 100.0, 0.0), 10.0) * 10.0, 2),
+                    "confidence": "높음" if item["count"] >= 3 else "보통" if item["count"] == 2 else "낮음",
+                    "leaders": item["leaders"],
+                }
+            )
+        sectors.sort(key=lambda item: (-(item["sector_strength"] or 0.0), -(item["avg_score"] or 0.0), item["sector"]))
+        days.append(
+            {
+                "date": file_date,
+                "file_name": next((entry["file_name"] for entry in available_entries if entry["file_date"] == file_date), f"{file_date.replace('-', '')}_us_daily_screening.xlsx"),
+                "qualified_count": len(rows),
+                "assigned_count": len(rows),
+                "top50_avg_score": round(float(np.mean([float(row.get("score") or 0.0) for row in rows[:50]])) if rows else 0.0, 2),
+                "sectors": sectors[:5],
+            }
         )
-    save_screening_cache(cache)
-    return load_screening_summary(
+    payload = {"days": days}
+    calendar_cache[calendar_key] = payload
+    save_us_screening_cache(cache)
+    return payload
+
+
+def reload_us_screening_cache(request: ThemeReloadRequest) -> dict[str, Any]:
+    cache = load_us_screening_cache()
+    cache["summaries"] = {}
+    cache["recent_leaders"] = {}
+    cache["calendar"] = {}
+    save_us_screening_cache(cache)
+    return load_us_screening_summary(min_score=request.min_score, recent_limit=request.recent_limit, file_date=request.file_date)
+
+
+def resolve_us_screening_market_date(target_date: str | None = None) -> str:
+    date_key = re.sub(r"\D", "", str(target_date or datetime.now().strftime("%Y%m%d")))
+    if not re.fullmatch(r"20\d{6}", date_key):
+        raise ValueError("invalid market date")
+    probe_start = datetime.strptime(date_key, "%Y%m%d").date()
+    best_date = ""
+    try:
+        yahoo_response = requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
+            params={"range": "1mo", "interval": "1d"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=20,
+        )
+        yahoo_response.raise_for_status()
+        result = (yahoo_response.json().get("chart", {}).get("result") or [{}])[0]
+        meta = result.get("meta") or {}
+        market_tz = ZoneInfo(str(meta.get("exchangeTimezoneName") or "").strip() or "America/New_York")
+        local_dates = [
+            datetime.fromtimestamp(int(value), timezone.utc).astimezone(market_tz).strftime("%Y%m%d")
+            for value in (result.get("timestamp") or [])
+            if value and datetime.fromtimestamp(int(value), timezone.utc).astimezone(market_tz).date() <= probe_start
+        ]
+        if local_dates:
+            best_date = max(local_dates)
+    except Exception:
+        best_date = ""
+    for offset in range(8):
+        probe = probe_start - timedelta(days=offset)
+        start = (probe - timedelta(days=7)).isoformat()
+        try:
+            frame = fdr.DataReader("AAPL", start, probe.isoformat())
+        except Exception:
+            continue
+        if frame is None or frame.empty:
+            continue
+        frame = frame.reset_index()
+        if "Date" not in frame.columns:
+            frame = frame.rename(columns={frame.columns[0]: "Date"})
+        frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+        frame = frame.dropna(subset=["Date"])
+        if frame.empty:
+            continue
+        candidate = frame["Date"].max().strftime("%Y%m%d")
+        if candidate > best_date:
+            best_date = candidate
+        break
+    return best_date or date_key
+
+
+def _load_screening_existing_date_keys(db_path: Path) -> set[str]:
+    if not db_path.exists():
+        return set()
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            rows = conn.execute("SELECT DISTINCT file_date_key FROM file_meta ORDER BY file_date_key ASC").fetchall()
+    except Exception:
+        return set()
+    return {str(row[0] or "").strip() for row in rows if row and re.fullmatch(r"20\d{6}", str(row[0] or "").strip())}
+
+
+def _collect_missing_market_dates(
+    *,
+    db_path: Path,
+    target_compact: str,
+    resolve_market_date: Callable[[str | None], str],
+) -> list[str]:
+    existing_dates = _load_screening_existing_date_keys(db_path)
+    if existing_dates:
+        start_date = datetime.strptime(max(existing_dates), "%Y%m%d").date() + timedelta(days=1)
+    else:
+        start_date = datetime.strptime(target_compact, "%Y%m%d").date()
+    end_date = datetime.strptime(target_compact, "%Y%m%d").date()
+    if start_date > end_date:
+        return []
+
+    missing_dates: list[str] = []
+    seen_dates = set(existing_dates)
+    probe = start_date
+    while probe <= end_date:
+        if probe.weekday() < 5:
+            resolved_date = resolve_market_date(probe.strftime("%Y%m%d"))
+            if re.fullmatch(r"20\d{6}", resolved_date) and resolved_date <= target_compact and resolved_date not in seen_dates:
+                missing_dates.append(resolved_date)
+                seen_dates.add(resolved_date)
+        probe += timedelta(days=1)
+    return missing_dates
+
+
+def _run_daily_builder(script_path: Path, date_keys: list[str], *, timeout: int = 1800) -> list[dict[str, Any]]:
+    build_results: list[dict[str, Any]] = []
+    for date_key in date_keys:
+        command = [sys.executable, "-u", str(script_path), "--date", date_key]
+        result = subprocess.run(
+            command,
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or f"일자 데이터 생성 실패: {date_key}").strip())
+        build_results.append(
+            {
+                "requested_date": date_key,
+                "stdout": (result.stdout or "").strip(),
+            }
+        )
+    return build_results
+
+
+def create_us_theme_today_data_and_reload(request: ThemeBuildTodayExcelRequest) -> dict[str, Any]:
+    requested_compact = datetime.now().strftime("%Y%m%d")
+    today_compact = resolve_us_screening_market_date(requested_compact)
+    today_iso = f"{today_compact[:4]}-{today_compact[4:6]}-{today_compact[6:]}"
+    existing_date_keys = _load_screening_existing_date_keys(US_SCREENING_FAST_DB_PATH)
+    script_path = BASE_DIR / "tools" / "build_us_stock_daily_single.py"
+    missing_dates = _collect_missing_market_dates(
+        db_path=US_SCREENING_FAST_DB_PATH,
+        target_compact=today_compact,
+        resolve_market_date=resolve_us_screening_market_date,
+    )
+    if today_compact not in existing_date_keys and today_compact not in missing_dates:
+        missing_dates.append(today_compact)
+    if not missing_dates:
+        existing_rows = 0
+        if US_SCREENING_FAST_DB_PATH.exists():
+            try:
+                with sqlite3.connect(str(US_SCREENING_FAST_DB_PATH)) as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) FROM screening_rows WHERE file_date_key = ?",
+                        (today_compact,),
+                    ).fetchone()
+                    existing_rows = int(row[0] or 0) if row else 0
+            except Exception:
+                existing_rows = 0
+        payload = attach_us_screening_runtime_fields(build_us_screening_summary_from_sql(today_iso, float(request.min_score)))
+        recent_limit = max(1, int(request.recent_limit))
+        available_entries = us_screening_available_file_entries(limit=None)
+        recent_dates = [item["file_date"] for item in reversed(available_entries[:recent_limit])]
+        recent_summaries = load_us_screening_summaries_for_dates(recent_dates)
+        payload["recent_leaders"] = build_recent_leader_stats_from_summaries(recent_summaries, min_score=float(request.min_score))
+        payload["available_files"] = [{"file_name": item["file_name"], "file_date": item["file_date"]} for item in available_entries]
+        payload["cache_loaded_at"] = datetime.now().isoformat(timespec="seconds")
+        payload["cache_source"] = "sql"
+        payload["requested_file_date"] = today_iso
+        payload["fallback_file_date"] = ""
+        payload["fallback_reason"] = ""
+        payload["today_excel_build"] = {
+            "ok": True,
+            "date": today_iso,
+            "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
+            "mode": "sql_cached",
+            "rows": existing_rows,
+            "built_dates": [],
+        }
+        return payload
+
+    build_results = _run_daily_builder(script_path, missing_dates, timeout=1800)
+    cache = load_us_screening_cache()
+    cache["summaries"] = {}
+    cache["recent_leaders"] = {}
+    cache["calendar"] = {}
+    save_us_screening_cache(cache)
+    payload = load_us_screening_summary(min_score=float(request.min_score), recent_limit=int(request.recent_limit), file_date=today_iso)
+    payload["today_excel_build"] = {
+        "ok": True,
+        "date": today_iso,
+        "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
+        "mode": "sql_backfill",
+        "built_dates": build_results,
+    }
+    return payload
+
+
+def attach_asia_screening_runtime_fields(summary: dict[str, Any]) -> dict[str, Any]:
+    payload = json.loads(json.dumps(summary, ensure_ascii=False))
+    for row in payload.get("qualified_stocks", []):
+        row["manual_sector"] = str(row.get("manual_sector") or row.get("theme") or "Other").strip() or "Other"
+    return payload
+
+
+def load_asia_screening_summary(
+    min_score: float = 50.0,
+    recent_limit: int = RECENT_SCREENING_LOOKBACK,
+    file_date: str | None = None,
+    region: str = "jp",
+) -> dict[str, Any]:
+    normalized_region = normalize_asia_theme_region(region)
+    requested_date = ""
+    if file_date:
+        digits = re.sub(r"\D", "", str(file_date))
+        requested_date = datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d") if len(digits) == 8 else str(file_date).strip()
+    available_entries = asia_screening_available_file_entries(limit=None)
+    available_dates = [item["file_date"] for item in available_entries]
+    if not available_dates:
+        raise FileNotFoundError("ASIA SQL 캐시에 주도주 데이터가 없습니다.")
+    selected_date = requested_date if requested_date in available_dates else available_dates[0]
+    fallback_used = bool(requested_date and requested_date != selected_date)
+    payload = attach_asia_screening_runtime_fields(build_asia_screening_summary_from_sql(selected_date, min_score, region=normalized_region))
+    recent_dates = [item["file_date"] for item in reversed(available_entries[: max(1, int(recent_limit))])]
+    recent_summaries = load_asia_screening_summaries_for_dates(recent_dates)
+    payload["recent_leaders"] = build_recent_leader_stats_from_summaries(
+        [
+            {
+                **summary,
+                "qualified_stocks": [
+                    row
+                    for row in list(summary.get("qualified_stocks") or [])
+                    if infer_asia_theme_region(row.get("stock_code"), row.get("industry"), row.get("manual_sector") or row.get("theme")) == normalized_region
+                ],
+            }
+            for summary in recent_summaries
+        ],
+        min_score=min_score,
+    )
+    payload["available_files"] = [{"file_name": item["file_name"], "file_date": item["file_date"]} for item in available_entries]
+    payload["cache_loaded_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["cache_source"] = "sql"
+    payload["requested_file_date"] = requested_date
+    payload["fallback_file_date"] = selected_date if fallback_used else ""
+    payload["fallback_reason"] = "requested_file_missing" if fallback_used else ""
+    payload["selected_region"] = normalized_region
+    payload["region_options"] = ASIA_THEME_REGION_OPTIONS
+    return payload
+
+
+def build_asia_theme_sector_calendar(min_score: float = 50.0, limit: int = 60, region: str = "jp") -> dict[str, Any]:
+    normalized_region = normalize_asia_theme_region(region)
+    cache = load_asia_screening_cache()
+    calendar_cache = cache.setdefault("calendar", {})
+    calendar_key = f"v{ASIA_SCREENING_CALENDAR_CACHE_VERSION}|{float(min_score):.4f}|{int(limit)}|{normalized_region}"
+    cached_calendar = calendar_cache.get(calendar_key)
+    if isinstance(cached_calendar, dict):
+        return cached_calendar
+    available_entries = asia_screening_available_file_entries(limit=max(1, int(limit)))
+    source_summaries = load_asia_screening_summaries_for_dates([item["file_date"] for item in reversed(available_entries)])
+    days: list[dict[str, Any]] = []
+    for summary in source_summaries:
+        file_date = str(summary.get("file_date") or "")
+        rows = summary.get("qualified_stocks") or []
+        if not file_date or not rows:
+            continue
+        sector_map: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if infer_asia_theme_region(row.get("stock_code"), row.get("industry"), row.get("manual_sector") or row.get("theme")) != normalized_region:
+                continue
+            sector = str(row.get("manual_sector") or row.get("theme") or "Other").strip() or "Other"
+            bucket = sector_map.setdefault(
+                sector,
+                {
+                    "sector": sector,
+                    "count": 0,
+                    "score_total": 0.0,
+                    "rank_total": 0.0,
+                    "top20_count": 0,
+                    "top50_count": 0,
+                    "trading_value_100m": 0.0,
+                    "market_cap_100m": 0.0,
+                    "leaders": [],
+                },
+            )
+            rank_value = int(to_float(row.get("rank")) or (len(rows) + 1))
+            bucket["count"] += 1
+            bucket["score_total"] += float(row.get("score") or 0.0)
+            bucket["rank_total"] += rank_value
+            if rank_value <= 20:
+                bucket["top20_count"] += 1
+            if rank_value <= 50:
+                bucket["top50_count"] += 1
+            bucket["trading_value_100m"] += float(row.get("trading_value_100m") or 0.0)
+            bucket["market_cap_100m"] += float(row.get("market_cap_100m") or 0.0)
+            if len(bucket["leaders"]) < 4:
+                bucket["leaders"].append(str(row.get("stock_name") or ""))
+        sectors = []
+        for item in sector_map.values():
+            turnover_ratio = item["trading_value_100m"] / item["market_cap_100m"] if item["market_cap_100m"] else 0.0
+            top20_ratio = item["top20_count"] / item["count"] if item["count"] else 0.0
+            sector_strength = (
+                (item["score_total"] / item["count"] if item["count"] else 0.0) * 0.6
+                + top20_ratio * 100.0 * 0.2
+                + min(max(turnover_ratio * 100.0, 0.0), 10.0) * 10.0 * 0.2
+            )
+            sectors.append(
+                {
+                    "sector": item["sector"],
+                    "count": item["count"],
+                    "avg_score": round(item["score_total"] / item["count"], 2) if item["count"] else 0.0,
+                    "rank_strength": 0.0,
+                    "sector_strength": round(sector_strength, 2),
+                    "rank_power": 0.0,
+                    "avg_rank": round(item["rank_total"] / item["count"], 1) if item["count"] else 0.0,
+                    "top20_count": item["top20_count"],
+                    "top50_count": item["top50_count"],
+                    "top20_ratio": round(top20_ratio, 4),
+                    "top50_ratio": round(item["top50_count"] / item["count"], 4) if item["count"] else 0.0,
+                    "trading_value_100m": round(item["trading_value_100m"], 2),
+                    "market_cap_100m": round(item["market_cap_100m"], 2),
+                    "turnover_ratio": round(turnover_ratio, 6),
+                    "turnover_score": round(min(max(turnover_ratio * 100.0, 0.0), 10.0) * 10.0, 2),
+                    "confidence": "높음" if item["count"] >= 3 else "보통" if item["count"] == 2 else "낮음",
+                    "leaders": item["leaders"],
+                }
+            )
+        sectors.sort(key=lambda item: (-(item["sector_strength"] or 0.0), -(item["avg_score"] or 0.0), item["sector"]))
+        filtered_rows = [
+            row
+            for row in rows
+            if infer_asia_theme_region(row.get("stock_code"), row.get("industry"), row.get("manual_sector") or row.get("theme")) == normalized_region
+        ]
+        if not filtered_rows:
+            continue
+        days.append(
+            {
+                "date": file_date,
+                "file_name": next((entry["file_name"] for entry in available_entries if entry["file_date"] == file_date), f"{file_date.replace('-', '')}_asia_daily_screening.xlsx"),
+                "qualified_count": len(filtered_rows),
+                "assigned_count": len(filtered_rows),
+                "top50_avg_score": round(float(np.mean([float(row.get("score") or 0.0) for row in filtered_rows[:50]])) if filtered_rows else 0.0, 2),
+                "sectors": sectors[:5],
+            }
+        )
+    payload = {"days": days, "selected_region": normalized_region, "region_options": ASIA_THEME_REGION_OPTIONS}
+    calendar_cache[calendar_key] = payload
+    save_asia_screening_cache(cache)
+    return payload
+
+
+def reload_asia_screening_cache(request: ThemeReloadRequest) -> dict[str, Any]:
+    cache = load_asia_screening_cache()
+    cache["summaries"] = {}
+    cache["recent_leaders"] = {}
+    cache["calendar"] = {}
+    save_asia_screening_cache(cache)
+    return load_asia_screening_summary(
         min_score=request.min_score,
         recent_limit=request.recent_limit,
-        file_date=parse_screening_date(selected_file),
-        force_reload=False,
+        file_date=request.file_date,
+        region=request.region or "jp",
     )
+
+
+def resolve_asia_screening_market_date(target_date: str | None = None) -> str:
+    date_key = re.sub(r"\D", "", str(target_date or datetime.now().strftime("%Y%m%d")))
+    if not re.fullmatch(r"20\d{6}", date_key):
+        raise ValueError("invalid market date")
+    probe_start = datetime.strptime(date_key, "%Y%m%d").date()
+    sentinels = ["TSE:7203", "SSE:601288", "SZSE:000333"]
+    best_date = ""
+    for yahoo_symbol, default_tz in [("7203.T", "Asia/Tokyo"), ("601288.SS", "Asia/Shanghai"), ("000333.SZ", "Asia/Shanghai"), ("2330.TW", "Asia/Taipei")]:
+        try:
+            yahoo_response = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}",
+                params={"range": "1mo", "interval": "1d"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=20,
+            )
+            yahoo_response.raise_for_status()
+            result = (yahoo_response.json().get("chart", {}).get("result") or [{}])[0]
+            meta = result.get("meta") or {}
+            market_tz = ZoneInfo(str(meta.get("exchangeTimezoneName") or "").strip() or default_tz)
+            local_dates = [
+                datetime.fromtimestamp(int(value), timezone.utc).astimezone(market_tz).strftime("%Y%m%d")
+                for value in (result.get("timestamp") or [])
+                if value and datetime.fromtimestamp(int(value), timezone.utc).astimezone(market_tz).date() <= probe_start
+            ]
+            if local_dates:
+                candidate = max(local_dates)
+                if candidate > best_date:
+                    best_date = candidate
+        except Exception:
+            continue
+    for sentinel in sentinels:
+        for offset in range(8):
+            probe = probe_start - timedelta(days=offset)
+            start = (probe - timedelta(days=7)).isoformat()
+            try:
+                frame = fdr.DataReader(sentinel, start, probe.isoformat())
+            except Exception:
+                continue
+            if frame is None or frame.empty:
+                continue
+            frame = frame.reset_index()
+            if "Date" not in frame.columns:
+                frame = frame.rename(columns={frame.columns[0]: "Date"})
+            frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+            frame = frame.dropna(subset=["Date"])
+            if frame.empty:
+                continue
+            candidate = frame["Date"].max().strftime("%Y%m%d")
+            if candidate > best_date:
+                best_date = candidate
+            break
+    return best_date or date_key
+
+
+def create_asia_theme_today_data_and_reload(request: ThemeBuildTodayExcelRequest) -> dict[str, Any]:
+    normalized_region = normalize_asia_theme_region(request.region or "jp")
+    requested_compact = datetime.now().strftime("%Y%m%d")
+    today_compact = resolve_asia_screening_market_date(requested_compact)
+    today_iso = f"{today_compact[:4]}-{today_compact[4:6]}-{today_compact[6:]}"
+    existing_date_keys = _load_screening_existing_date_keys(ASIA_SCREENING_FAST_DB_PATH)
+    script_path = BASE_DIR / "tools" / "build_asia_stock_daily_single.py"
+    missing_dates = _collect_missing_market_dates(
+        db_path=ASIA_SCREENING_FAST_DB_PATH,
+        target_compact=today_compact,
+        resolve_market_date=resolve_asia_screening_market_date,
+    )
+    if today_compact not in existing_date_keys and today_compact not in missing_dates:
+        missing_dates.append(today_compact)
+    if not missing_dates:
+        existing_rows = 0
+        if ASIA_SCREENING_FAST_DB_PATH.exists():
+            try:
+                with sqlite3.connect(str(ASIA_SCREENING_FAST_DB_PATH)) as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) FROM screening_rows WHERE file_date_key = ?",
+                        (today_compact,),
+                    ).fetchone()
+                    existing_rows = int(row[0] or 0) if row else 0
+            except Exception:
+                existing_rows = 0
+        payload = attach_asia_screening_runtime_fields(build_asia_screening_summary_from_sql(today_iso, float(request.min_score), region=normalized_region))
+        recent_limit = max(1, int(request.recent_limit))
+        available_entries = asia_screening_available_file_entries(limit=None)
+        recent_dates = [item["file_date"] for item in reversed(available_entries[:recent_limit])]
+        recent_summaries = load_asia_screening_summaries_for_dates(recent_dates)
+        payload["recent_leaders"] = build_recent_leader_stats_from_summaries(
+            [
+                {
+                    **summary,
+                    "qualified_stocks": [
+                        row
+                        for row in list(summary.get("qualified_stocks") or [])
+                        if infer_asia_theme_region(row.get("stock_code"), row.get("industry"), row.get("manual_sector") or row.get("theme")) == normalized_region
+                    ],
+                }
+                for summary in recent_summaries
+            ],
+            min_score=float(request.min_score),
+        )
+        payload["available_files"] = [{"file_name": item["file_name"], "file_date": item["file_date"]} for item in available_entries]
+        payload["cache_loaded_at"] = datetime.now().isoformat(timespec="seconds")
+        payload["cache_source"] = "sql"
+        payload["requested_file_date"] = today_iso
+        payload["fallback_file_date"] = ""
+        payload["fallback_reason"] = ""
+        payload["selected_region"] = normalized_region
+        payload["region_options"] = ASIA_THEME_REGION_OPTIONS
+        payload["today_excel_build"] = {
+            "ok": True,
+            "date": today_iso,
+            "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
+            "mode": "sql_cached",
+            "rows": existing_rows,
+            "built_dates": [],
+        }
+        return payload
+
+    build_results = _run_daily_builder(script_path, missing_dates, timeout=1800)
+    cache = load_asia_screening_cache()
+    cache["summaries"] = {}
+    cache["recent_leaders"] = {}
+    cache["calendar"] = {}
+    save_asia_screening_cache(cache)
+    payload = load_asia_screening_summary(
+        min_score=float(request.min_score),
+        recent_limit=int(request.recent_limit),
+        file_date=today_iso,
+        region=normalized_region,
+    )
+    payload["today_excel_build"] = {
+        "ok": True,
+        "date": today_iso,
+        "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
+        "mode": "sql_backfill",
+        "built_dates": build_results,
+    }
+    return payload
+
+
+def reload_screening_cache(request: ThemeReloadRequest) -> dict[str, Any]:
+    cache = load_screening_cache()
+    cache["summaries"] = {}
+    cache["recent_leaders"] = {}
+    cache["calendar"] = {}
+    save_screening_cache(cache)
+    _screening_backtest_source_summaries_cached.cache_clear()
+    build_stock_sector_entry_markers.cache_clear()
+    build_sector_entry_markers_for_sector.cache_clear()
+    load_stock_chart_preview_cached.cache_clear()
+    ensure_screening_db_indexes.cache_clear()
+    return load_screening_summary(min_score=request.min_score, recent_limit=request.recent_limit, file_date=request.file_date, force_reload=True)
+
+
+def invalidate_screening_runtime_caches() -> None:
+    _screening_backtest_source_summaries_cached.cache_clear()
+    build_stock_sector_entry_markers.cache_clear()
+    build_sector_entry_markers_for_sector.cache_clear()
+    load_stock_chart_preview_cached.cache_clear()
+    build_stock_entry_state_map.cache_clear()
+    ensure_screening_db_indexes.cache_clear()
+
+
+def normalize_screening_compact_date(file_date: str | None) -> str:
+    if file_date:
+        digits = re.sub(r"\D", "", str(file_date))
+        if re.fullmatch(r"20\d{6}", digits):
+            return digits
+    selected_file = get_latest_screening_file()
+    parsed = parse_screening_date(selected_file)
+    digits = re.sub(r"\D", "", parsed)
+    if not re.fullmatch(r"20\d{6}", digits):
+        raise ValueError(f"조회 날짜를 YYYYMMDD로 변환하지 못했습니다: {file_date or parsed}")
+    return digits
+
+
+def create_theme_test_excel(request: ThemeTestExcelRequest) -> dict[str, Any]:
+    target_date = normalize_screening_compact_date(request.file_date)
+    script_path = BASE_DIR / "tools" / "generate_leader_screening_test.py"
+    if not script_path.exists():
+        raise FileNotFoundError(f"테스트 엑셀 생성 스크립트를 찾지 못했습니다: {script_path}")
+    suffix = request.suffix or "_test_52w"
+    command = [sys.executable, "-u", str(script_path), target_date, suffix]
+    result = subprocess.run(
+        command,
+        cwd=str(BASE_DIR),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=420,
+    )
+    output_path = SCREENING_DIR / f"{target_date}_데일리_기업스크리닝{suffix if suffix.startswith('_') else '_' + suffix}.xlsm"
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "테스트 엑셀 생성 실패").strip())
+    if not output_path.exists():
+        created_match = re.search(r"created=(.+)", result.stdout or "")
+        if created_match:
+            output_path = Path(created_match.group(1).strip())
+    return {
+        "ok": True,
+        "file_date": f"{target_date[:4]}-{target_date[4:6]}-{target_date[6:]}",
+        "file_name": output_path.name,
+        "path": str(output_path),
+        "stdout": result.stdout,
+    }
+
+
+def resolve_screening_market_date(target_date: str | None = None) -> str:
+    date_key = re.sub(r"\D", "", str(target_date or datetime.now().strftime("%Y%m%d")))
+    if not re.fullmatch(r"20\d{6}", date_key):
+        raise ValueError("invalid market date")
+    if pykrx_stock is None:
+        return date_key
+    start_dt = datetime.strptime(date_key, "%Y%m%d")
+    checked_dates: set[str] = set()
+    for offset in range(8):
+        probe_key = (start_dt - timedelta(days=offset)).strftime("%Y%m%d")
+        try:
+            effective_date = pykrx_stock.get_nearest_business_day_in_a_week(probe_key) or probe_key
+        except Exception:
+            effective_date = probe_key
+        if effective_date in checked_dates:
+            continue
+        checked_dates.add(effective_date)
+        try:
+            frame = pykrx_stock.get_market_ohlcv_by_ticker(effective_date, market="ALL")
+        except Exception:
+            continue
+        if frame is not None and not frame.empty:
+            return effective_date
+    return date_key
+
+
+def create_theme_today_excel_and_reload(request: ThemeBuildTodayExcelRequest) -> dict[str, Any]:
+    requested_compact = datetime.now().strftime("%Y%m%d")
+    today_compact = resolve_screening_market_date(requested_compact)
+    existing_rows = 0
+    if SCREENING_FAST_DB_PATH.exists():
+        try:
+            with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM screening_rows WHERE file_date_key = ?",
+                    (today_compact,),
+                ).fetchone()
+                existing_rows = int(row[0] or 0) if row else 0
+        except Exception:
+            existing_rows = 0
+
+    today_iso = f"{today_compact[:4]}-{today_compact[4:6]}-{today_compact[6:]}"
+    if existing_rows > 0:
+        return {
+            "ok": True,
+            "file_date": today_iso,
+            "today_excel_build": {
+                "ok": True,
+                "date": today_iso,
+                "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
+                "mode": "sql_cached",
+                "rows": existing_rows,
+            },
+        }
+
+    script_path = BASE_DIR / "tools" / "build_stock_daily_single.py"
+    if not script_path.exists():
+        raise FileNotFoundError(f"오늘자 데이터 생성 스크립트를 찾지 못했습니다: {script_path}")
+
+    command = [sys.executable, "-u", str(script_path), "--date", today_compact, "--sql-only"]
+    env = os.environ.copy()
+    krx = get_krx_settings()
+    if krx.get("id"):
+        env["KRX_ID"] = str(krx["id"])
+    if krx.get("password"):
+        env["KRX_PW"] = str(krx["password"])
+    result = subprocess.run(
+        command,
+        cwd=str(BASE_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=900,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "오늘자 데이터 생성 실패").strip())
+    invalidate_screening_runtime_caches()
+    return {
+        "ok": True,
+        "file_date": today_iso,
+        "today_excel_build": {
+            "ok": True,
+            "date": today_iso,
+            "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
+            "stdout": result.stdout,
+            "mode": "sql_direct",
+        },
+    }
 
 
 def build_stock_score_history(
@@ -12721,62 +17471,121 @@ def build_stock_score_history(
     target_code = normalize_stock_code_value(stock_code)
     target_name = str(stock_name or "").strip()
     normalized_target_name = normalize_text(target_name)
-    selected_file = get_screening_file_by_date(end_date)
-    selected_date = parse_screening_date(selected_file)
+    available_entries = screening_available_file_entries(limit=None)
+    available_dates = [item["file_date"] for item in available_entries]
+    if not available_dates:
+        raise FileNotFoundError("SQL 캐시에 주도주 데이터가 없습니다.")
+    requested_date = ""
+    if end_date:
+        digits = re.sub(r"\D", "", str(end_date))
+        requested_date = datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d") if len(digits) == 8 else str(end_date).strip()
+    selected_date = requested_date if requested_date in available_dates else available_dates[0]
     end_dt = datetime.strptime(selected_date, "%Y-%m-%d")
     start_dt = end_dt - timedelta(days=max(7, min(int(days or 31), 90)) - 1)
-    cache = load_screening_cache()
-    summaries = cache.setdefault("summaries", {})
-    changed = False
     rows: list[dict[str, Any]] = []
 
-    for path in reversed(list_screening_files(limit=160)):
-        file_date = parse_screening_date(path)
-        if not file_date:
-            continue
-        date_dt = datetime.strptime(file_date, "%Y-%m-%d")
-        if date_dt < start_dt or date_dt > end_dt:
-            continue
-        cache_key = screening_cache_key(file_date, 0)
-        summary = summaries.get(cache_key)
-        if not summary or not screening_summary_has_table_fields(summary):
-            try:
-                summary = build_screening_summary_from_excel(path, 0)
-                summaries[cache_key] = summary
-                changed = True
-            except Exception:
-                continue
-        for item in summary.get("qualified_stocks", []):
-            item_code = normalize_stock_code_value(item.get("stock_code"))
-            item_names = {
-                normalize_text(item.get("stock_name")),
-                normalize_text(item.get("resolved_name")),
+    if SCREENING_FAST_DB_PATH.exists():
+        start_key = start_dt.strftime("%Y%m%d")
+        end_key = end_dt.strftime("%Y%m%d")
+        where_sql = ""
+        params: list[Any] = [start_key, end_key]
+        if target_code:
+            where_sql = "AND r.stock_code = ?"
+            params.append(target_code)
+        elif normalized_target_name:
+            where_sql = "AND REPLACE(LOWER(r.stock_name), ' ', '') = ?"
+            params.append(normalized_target_name)
+        else:
+            return {
+                "stock_code": "",
+                "stock_name": target_name,
+                "end_date": selected_date,
+                "start_date": start_dt.strftime("%Y-%m-%d"),
+                "rows": [],
+                "summary": {"count": 0, "latest_score": None, "max_score": None, "avg_score": None},
             }
-            matched = bool(target_code and item_code == target_code) or bool(
-                normalized_target_name and normalized_target_name in item_names
-            )
-            if not matched:
-                continue
-            rows.append(
-                {
-                    "date": file_date,
-                    "score": item.get("score"),
-                    "change_pct": item.get("change_pct"),
-                    "rank": item.get("rank"),
-                    "avg_1m": item.get("avg_1m"),
-                    "avg_1w": item.get("avg_1w"),
-                    "note": item.get("note", ""),
-                    "stock_code": item_code,
-                    "stock_name": item.get("stock_name") or target_name,
-                    "resolved_name": item.get("resolved_name") or item.get("stock_name") or target_name,
-                }
-            )
-            break
 
-    if changed:
-        save_screening_cache(cache)
+        with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+            query = f"""
+                WITH ranked_rows AS (
+                    SELECT
+                        r.file_date AS date,
+                        r.file_date_key,
+                        r.stock_code,
+                        r.stock_name,
+                        r.score_s AS score,
+                        RANK() OVER (PARTITION BY r.file_date_key ORDER BY r.score_s DESC, r.stock_code ASC) AS day_rank,
+                        r.change_pct,
+                        r.avg_1m AS avg_1m,
+                        r.avg_3m AS avg_3m,
+                        r.avg_1w,
+                        r.note,
+                        r.market_cap_100m,
+                        r.trading_value_100m
+                    FROM screening_rows r
+                    WHERE r.file_date_key BETWEEN ? AND ?
+                )
+                SELECT
+                    rr.date,
+                    rr.stock_code,
+                    rr.stock_name,
+                    rr.score,
+                    rr.day_rank,
+                    rr.change_pct,
+                    rr.avg_1m,
+                    rr.avg_1w,
+                    rr.note,
+                    rr.market_cap_100m,
+                    rr.trading_value_100m,
+                    COALESCE(c.close_price, NULL) AS close_price
+                FROM ranked_rows rr
+                LEFT JOIN daily_close_cache c
+                  ON c.file_date_key = rr.file_date_key
+                 AND c.stock_code = rr.stock_code
+                WHERE 1=1
+                {where_sql.replace('r.', 'rr.')}
+                ORDER BY rr.file_date_key
+            """
+            history_df = pd.read_sql_query(query, conn, params=params)
+
+        if not history_df.empty:
+            history_df["score"] = pd.to_numeric(history_df["score"], errors="coerce")
+            history_df["day_rank"] = pd.to_numeric(history_df["day_rank"], errors="coerce")
+            history_df["change_pct"] = pd.to_numeric(history_df["change_pct"], errors="coerce")
+            history_df["avg_1m"] = pd.to_numeric(history_df["avg_1m"], errors="coerce")
+            history_df["avg_1w"] = pd.to_numeric(history_df["avg_1w"], errors="coerce")
+            history_df["close_price"] = pd.to_numeric(history_df["close_price"], errors="coerce")
+            history_df = history_df.dropna(subset=["score"]).copy()
+            rows = [
+                {
+                    "date": str(row["date"]),
+                    "score": None if pd.isna(row["score"]) else round(float(row["score"]), 2),
+                    "change_pct": None if pd.isna(row["change_pct"]) else round(float(row["change_pct"]), 2),
+                    "rank": 0 if pd.isna(row["day_rank"]) else int(row["day_rank"]),
+                    "avg_1m": None if pd.isna(row["avg_1m"]) else round(float(row["avg_1m"]), 2),
+                    "avg_1w": None if pd.isna(row["avg_1w"]) else round(float(row["avg_1w"]), 2),
+                    "note": str(row["note"] or ""),
+                    "stock_code": str(row["stock_code"] or ""),
+                    "stock_name": str(row["stock_name"] or target_name),
+                    "resolved_name": str(row["stock_name"] or target_name),
+                    "close": None if pd.isna(row["close_price"]) else round(float(row["close_price"]), 2),
+                }
+                for _, row in history_df.iterrows()
+            ]
 
     rows = sorted(rows, key=lambda item: item["date"])
+    if rows:
+        normalized_close = 100.0
+        for index, item in enumerate(rows):
+            change_pct = to_float(item.get("change_pct"))
+            if index == 0:
+                item["close_normalized"] = round(normalized_close, 2)
+                continue
+            if change_pct is None:
+                item["close_normalized"] = round(normalized_close, 2)
+                continue
+            normalized_close *= 1.0 + (float(change_pct) / 100.0)
+            item["close_normalized"] = round(normalized_close, 2)
     display_name = target_name
     display_code = target_code
     for item in reversed(rows):
@@ -12784,6 +17593,18 @@ def build_stock_score_history(
         display_code = item.get("stock_code") or display_code
         if display_name:
             break
+
+    # SQL close cache가 없을 때만 FDR fallback.
+    if rows and display_code and any(item.get("close") is None for item in rows):
+        try:
+            price_frame = fetch_price_frame(display_code)
+            if not price_frame.empty:
+                for item in rows:
+                    if item.get("close") is None:
+                        close_on_date = price_close_on_or_before(price_frame, item["date"])
+                        item["close"] = round(float(close_on_date), 2) if close_on_date is not None else None
+        except Exception:
+            pass
 
     return {
         "stock_code": display_code,
@@ -12803,34 +17624,46 @@ def build_stock_score_history(
     }
 
 
-def build_theme_sector_calendar(min_score: float = 50.0, limit: int = 60, force_refresh: bool = False) -> dict[str, Any]:
+def build_theme_sector_calendar(
+    min_score: float = 50.0,
+    limit: int = 60,
+    force_refresh: bool = False,
+    score_basis: str = "score",
+) -> dict[str, Any]:
     sector_db = load_sector_db()
     cache = load_screening_cache()
-    summaries = cache.setdefault("summaries", {})
     calendar_cache = cache.setdefault("calendar", {})
     sector_db_version = SECTOR_DB_PATH.stat().st_mtime_ns if SECTOR_DB_PATH.exists() else 0
-    calendar_key = f"v{SCREENING_CALENDAR_CACHE_VERSION}|{sector_db_version}|{float(min_score):.4f}|{int(limit)}"
+    screening_version = screening_data_version_token()
+    normalized_basis = "score_o" if str(score_basis or "").strip().lower() in {"score_o", "daily", "today"} else "score"
+    calendar_key = f"v{SCREENING_CALENDAR_CACHE_VERSION}|{screening_version}|{sector_db_version}|{float(min_score):.4f}|{int(limit)}|{normalized_basis}"
     cached_calendar = calendar_cache.get(calendar_key)
     if not force_refresh and isinstance(cached_calendar, dict):
         return cached_calendar
-    cache_changed = False
+    available_entries = screening_available_file_entries(limit=max(1, int(limit)))
+    source_summaries = load_screening_summaries_for_dates([item["file_date"] for item in reversed(available_entries)])
     days: list[dict[str, Any]] = []
-    for path in list_screening_files(limit=limit):
-        file_date = parse_screening_date(path)
+    for summary in source_summaries:
+        file_date = str(summary.get("file_date") or "")
         if not file_date:
             continue
-        cache_key = screening_cache_key(file_date, min_score)
-        summary = summaries.get(cache_key)
-        if not summary:
-            try:
-                summary = build_screening_summary_from_excel(path, min_score)
-                summaries[cache_key] = summary
-                cache_changed = True
-            except Exception:
-                continue
         rows = summary.get("qualified_stocks", [])
         if not rows:
             continue
+        ranked_rows = sorted(
+            rows,
+            key=lambda row: (
+                float(to_float(row.get(normalized_basis)) or -999999.0),
+                float(to_float(row.get("score")) or -999999.0),
+                str(row.get("stock_code") or ""),
+            ),
+            reverse=True,
+        )
+        rank_by_stock_key: dict[str, int] = {}
+        for index_no, ranked_row in enumerate(ranked_rows, start=1):
+            stock_key = sector_rotation_stock_key(ranked_row)
+            if stock_key:
+                rank_by_stock_key[stock_key] = index_no
         sector_map: dict[str, dict[str, Any]] = {}
         assigned_count = 0
         for row in rows:
@@ -12858,8 +17691,9 @@ def build_theme_sector_calendar(min_score: float = 50.0, limit: int = 60, force_
                 },
             )
             bucket["count"] += 1
-            bucket["score_total"] += float(row.get("score", 0) or 0)
-            rank_value = int(to_float(row.get("rank")) or (len(rows) + 1))
+            bucket["score_total"] += float(to_float(row.get(normalized_basis)) or 0.0)
+            stock_key = sector_rotation_stock_key(row)
+            rank_value = int(rank_by_stock_key.get(stock_key) or len(ranked_rows) + 1)
             rank_weight = max(0, 121 - rank_value)
             rank_score = max(0.0, (121.0 - float(rank_value)) / 120.0 * 100.0)
             bucket["rank_strength"] += float(rank_weight)
@@ -12927,12 +17761,17 @@ def build_theme_sector_calendar(min_score: float = 50.0, limit: int = 60, force_
         )
         if assigned_count <= 0:
             continue
+        top10_rows = ranked_rows[:10]
+        top10_scores = [float(to_float(row.get(normalized_basis)) or 0.0) for row in top10_rows]
+        top10_avg_score = float(np.mean(top10_scores)) if top10_scores else 0.0
         days.append(
             {
                 "date": file_date,
-                "file_name": path.name,
+                "file_name": next((item["file_name"] for item in available_entries if item["file_date"] == file_date), f"{file_date.replace('-', '')}_데일리_기업스크리닝.xlsx"),
                 "qualified_count": int(len(rows)),
                 "assigned_count": assigned_count,
+                "top10_avg_score": round(top10_avg_score, 2),
+                "top50_avg_score": round(top10_avg_score, 2),
                 "sectors": sectors[:6],
             }
         )
@@ -12941,10 +17780,89 @@ def build_theme_sector_calendar(min_score: float = 50.0, limit: int = 60, force_
         "sector_count": len(sector_db.get("sectors", [])),
         "stock_count": len(sector_db.get("stock_map", {})),
         "cache_refreshed": bool(force_refresh),
+        "score_basis": normalized_basis,
     }
     calendar_cache[calendar_key] = payload
     save_screening_cache(cache)
     return payload
+
+
+def split_sector_group_detail(sector_name: str) -> tuple[str, str]:
+    raw = str(sector_name or "").strip()
+    if not raw:
+        return ("미분류", "")
+    # 섹터 그룹 분해 기능 롤백: 섹터 원문 자체를 그룹으로 취급한다.
+    return (raw, raw)
+
+
+def build_sector_cycle_clock_payload(min_score: float = 50.0, limit: int = 40, force_refresh: bool = False) -> dict[str, Any]:
+    calendar = build_theme_sector_calendar(min_score=min_score, limit=max(20, min(limit, 120)), force_refresh=force_refresh)
+    days = sorted([item for item in (calendar.get("days") or []) if item.get("date")], key=lambda item: str(item.get("date")))
+    if len(days) < 3:
+        return {"groups": [], "latest_date": "", "error": "섹터 순환 시계를 계산할 데이터가 부족합니다."}
+    latest = days[-1]
+    prev = days[-2]
+    prev2 = days[-3]
+    prev_map = {str(item.get("sector") or "").strip(): item for item in (prev.get("sectors") or [])}
+    prev2_map = {str(item.get("sector") or "").strip(): item for item in (prev2.get("sectors") or [])}
+
+    group_bucket: dict[str, dict[str, Any]] = {}
+    for item in (latest.get("sectors") or []):
+        sector = str(item.get("sector") or "").strip()
+        if not sector:
+            continue
+        group, detail = split_sector_group_detail(sector)
+        prev_item = prev_map.get(sector, {})
+        prev2_item = prev2_map.get(sector, {})
+        cur_strength = float(item.get("sector_strength") or 0.0)
+        prev_strength = float(prev_item.get("sector_strength") or cur_strength)
+        prev2_strength = float(prev2_item.get("sector_strength") or prev_strength)
+        momentum = (cur_strength - prev_strength) * 0.65 + (prev_strength - prev2_strength) * 0.35
+        grp = group_bucket.setdefault(group, {"group": group, "details": [], "strength_values": [], "momentum_values": []})
+        grp["details"].append({
+            "sector": sector,
+            "detail": detail or sector,
+            "strength": round(cur_strength, 2),
+            "momentum": round(momentum, 2),
+            "avg_score": float(item.get("avg_score") or 0.0),
+            "leaders": item.get("leaders") or [],
+            "count": int(item.get("count") or 0),
+        })
+        grp["strength_values"].append(cur_strength)
+        grp["momentum_values"].append(momentum)
+
+    def phase_of(x: float, y: float) -> str:
+        if x >= 0 and y >= 0:
+            return "상승"
+        if x < 0 and y >= 0:
+            return "회복"
+        if x >= 0 and y < 0:
+            return "둔화"
+        return "하강"
+
+    groups = []
+    for group_name, grp in group_bucket.items():
+        strength = float(np.mean(grp["strength_values"])) if grp["strength_values"] else 0.0
+        momentum = float(np.mean(grp["momentum_values"])) if grp["momentum_values"] else 0.0
+        x = max(-4.0, min(4.0, (strength - 50.0) / 8.0))
+        y = max(-4.0, min(4.0, momentum / 4.0))
+        details = sorted(grp["details"], key=lambda d: (float(d.get("strength") or 0.0), float(d.get("momentum") or 0.0)), reverse=True)
+        groups.append({
+            "group": group_name,
+            "x": round(x, 3),
+            "y": round(y, 3),
+            "phase": phase_of(x, y),
+            "strength": round(strength, 2),
+            "momentum": round(momentum, 2),
+            "detail_count": len(details),
+            "details": details,
+        })
+    groups.sort(key=lambda g: (float(g.get("strength") or 0.0), float(g.get("momentum") or 0.0)), reverse=True)
+    return {
+        "latest_date": latest.get("date") or "",
+        "groups": groups,
+        "source_note": "종합점수 기반 섹터 강도(sector_strength)와 3일 변화량 모멘텀으로 그룹 섹터 순환 위치를 계산합니다.",
+    }
 
 
 def get_dart_client() -> OpenDartReader.OpenDartReader | None:
@@ -14219,12 +19137,23 @@ def build_disclosure_company_target(company: str) -> dict[str, Any]:
     target_code = ""
     target_name = ""
     if re.fullmatch(r"A?\d{6}", raw, flags=re.IGNORECASE):
-        row = find_listing_row_by_code(re.sub(r"^\D", "", raw))
+        normalized_code = re.sub(r"^\D", "", raw).zfill(6)
+        row = (get_screening_stock_lookup().get("by_code") or {}).get(normalized_code)
+        if row is None:
+            try:
+                row = find_listing_row_by_code(normalized_code)
+            except Exception:
+                row = None
         if row:
-            target_code = str(row.get("code") or "").zfill(6)
+            target_code = str(row.get("code") or normalized_code).zfill(6)
             target_name = str(row.get("name") or "").strip()
     if not target_name:
-        resolved_code, resolved_name = resolve_stock(raw)
+        resolved_code, resolved_name = resolve_stock_from_screening_cache(raw)
+        if not resolved_code:
+            try:
+                resolved_code, resolved_name = resolve_stock(raw)
+            except Exception:
+                resolved_code, resolved_name = None, raw
         if resolved_name and normalize_search_text(resolved_name) != normalized_raw:
             target_name = resolved_name
             target_code = str(resolved_code or "").zfill(6) if resolved_code else ""
@@ -14368,7 +19297,12 @@ def dart_financial_row(client: OpenDartReader.OpenDartReader, stock_code: str, y
 
 
 def build_valuation_band_rows(stock_code: str, annual_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    listing_row = find_listing_row_by_code(stock_code) or {}
+    listing_row = (get_screening_stock_lookup().get("by_code") or {}).get(str(stock_code or "").zfill(6)) or {}
+    if not listing_row:
+        try:
+            listing_row = find_listing_row_by_code(stock_code) or {}
+        except Exception:
+            listing_row = {}
     shares = to_float(listing_row.get("stocks"))
     if not shares or shares <= 0 or not annual_rows:
         return []
@@ -14457,7 +19391,12 @@ def interpolated_annual_metric_by_date(annual_rows: list[dict[str, Any]], row_da
 
 
 def build_price_band_series(stock_code: str, annual_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    listing_row = find_listing_row_by_code(stock_code) or {}
+    listing_row = (get_screening_stock_lookup().get("by_code") or {}).get(str(stock_code or "").zfill(6)) or {}
+    if not listing_row:
+        try:
+            listing_row = find_listing_row_by_code(stock_code) or {}
+        except Exception:
+            listing_row = {}
     shares = to_float(listing_row.get("stocks"))
     if not shares or shares <= 0 or not annual_rows:
         return {"rows": [], "per_multiples": [], "pbr_multiples": []}
@@ -14557,11 +19496,21 @@ def build_dart_earnings_trend(company: str) -> dict[str, Any]:
     stock_name = raw_company
     if re.fullmatch(r"A?\d{6}", raw_company, flags=re.IGNORECASE):
         stock_code = re.sub(r"\D", "", raw_company).zfill(6)
-        row = find_listing_row_by_code(stock_code)
+        row = (get_screening_stock_lookup().get("by_code") or {}).get(stock_code)
+        if row is None:
+            try:
+                row = find_listing_row_by_code(stock_code)
+            except Exception:
+                row = None
         if row:
             stock_name = str(row.get("name") or stock_name)
     if not stock_code:
-        resolved_code, resolved_name = resolve_stock(raw_company)
+        resolved_code, resolved_name = resolve_stock_from_screening_cache(raw_company)
+        if not resolved_code:
+            try:
+                resolved_code, resolved_name = resolve_stock(raw_company)
+            except Exception:
+                resolved_code, resolved_name = None, raw_company
         if resolved_code:
             stock_code = str(resolved_code).zfill(6)
             stock_name = resolved_name or stock_name
@@ -15302,9 +20251,9 @@ def stock_investor_flows(code: str | None = None, name: str | None = None, days:
 
 
 @app.get("/api/portfolio/performance")
-def portfolio_performance() -> JSONResponse:
+def portfolio_performance(refresh: bool = False) -> JSONResponse:
     try:
-        return JSONResponse(calculate_portfolio_performance())
+        return JSONResponse(get_cached_portfolio_performance(force_refresh=refresh))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -15414,9 +20363,24 @@ def strategy_backtest(
     strategy: str = "ma20_cross",
     start: str | None = None,
     end: str | None = None,
+    top_n: int | None = None,
+    entry_threshold: float | None = None,
+    exit_threshold: float | None = None,
+    allocation_mode: str = "score_weight",
 ) -> JSONResponse:
     try:
-        return JSONResponse(build_strategy_backtest(index=index, strategy=strategy, start=start, end=end))
+        return JSONResponse(
+            build_strategy_backtest(
+                index=index,
+                strategy=strategy,
+                start=start,
+                end=end,
+                top_n=top_n,
+                entry_threshold=entry_threshold,
+                exit_threshold=exit_threshold,
+                allocation_mode=allocation_mode,
+            )
+        )
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -15521,6 +20485,87 @@ def themes_reload(request: ThemeReloadRequest) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+@app.get("/api/us-themes/today")
+def us_themes_today(
+    min_score: float = 50.0,
+    recent_limit: int = RECENT_SCREENING_LOOKBACK,
+    file_date: str | None = None,
+) -> JSONResponse:
+    try:
+        return JSONResponse(load_us_screening_summary(min_score=min_score, recent_limit=recent_limit, file_date=file_date))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/us-themes/reload")
+def us_themes_reload(request: ThemeReloadRequest) -> JSONResponse:
+    try:
+        return JSONResponse(reload_us_screening_cache(request))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/asia-themes/today")
+def asia_themes_today(
+    min_score: float = 50.0,
+    recent_limit: int = RECENT_SCREENING_LOOKBACK,
+    file_date: str | None = None,
+    region: str = "jp",
+) -> JSONResponse:
+    try:
+        return JSONResponse(load_asia_screening_summary(min_score=min_score, recent_limit=recent_limit, file_date=file_date, region=region))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/asia-themes/reload")
+def asia_themes_reload(request: ThemeReloadRequest) -> JSONResponse:
+    try:
+        return JSONResponse(reload_asia_screening_cache(request))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/themes/test-excel")
+def themes_test_excel(request: ThemeTestExcelRequest) -> JSONResponse:
+    try:
+        return JSONResponse(create_theme_test_excel(request))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/themes/build-today-excel")
+def themes_build_today_excel(request: ThemeBuildTodayExcelRequest) -> JSONResponse:
+    try:
+        return JSONResponse(create_theme_today_excel_and_reload(request))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/themes/build-today-data")
+def themes_build_today_data(request: ThemeBuildTodayExcelRequest) -> JSONResponse:
+    try:
+        return JSONResponse(create_theme_today_excel_and_reload(request))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/us-themes/build-today-data")
+def us_themes_build_today_data(request: ThemeBuildTodayExcelRequest) -> JSONResponse:
+    try:
+        return JSONResponse(create_us_theme_today_data_and_reload(request))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/asia-themes/build-today-data")
+def asia_themes_build_today_data(request: ThemeBuildTodayExcelRequest) -> JSONResponse:
+    try:
+        return JSONResponse(create_asia_theme_today_data_and_reload(request))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 @app.post("/api/themes/note")
 def themes_note_update(request: ThemeNoteUpdateRequest) -> JSONResponse:
     try:
@@ -15602,6 +20647,14 @@ def global_stocks_detail(symbol: str) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+@app.get("/api/global-stocks/ai-brief")
+def global_stocks_ai_brief(symbol: str, force_refresh: bool = False) -> JSONResponse:
+    try:
+        return JSONResponse(build_global_company_ai_brief(symbol, force_refresh=force_refresh))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 @app.get("/api/market-calendar")
 def market_calendar(start: str | None = None, end: str | None = None, refresh: bool = False) -> JSONResponse:
     try:
@@ -15652,7 +20705,7 @@ def market_calendar_ics() -> Response:
 @app.get("/api/global-indices")
 def global_indices(group: str | None = None) -> JSONResponse:
     try:
-        cache_key = str(group or "")
+        cache_key = f"{GLOBAL_INDICES_PAYLOAD_CACHE_VERSION}|{str(group or '')}"
         cached = GLOBAL_INDICES_PAYLOAD_CACHE.get(cache_key)
         if cached and (time.time() - cached[0]) < 10 * 60:
             return JSONResponse(cached[1])
@@ -15733,9 +20786,25 @@ def sector_db_save_groups(request: SectorDatabaseSaveRequest) -> JSONResponse:
 
 
 @app.get("/api/theme-sector-calendar")
-def theme_sector_calendar(min_score: float = 50.0, limit: int = 60, force_refresh: bool = False) -> JSONResponse:
+def theme_sector_calendar(min_score: float = 50.0, limit: int = 60, force_refresh: bool = False, score_basis: str = "score") -> JSONResponse:
     try:
-        return JSONResponse(build_theme_sector_calendar(min_score=min_score, limit=max(1, min(limit, 120)), force_refresh=force_refresh))
+        return JSONResponse(build_theme_sector_calendar(min_score=min_score, limit=max(1, min(limit, 120)), force_refresh=force_refresh, score_basis=score_basis))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/us-theme-sector-calendar")
+def us_theme_sector_calendar(min_score: float = 50.0, limit: int = 60) -> JSONResponse:
+    try:
+        return JSONResponse(build_us_theme_sector_calendar(min_score=min_score, limit=max(1, min(limit, 120))))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/asia-theme-sector-calendar")
+def asia_theme_sector_calendar(min_score: float = 50.0, limit: int = 60, region: str = "jp") -> JSONResponse:
+    try:
+        return JSONResponse(build_asia_theme_sector_calendar(min_score=min_score, limit=max(1, min(limit, 120)), region=region))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -15780,6 +20849,26 @@ def sector_snapshot_entry_signals(
                 min_strong_count=min_strong_count,
                 min_stock_count=min_stock_count,
                 beta_window=beta_window,
+            )
+        )
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/sector-snapshot/signal-radar")
+def sector_snapshot_signal_radar(
+    lookback_days: int = 120,
+    max_stocks: int = 45,
+    min_score: float = 50.0,
+    max_history_events: int = 220,
+) -> JSONResponse:
+    try:
+        return JSONResponse(
+            build_signal_radar(
+                lookback_days=lookback_days,
+                max_stocks=max_stocks,
+                min_score=min_score,
+                max_history_events=max_history_events,
             )
         )
     except Exception as exc:
@@ -15831,6 +20920,14 @@ def economy_cycle_clock(force_refresh: bool = False) -> JSONResponse:
         return JSONResponse(build_economy_cycle_payload(force_refresh=force_refresh))
     except Exception as exc:
         return JSONResponse({"error": str(exc), "indicators": []}, status_code=200)
+
+
+@app.get("/api/economy/sector-cycle-clock")
+def economy_sector_cycle_clock(min_score: float = 50.0, limit: int = 40, force_refresh: bool = False) -> JSONResponse:
+    try:
+        return JSONResponse(build_sector_cycle_clock_payload(min_score=min_score, limit=limit, force_refresh=force_refresh))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc), "groups": []}, status_code=200)
 
 
 @app.get("/api/real-estate/prices")
@@ -16140,6 +21237,30 @@ def kind_latest_business_report(company: str = "") -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+@app.get("/api/kind/latest-periodic-report")
+def kind_latest_periodic_report(company: str = "") -> JSONResponse:
+    if is_public_web_mode():
+        return public_web_lock_response("KIND periodic report")
+    try:
+        return JSONResponse(find_latest_kind_periodic_report(company))
+    except LookupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/kind/business-segments")
+def kind_business_segments(company: str = "") -> JSONResponse:
+    if is_public_web_mode():
+        return public_web_lock_response("KIND business segments")
+    try:
+        return JSONResponse(load_kind_business_segments(company))
+    except LookupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 @app.post("/api/telegram/market_earnings")
 async def telegram_market_earnings(request: TelegramMarketEarningsRequest) -> JSONResponse:
     if is_public_web_mode():
@@ -16311,15 +21432,13 @@ def render_shared_dashboard_html() -> str:
         f"<td>{safe(row.get('industry') or '-')}</td>"
         f"<td class='num {'up' if float(row.get('change_pct') or 0) >= 0 else 'down'}'>{fmt(row.get('change_pct'), 2)}%</td>"
         f"<td class='num'>{fmt(row.get('score'), 2)}</td>"
-        f"<td class='num'>{fmt(row.get('avg_1m'), 2)}</td>"
-        f"<td class='num'>{fmt(row.get('avg_1w'), 2)}</td>"
         f"<td>{safe(row.get('note') or '-')}</td>"
         "</tr>"
         for index, row in enumerate(top_rows)
         if isinstance(row, dict)
     )
     if not body_rows:
-        body_rows = f"<tr><td colspan='9' class='empty'>{error_message or '표시할 데이터가 없습니다.'}</td></tr>"
+        body_rows = f"<tr><td colspan='7' class='empty'>{error_message or '표시할 데이터가 없습니다.'}</td></tr>"
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -16376,7 +21495,7 @@ def render_shared_dashboard_html() -> str:
         <table>
           <thead>
             <tr>
-              <th>순위</th><th>섹터</th><th>종목</th><th>업종</th><th>등락률</th><th>오늘 점수</th><th>1M 평균</th><th>1W 평균</th><th>비고</th>
+              <th>순위</th><th>섹터</th><th>종목</th><th>업종</th><th>등락률</th><th>종합점수</th><th>비고</th>
             </tr>
           </thead>
           <tbody>{body_rows}</tbody>
