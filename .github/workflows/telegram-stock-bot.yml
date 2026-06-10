@@ -48,7 +48,14 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          pip install -r requirements.txt
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+          filtered = [line for line in source if not line.strip().startswith("FinanceDataReader==")]
+          Path("requirements.actions.txt").write_text("\n".join(filtered) + "\n", encoding="utf-8")
+          PY
+          pip install -r requirements.actions.txt
+          pip install "git+https://github.com/FinanceData/FinanceDataReader.git"
 
       - name: Run Telegram stock bot
         shell: bash
