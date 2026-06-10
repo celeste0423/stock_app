@@ -57,6 +57,7 @@ jobs:
           PY
           pip install -r requirements.actions.txt
           pip install "git+https://github.com/FinanceData/FinanceDataReader.git"
+          pip install "OpenDartReader==0.2.2" --no-deps
 
       - name: Run Telegram stock bot
         shell: bash
