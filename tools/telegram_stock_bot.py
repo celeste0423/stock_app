@@ -146,7 +146,7 @@ def start_server(port: int) -> subprocess.Popen[str]:
     env_map["STOCK_DASHBOARD_HOST"] = "127.0.0.1"
     env_map["STOCK_DASHBOARD_PORT"] = str(port)
     return subprocess.Popen(
-        [sys.executable, "-m", "backend.app"],
+        [sys.executable, "-u", "-m", "backend.app"],
         cwd=str(BASE_DIR),
         env=env_map,
         stdout=subprocess.PIPE,
@@ -168,7 +168,7 @@ def stop_server(process: subprocess.Popen[str] | None) -> None:
             process.kill()
 
 
-def wait_for_server(base_url: str, timeout: float = 90.0) -> None:
+def wait_for_server(base_url: str, timeout: float = 240.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -356,7 +356,19 @@ def main() -> None:
     base_url = f"http://127.0.0.1:{port}"
     server = start_server(port)
     try:
-        wait_for_server(base_url)
+        try:
+            wait_for_server(base_url)
+        except Exception as exc:
+            stderr_tail = ""
+            try:
+                if server.stderr:
+                    time.sleep(1)
+                    stderr_tail = (server.stderr.read() or "")[-4000:]
+            except Exception:
+                stderr_tail = ""
+            if stderr_tail:
+                raise RuntimeError(f"{exc}\n\n[backend stderr]\n{stderr_tail}") from exc
+            raise
         if not args.skip_updates:
             process_updates(base_url, state)
         if not args.skip_daily:
