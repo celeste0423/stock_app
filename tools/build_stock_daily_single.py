@@ -28,11 +28,17 @@ except Exception:
     pykrx_stock = None
 
 
-OUTPUT_DIR = Path("D:/Study/Stock_Daily")
-SECTOR_DB_PATH = Path("D:/Study/stock app/backend/sector_database.json")
+LEGACY_OUTPUT_DIR = Path("D:/Study/Stock_Daily")
+OUTPUT_DIR = Path(
+    os.getenv(
+        "STOCK_DAILY_OUTPUT_DIR",
+        str(LEGACY_OUTPUT_DIR if LEGACY_OUTPUT_DIR.exists() else (ROOT_DIR / "outputs" / "stock_daily")),
+    )
+)
+SECTOR_DB_PATH = Path(os.getenv("STOCK_DAILY_SECTOR_DB_PATH", str(ROOT_DIR / "backend" / "sector_database.json")))
 FORMULA_CONFIG_PATH = OUTPUT_DIR / "score_formula_config.json"
-FAST_DB_PATH = Path("D:/Study/stock app/backend/stock_daily_fast.sqlite")
-FAST_PARQUET_PATH = Path("D:/Study/stock app/backend/stock_daily_fast.parquet")
+FAST_DB_PATH = Path(os.getenv("STOCK_DAILY_FAST_DB_PATH", str(ROOT_DIR / "backend" / "stock_daily_fast.sqlite")))
+FAST_PARQUET_PATH = Path(os.getenv("STOCK_DAILY_FAST_PARQUET_PATH", str(ROOT_DIR / "backend" / "stock_daily_fast.parquet")))
 SETTINGS_PATH = ROOT_DIR / "backend" / "local_settings.json"
 
 DEFAULT_FORMULA_CONFIG: dict[str, Any] = {

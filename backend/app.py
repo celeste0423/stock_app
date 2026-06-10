@@ -247,7 +247,7 @@ TELEGRAM_DISCLOSURE_CATEGORIES = {
 
 PORTFOLIO_SHEET = "\uc8fc\uc2dd\ube44\uc911"
 SCREENING_SHEET = "\uc8fc\ub3c4\uc8fc \ucc3e\uae30"
-SCREENING_SCORE_CACHE_VERSION = "s-score-v3"
+SCREENING_SCORE_CACHE_VERSION = "s-score-v4"
 SCREENING_SCORE_COLUMN_INDEX = 18  # Excel S column, zero-based for pandas iloc.
 SCREENING_SCORE_COLUMN_NAME = "\uc885\ud569 \uc810\uc218"
 
@@ -6551,6 +6551,70 @@ def load_screening_close_map(
             continue
         result.setdefault(key, {})[code] = float(price)
     return result
+
+
+def repair_screening_52w_flags(
+    rows: list[dict[str, Any]],
+    file_date: str,
+    db_path: Path = SCREENING_FAST_DB_PATH,
+) -> list[dict[str, Any]]:
+    if not rows or not file_date or not db_path.exists():
+        return rows
+    try:
+        target_date = datetime.strptime(str(file_date), "%Y-%m-%d").date()
+    except Exception:
+        return rows
+    stock_codes = sorted({
+        normalize_stock_code_value(row.get("stock_code"))
+        for row in rows
+        if normalize_stock_code_value(row.get("stock_code"))
+    })
+    if not stock_codes:
+        return rows
+    start_key = (target_date - timedelta(days=370)).strftime("%Y%m%d")
+    end_key = target_date.strftime("%Y%m%d")
+    placeholders = ",".join(["?"] * len(stock_codes))
+    query = f"""
+        SELECT file_date_key, stock_code, close_price
+        FROM daily_close_cache
+        WHERE file_date_key BETWEEN ? AND ?
+          AND stock_code IN ({placeholders})
+        ORDER BY stock_code ASC, file_date_key ASC
+    """
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            price_rows = conn.execute(query, [start_key, end_key, *stock_codes]).fetchall()
+    except Exception:
+        return rows
+    if not price_rows:
+        return rows
+
+    history_by_code: dict[str, list[tuple[str, float]]] = {}
+    for file_date_key, stock_code, close_price in price_rows:
+        code = normalize_stock_code_value(stock_code)
+        date_key = str(file_date_key or "").strip()
+        price = to_float(close_price)
+        if not code or not date_key or price is None:
+            continue
+        history_by_code.setdefault(code, []).append((date_key, float(price)))
+
+    tolerance = 0.9995
+    for row in rows:
+        code = normalize_stock_code_value(row.get("stock_code"))
+        history = history_by_code.get(code) or []
+        if not history:
+            continue
+        latest_close = None
+        max_close = None
+        for date_key, price in history:
+            max_close = price if max_close is None else max(max_close, price)
+            if date_key == end_key:
+                latest_close = price
+        if latest_close is None or max_close is None or max_close <= 0:
+            continue
+        if latest_close >= max_close * tolerance:
+            row["is_52w_high"] = 1
+    return rows
 
 
 @lru_cache(maxsize=1)
@@ -16126,6 +16190,8 @@ def build_screening_summary_from_sql(file_date: str, min_score: float) -> dict[s
             }
         )
 
+    repair_screening_52w_flags(qualified_rows, file_date)
+
     theme_df = pd.DataFrame(qualified_rows)
     grouped_records: list[dict[str, Any]] = []
     if not theme_df.empty:
@@ -21507,9 +21573,174 @@ def render_shared_dashboard_html() -> str:
 </html>"""
 
 
+def render_leader_capture_html(
+    market: str = "kr",
+    min_score: float = 50.0,
+    file_date: str | None = None,
+    region: str = "jp",
+) -> str:
+    normalized_market = str(market or "kr").strip().lower()
+    market_title_map = {
+        "kr": "국내 주도주",
+        "us": "미국 주도주",
+        "jp": "일본 주도주",
+        "tw": "대만 주도주",
+        "cn": "중국 주도주",
+    }
+    try:
+        if normalized_market == "us":
+            payload = load_us_screening_summary(min_score=0, recent_limit=RECENT_SCREENING_LOOKBACK, file_date=file_date)
+            score_label = "종합점수"
+        elif normalized_market in {"jp", "tw", "cn", "asia"}:
+            target_region = region if normalized_market == "asia" else normalized_market
+            payload = load_asia_screening_summary(
+                min_score=0,
+                recent_limit=RECENT_SCREENING_LOOKBACK,
+                file_date=file_date,
+                region=target_region,
+            )
+            normalized_market = normalize_asia_theme_region(target_region)
+            score_label = "종합점수"
+        else:
+            payload = load_screening_summary(min_score=0, recent_limit=RECENT_SCREENING_LOOKBACK, file_date=file_date)
+            score_label = "종합점수"
+            normalized_market = "kr"
+        rows = [row for row in list(payload.get("qualified_stocks") or []) if float(to_float(row.get("score")) or 0.0) >= float(min_score)]
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                -(float(to_float(row.get("score")) or 0.0)),
+                -(float(to_float(row.get("score_o")) or 0.0)),
+                str(row.get("stock_code") or ""),
+            ),
+        )
+        file_date_text = str(payload.get("file_date") or "")
+        error_message = ""
+    except Exception as exc:
+        payload = {}
+        rows = []
+        file_date_text = ""
+        error_message = html_lib.escape(str(exc))
+
+    title = market_title_map.get(normalized_market, "주도주")
+    region_label_map = {"jp": "일본", "tw": "대만", "cn": "중국"}
+    if normalized_market in region_label_map:
+        title = region_label_map[normalized_market] + " 주도주"
+    min_score_label = str(int(min_score) if float(min_score).is_integer() else min_score)
+
+    def safe(value: Any) -> str:
+        return html_lib.escape("" if value is None else str(value))
+
+    def fmt(value: Any, digits: int = 2) -> str:
+        number = to_float(value)
+        if number is None:
+            return "-"
+        return f"{number:,.{digits}f}"
+
+    header_count = len(rows)
+    body_rows = "".join(
+        "<tr>"
+        f"<td class='rank'>{index + 1}</td>"
+        f"<td>{safe(row.get('manual_sector') or row.get('theme') or '-')}</td>"
+        f"<td class='stock'><b>{safe(row.get('resolved_name') or row.get('stock_name') or '-')}</b>"
+        + (
+            f"<small>{safe(row.get('stock_code') or '')}</small>"
+            if str(row.get("stock_code") or "").strip()
+            else ""
+        )
+        + "</td>"
+        f"<td class='num'>{fmt(row.get('sortino_norm'), 4)}</td>"
+        f"<td class='num'>{fmt(row.get('score_o'), 2)}</td>"
+        f"<td class='num {'up' if float(to_float(row.get('change_pct')) or 0) >= 0 else 'down'}'>{fmt(row.get('change_pct'), 2)}%</td>"
+        f"<td class='num score'>{fmt(row.get('score'), 2)}</td>"
+        f"<td>{safe(row.get('note') or '-')}</td>"
+        "</tr>"
+        for index, row in enumerate(rows)
+    )
+    if not body_rows:
+        body_rows = f"<tr><td colspan='8' class='empty'>{error_message or '50점 이상 종목이 없습니다.'}</td></tr>"
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe(title)} 캡처</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: #f3f7fb; color: #142033; font-family: Arial, 'Malgun Gothic', sans-serif; }}
+    .wrap {{ width: 1360px; margin: 0 auto; padding: 24px; }}
+    .panel {{ background: #fff; border: 1px solid #dbe5f0; border-radius: 24px; box-shadow: 0 14px 36px rgba(15,23,42,.08); overflow: hidden; }}
+    .hero {{ padding: 28px 30px 18px; border-bottom: 1px solid #e8eef5; }}
+    .eyebrow {{ color: #4b6cb7; font-size: 14px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }}
+    h1 {{ margin: 10px 0 8px; font-size: 42px; line-height: 1.1; }}
+    .meta {{ color: #64748b; font-size: 20px; }}
+    .chips {{ display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }}
+    .chip {{ display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; background: #eef4ff; border: 1px solid #d4e2ff; font-size: 16px; font-weight: 700; color: #2952a3; }}
+    .table-wrap {{ padding: 18px 30px 30px; }}
+    table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
+    th {{ background: #f8fbff; color: #41516a; font-size: 18px; text-align: left; padding: 14px 12px; border-bottom: 1px solid #dde7f2; }}
+    td {{ padding: 13px 12px; border-bottom: 1px solid #ebf1f7; font-size: 17px; vertical-align: middle; }}
+    tr:last-child td {{ border-bottom: none; }}
+    .rank {{ width: 72px; text-align: center; font-weight: 900; }}
+    .stock b {{ display: block; font-size: 18px; color: #1d4ed8; }}
+    .stock small {{ display: block; margin-top: 3px; color: #7b8aa0; font-size: 13px; font-weight: 700; }}
+    .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .score {{ color: #1d4ed8; font-weight: 900; }}
+    .up {{ color: #dc2626; font-weight: 800; }}
+    .down {{ color: #2563eb; font-weight: 800; }}
+    .empty {{ text-align: center; color: #64748b; padding: 36px 0; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div class="hero">
+        <div class="eyebrow">Leader Capture</div>
+        <h1>{safe(title)} · {safe(score_label)} {safe(min_score_label)}점 이상</h1>
+        <div class="meta">{safe(file_date_text)} · {header_count}개</div>
+        <div class="chips">
+          <span class="chip">시장 {safe(title)}</span>
+          <span class="chip">기준 {safe(score_label)} {safe(min_score_label)}+</span>
+          <span class="chip">정렬 {safe(score_label)} 내림차순</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class='rank'>순위</th>
+              <th style='width: 170px;'>섹터</th>
+              <th style='width: 260px;'>종목</th>
+              <th class='num' style='width: 120px;'>Sortino</th>
+              <th class='num' style='width: 130px;'>당일점수</th>
+              <th class='num' style='width: 120px;'>등락률</th>
+              <th class='num' style='width: 130px;'>{safe(score_label)}</th>
+              <th>비고</th>
+            </tr>
+          </thead>
+          <tbody>{body_rows}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
 @app.get("/shared")
 def shared_dashboard() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/shared/leader-capture")
+def shared_leader_capture(
+    market: str = "kr",
+    min_score: float = 50.0,
+    file_date: str | None = None,
+    region: str = "jp",
+) -> HTMLResponse:
+    return HTMLResponse(render_leader_capture_html(market=market, min_score=min_score, file_date=file_date, region=region))
 
 
 @app.get("/")

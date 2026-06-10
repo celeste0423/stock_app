@@ -1,0 +1,70 @@
+name: Telegram stock bot
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      skip_daily:
+        description: "Skip automatic 16:00 KST daily send"
+        required: false
+        default: false
+        type: boolean
+      skip_updates:
+        description: "Skip Telegram command polling"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-stock-bot
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_ALLOWED_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Restore bot state
+        uses: actions/cache/restore@v4
+        with:
+          path: .alert_state
+          key: telegram-stock-bot-state-${{ github.run_id }}
+          restore-keys: |
+            telegram-stock-bot-state-
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Telegram stock bot
+        shell: bash
+        run: |
+          args=()
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.skip_daily }}" = "true" ]; then
+            args+=("--skip-daily")
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.skip_updates }}" = "true" ]; then
+            args+=("--skip-updates")
+          fi
+          python tools/telegram_stock_bot.py "${args[@]}"
+
+      - name: Save bot state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .alert_state
+          key: telegram-stock-bot-state-${{ github.run_id }}

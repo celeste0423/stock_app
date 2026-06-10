@@ -25,10 +25,16 @@ import numpy as np
 import pandas as pd
 
 
-OUTPUT_DIR = Path("D:/Study/Stock_Daily")
+LEGACY_OUTPUT_DIR = Path("D:/Study/Stock_Daily")
+OUTPUT_DIR = Path(
+    os.getenv(
+        "STOCK_DAILY_OUTPUT_DIR",
+        str(LEGACY_OUTPUT_DIR if LEGACY_OUTPUT_DIR.exists() else (ROOT_DIR / "outputs" / "stock_daily")),
+    )
+)
 FORMULA_CONFIG_PATH = OUTPUT_DIR / "score_formula_config.json"
-FAST_DB_PATH = Path("D:/Study/stock app/backend/us_stock_daily_fast.sqlite")
-FAST_PARQUET_PATH = Path("D:/Study/stock app/backend/us_stock_daily_fast.parquet")
+FAST_DB_PATH = Path(os.getenv("STOCK_DAILY_US_FAST_DB_PATH", str(ROOT_DIR / "backend" / "us_stock_daily_fast.sqlite")))
+FAST_PARQUET_PATH = Path(os.getenv("STOCK_DAILY_US_FAST_PARQUET_PATH", str(ROOT_DIR / "backend" / "us_stock_daily_fast.parquet")))
 
 DEFAULT_FORMULA_CONFIG: dict[str, Any] = {
     "score_formula": {

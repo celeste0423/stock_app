@@ -11695,6 +11695,10 @@
     }, 0);
 
     function toggleThemeTableSort(sortKey) {
+      if (sortKey === "rank") {
+        setSectorFilter("all");
+        setThemeTableScrollTop(0);
+      }
       setThemeTableSortState(function (current) {
         if (sortKey === "rank") {
           return { key: "rank", direction: "desc" };
@@ -13261,7 +13265,7 @@
                             onClick: function () { toggleThemeTableSort(column.key); },
                           },
                           column.label,
-                          active ? h("span", null, themeTableSortState.direction === "desc" ? " ?" : " ?") : null
+                          active ? h("span", null, themeTableSortState.direction === "desc" ? " ↓" : " ↑") : null
                         )
                       );
                     })
