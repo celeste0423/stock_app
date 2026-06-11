@@ -9,12 +9,14 @@
   const SECTOR_SNAPSHOT_KEY = "stock-dashboard:sector-snapshot-groups";
   const SECTOR_SNAPSHOT_BUILDER_COLLAPSED_KEY = "stock-dashboard:sector-snapshot-builder-collapsed";
   const TELEGRAM_SEARCH_KEY = "stock-dashboard:telegram-search-state";
+  const PENDING_TELEGRAM_STOCK_KEY = "stock-dashboard:pending-telegram-stock";
   const THEME_SECTOR_KEY = "stock-dashboard:theme-sector-state";
   const GLOBAL_COMPANY_KEY = "stock-dashboard:global-company-state";
   const STOCK_NEWS_KEY = "stock-dashboard:stock-news-state";
   const DISCLOSURE_PAGE_KEY = "stock-dashboard:disclosure-page-state";
   const DISCLOSURE_PAGE_STATE_VERSION = 5;
   const WINDOW_TITLE_DETAIL_EVENT = "stock-dashboard:title-detail";
+  const OPEN_TELEGRAM_STOCK_EVENT = "stock-dashboard:open-telegram-stock";
   const PAGE_TITLE_LABELS = {
     "sector-watch": "관심종목 보드",
     "themes": "오늘의 주도주",
@@ -68,6 +70,34 @@
 
   function buildPageLocationHash(pageKey) {
     return "#page=" + encodeURIComponent(normalizeAppPageKey(pageKey, "sector-watch"));
+  }
+
+  function openTelegramStockSearch(payload) {
+    const detail = {
+      name: String((payload && payload.name) || "").trim(),
+      code: String((payload && payload.code) || "").trim(),
+    };
+    try {
+      localStorage.setItem(PENDING_TELEGRAM_STOCK_KEY, JSON.stringify(detail));
+    } catch (err) {}
+    window.dispatchEvent(new CustomEvent(OPEN_TELEGRAM_STOCK_EVENT, { detail: detail }));
+  }
+
+  function consumePendingTelegramStockSearch() {
+    try {
+      const raw = localStorage.getItem(PENDING_TELEGRAM_STOCK_KEY);
+      if (!raw) {
+        return null;
+      }
+      localStorage.removeItem(PENDING_TELEGRAM_STOCK_KEY);
+      const parsed = JSON.parse(raw);
+      return {
+        name: String((parsed && parsed.name) || "").trim(),
+        code: String((parsed && parsed.code) || "").trim(),
+      };
+    } catch (err) {
+      return null;
+    }
   }
 
   function parsePageFromLocationHash() {
@@ -404,6 +434,76 @@
               : null
           )
         : null
+    );
+  }
+
+  function formatCompactMarketCap100m(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) {
+      return "-";
+    }
+    const jo = number / 10000;
+    if (jo >= 1) {
+      return numberFormat(jo, jo >= 100 ? 0 : 1) + "조원";
+    }
+    return numberFormat(number, 0) + "억원";
+  }
+
+  function TelegramStockOverviewPanel(props) {
+    const payload = props.payload || null;
+    if (props.loading) {
+      return h("div", { className: "business-segment-panel telegram-stock-overview-panel muted" },
+        h("div", { className: "business-segment-title" },
+          h("strong", null, "주가 요약"),
+          h("span", null, "최근 3개월 주가와 시총을 불러오는 중입니다.")
+        ),
+        h("div", { className: "business-segment-skeleton" })
+      );
+    }
+    if (props.message) {
+      return h("div", { className: "business-segment-panel telegram-stock-overview-panel muted" },
+        h("div", { className: "business-segment-title" },
+          h("strong", null, "주가 요약"),
+          h("span", null, props.message)
+        )
+      );
+    }
+    if (!payload || !payload.chart) {
+      return null;
+    }
+    const positive = Number(payload.change_pct || 0) >= 0;
+    return h(
+      "div",
+      { className: "business-segment-panel telegram-stock-overview-panel" },
+      h(
+        "div",
+        { className: "business-segment-title" },
+        h("strong", null, "주가 요약"),
+        h("span", null, [payload.stock_name, payload.stock_code, payload.market].filter(Boolean).join(" · "))
+      ),
+      h(
+        "div",
+        { className: "telegram-stock-overview-grid" },
+        h(
+          "div",
+          { className: "telegram-stock-overview-chart" },
+          h(StockChartPreview, {
+            label: payload.stock_name || "종목",
+            loading: false,
+            error: "",
+            data: payload.chart,
+          })
+        ),
+        h(
+          "div",
+          { className: "telegram-stock-overview-metrics" },
+          h("div", { className: "telegram-stock-metric" }, h("span", null, "현재가"), h("strong", null, numberFormat(payload.price, 0))),
+          h("div", { className: "telegram-stock-metric" }, h("span", null, "등락"), h("strong", { className: positive ? "metric-up" : "metric-down" }, formatPercent(payload.change_pct, 2))),
+          h("div", { className: "telegram-stock-metric" }, h("span", null, "시총"), h("strong", null, formatCompactMarketCap100m(payload.market_cap_100m))),
+          h("div", { className: "telegram-stock-metric" }, h("span", null, "거래량"), h("strong", null, numberFormat(payload.volume, 0))),
+          h("div", { className: "telegram-stock-metric wide" }, h("span", null, "기준"), h("strong", null, ((payload.chart.summary || {}).end_date || "").slice(0, 10) || "-"))
+        )
+      )
     );
   }
 
@@ -3272,6 +3372,150 @@
       });
     }, [props.rows]);
 
+    return h("div", { className: "score-history-chart-shell" }, h("canvas", { ref: canvasRef }));
+  }
+
+  function ThemeCalendarIndexChart(props) {
+    const rows = ensureArray(props.rows);
+    const labels = rows.map(function (item) { return item.date; });
+    const scoreData = rows.map(function (item) { return portfolioChartPoint(item.score); });
+    const kospiData = rows.map(function (item) {
+      const value = Number(item && item.kospi_normalized);
+      return Number.isFinite(value) ? value : null;
+    });
+    const kosdaqData = rows.map(function (item) {
+      const value = Number(item && item.kosdaq_normalized);
+      return Number.isFinite(value) ? value : null;
+    });
+    const scoreValues = scoreData.filter(function (value) { return Number.isFinite(Number(value)); }).map(function (value) { return Number(value); });
+    var scoreAxisMin = 0;
+    var scoreAxisMax = 100;
+    if (scoreValues.length) {
+      var localMin = Math.min.apply(null, scoreValues);
+      var localMax = Math.max.apply(null, scoreValues);
+      var span = Math.max(localMax - localMin, 8);
+      var pad = Math.max(span * 0.2, 4);
+      scoreAxisMin = Math.floor((localMin - pad) * 10) / 10;
+      scoreAxisMax = Math.ceil((localMax + pad) * 10) / 10;
+      if (scoreAxisMax <= scoreAxisMin) scoreAxisMax = scoreAxisMin + 10;
+    }
+    const indexValues = kospiData.concat(kosdaqData).filter(function (value) { return Number.isFinite(Number(value)); }).map(function (value) { return Number(value); });
+    var indexAxisMin = 90;
+    var indexAxisMax = 110;
+    if (indexValues.length) {
+      var indexMin = Math.min.apply(null, indexValues);
+      var indexMax = Math.max.apply(null, indexValues);
+      var indexSpan = Math.max(indexMax - indexMin, 4);
+      var indexPad = Math.max(indexSpan * 0.18, 2);
+      indexAxisMin = Math.floor((indexMin - indexPad) * 10) / 10;
+      indexAxisMax = Math.ceil((indexMax + indexPad) * 10) / 10;
+      if (indexAxisMax <= indexAxisMin) indexAxisMax = indexAxisMin + 5;
+    }
+    const { canvasRef } = useChartLifecycle(function (canvas) {
+      return new Chart(canvas, {
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: "KOSPI",
+              data: kospiData,
+              yAxisID: "yIndex",
+              borderColor: "rgba(100, 116, 139, 0.75)",
+              backgroundColor: "rgba(100, 116, 139, 0.06)",
+              pointRadius: 0,
+              pointHoverRadius: 3,
+              tension: 0.18,
+              borderWidth: 1.6,
+              fill: false,
+            },
+            {
+              label: "KOSDAQ",
+              data: kosdaqData,
+              yAxisID: "yIndex",
+              borderColor: "rgba(20, 184, 166, 0.75)",
+              backgroundColor: "rgba(20, 184, 166, 0.05)",
+              pointRadius: 0,
+              pointHoverRadius: 3,
+              tension: 0.18,
+              borderWidth: 1.6,
+              fill: false,
+            },
+            {
+              label: "상위 10개 평균점수",
+              data: scoreData,
+              yAxisID: "yScore",
+              borderColor: "#2563eb",
+              backgroundColor: "rgba(37, 99, 235, 0.12)",
+              pointBackgroundColor: "#2563eb",
+              pointBorderColor: "#ffffff",
+              pointRadius: 3.5,
+              pointHoverRadius: 5,
+              tension: 0.22,
+              borderWidth: 2.4,
+              fill: true,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            x: {
+              ticks: {
+                color: "#64748b",
+                maxTicksLimit: 8,
+                callback: function (value, index) {
+                  return formatDateLabel(labels[index]);
+                },
+              },
+              grid: { color: "#eef2f7" },
+            },
+            yScore: {
+              position: "left",
+              min: scoreAxisMin,
+              max: scoreAxisMax,
+              ticks: { color: "#2563eb" },
+              grid: { color: "#eef2f7" },
+            },
+            yIndex: {
+              position: "right",
+              min: indexAxisMin,
+              max: indexAxisMax,
+              ticks: { color: "#64748b" },
+              grid: { drawOnChartArea: false },
+            },
+          },
+          plugins: {
+            legend: {
+              display: true,
+              labels: {
+                color: "#475569",
+                boxWidth: 14,
+                usePointStyle: true,
+              },
+            },
+            tooltip: {
+              callbacks: {
+                title: function (items) {
+                  return items && items[0] ? labels[items[0].dataIndex] : "";
+                },
+                label: function (context) {
+                  const value = Number(context.parsed.y);
+                  if (!Number.isFinite(value)) return context.dataset.label;
+                  if (context.dataset.yAxisID === "yScore") {
+                    return context.dataset.label + ": " + numberFormat(value, 2);
+                  }
+                  return context.dataset.label + ": " + numberFormat(value, 2) + " (시작=100)";
+                },
+              },
+            },
+          },
+        },
+      });
+    }, [JSON.stringify(labels), JSON.stringify(scoreData), JSON.stringify(kospiData), JSON.stringify(kosdaqData)]);
     return h("div", { className: "score-history-chart-shell" }, h("canvas", { ref: canvasRef }));
   }
 
@@ -7066,6 +7310,26 @@
       }
     }
 
+    async function loadStockOverview(company) {
+      const target = String(company || "").trim();
+      if (!target) {
+        setStockOverview(null);
+        setStockOverviewMessage("");
+        return;
+      }
+      setStockOverviewLoading(true);
+      setStockOverviewMessage("");
+      try {
+        const payload = await fetchJson("/api/stocks/overview?name=" + encodeURIComponent(target) + "&months=3", { noCache: true });
+        setStockOverview(payload);
+      } catch (err) {
+        setStockOverview(null);
+        setStockOverviewMessage(err.message || String(err));
+      } finally {
+        setStockOverviewLoading(false);
+      }
+    }
+
     async function runEarningsSearch(append, overrideCompany, overrideCategory) {
       const company = String(overrideCompany || earningsQuery || "").trim();
       if (!company) {
@@ -7295,6 +7559,7 @@
   function TelegramPage() {
     const savedTelegramState = loadTelegramSearchState() || {};
     const statusRequest = useFetchJson("/api/telegram/status");
+    const status = statusRequest.data || {};
     const [apiId, setApiId] = useState("");
     const [apiHash, setApiHash] = useState("");
     const [phone, setPhone] = useState("");
@@ -7332,6 +7597,9 @@
     const [businessSegments, setBusinessSegments] = useState(savedTelegramState.businessSegments || null);
     const [businessSegmentsLoading, setBusinessSegmentsLoading] = useState(false);
     const [businessSegmentsMessage, setBusinessSegmentsMessage] = useState(savedTelegramState.businessSegmentsMessage || "");
+    const [stockOverview, setStockOverview] = useState(savedTelegramState.stockOverview || null);
+    const [stockOverviewLoading, setStockOverviewLoading] = useState(false);
+    const [stockOverviewMessage, setStockOverviewMessage] = useState(savedTelegramState.stockOverviewMessage || "");
     const [companyLinkLoading, setCompanyLinkLoading] = useState("");
     const [investorFlowModal, setInvestorFlowModal] = useState({ open: false, loading: false, error: "", payload: null });
     const pollRef = useRef(null);
@@ -7411,6 +7679,8 @@
       setFinancialTrendMessage(String(source.financialTrendMessage || ""));
       setBusinessSegments(source.businessSegments || null);
       setBusinessSegmentsMessage(String(source.businessSegmentsMessage || ""));
+      setStockOverview(source.stockOverview || null);
+      setStockOverviewMessage(String(source.stockOverviewMessage || ""));
     }
 
     function currentTelegramState() {
@@ -7437,6 +7707,8 @@
         financialTrendMessage: financialTrendMessage,
         businessSegments: businessSegments,
         businessSegmentsMessage: businessSegmentsMessage,
+        stockOverview: stockOverview,
+        stockOverviewMessage: stockOverviewMessage,
       };
     }
 
@@ -7504,7 +7776,7 @@
       backendStateSaveTimerRef.current = setTimeout(function () {
         postJson("/api/telegram/ui_state", { state: snapshot }).catch(function () {});
       }, 350);
-    }, [keywords, matchMode, exactPhrase, hasFile, startDate, endDate, chatQuery, allRoomsSearch, selectedChats, favoriteChatGroups, results, jobState, earningsQuery, earningsResults, earningsMessage, disclosureCategory, disclosureNextOffsetId, disclosureHasMore, financialTrend, financialTrendMessage, businessSegments, businessSegmentsMessage]);
+    }, [keywords, matchMode, exactPhrase, hasFile, startDate, endDate, chatQuery, allRoomsSearch, selectedChats, favoriteChatGroups, results, jobState, earningsQuery, earningsResults, earningsMessage, disclosureCategory, disclosureNextOffsetId, disclosureHasMore, financialTrend, financialTrendMessage, businessSegments, businessSegmentsMessage, stockOverview, stockOverviewMessage]);
 
     useEffect(function () {
       const categoryLabel = disclosureTabLabel(disclosureCategory);
@@ -7876,7 +8148,10 @@
         setFinancialTrendMessage("");
         setBusinessSegments(null);
         setBusinessSegmentsMessage("");
+        setStockOverview(null);
+        setStockOverviewMessage("");
         loadBusinessSegments(company);
+        loadStockOverview(company);
         if (jobState && jobState.job_id && !jobState.finished) {
           postJson("/api/telegram/search_jobs/" + jobState.job_id + "/cancel", {})
             .then(syncJob)
@@ -7897,6 +8172,49 @@
         setEarningsMessage(err.message || String(err));
       }
     }
+
+    useEffect(function () {
+      const pending = consumePendingTelegramStockSearch();
+      if (pending && (pending.name || pending.code)) {
+        const queryText = pending.name || pending.code;
+        setEarningsQuery(queryText);
+        loadBusinessSegments(queryText);
+        loadFinancialTrend(queryText);
+        loadStockOverview(queryText);
+        if (status.authorized) {
+          setTimeout(function () { runEarningsSearch(false, queryText); }, 0);
+        }
+      }
+    }, [status.authorized, disclosureCategory]);
+
+    useEffect(function () {
+      function handleOpenTelegramStock(event) {
+        const detail = (event && event.detail) || {};
+        const name = String(detail.name || "").trim();
+        const code = String(detail.code || "").trim();
+        const queryText = name || code;
+        if (!queryText) {
+          return;
+        }
+        setEarningsQuery(queryText);
+        setEarningsSuggestions([]);
+        setEarningsActiveIndex(0);
+        setEarningsResults([]);
+        setDisclosureNextOffsetId(0);
+        setDisclosureHasMore(false);
+        setEarningsMessage("");
+        loadBusinessSegments(queryText);
+        loadFinancialTrend(queryText);
+        loadStockOverview(queryText);
+        if (status.authorized) {
+          setTimeout(function () { runEarningsSearch(false, queryText); }, 0);
+        }
+      }
+      window.addEventListener(OPEN_TELEGRAM_STOCK_EVENT, handleOpenTelegramStock);
+      return function () {
+        window.removeEventListener(OPEN_TELEGRAM_STOCK_EVENT, handleOpenTelegramStock);
+      };
+    }, [status.authorized, disclosureCategory]);
 
     async function runSearch(overrideKeywords) {
       const searchText = String(overrideKeywords == null ? keywords : overrideKeywords);
@@ -8412,7 +8730,6 @@
       return ErrorPanel({ message: statusRequest.error });
     }
 
-    const status = statusRequest.data || {};
     const progressMessage = jobState
       ? (jobState.message || (numberFormat(jobState.processed_chat_count, 0) + " / " + numberFormat(jobState.total_chat_count, 0) + "개 방 확인 중"))
       : "";
@@ -11320,6 +11637,12 @@
     const [reloadMessage, setReloadMessage] = useState("");
     const [reloadStartedAt, setReloadStartedAt] = useState(0);
     const [reloadElapsedSec, setReloadElapsedSec] = useState(0);
+    const [indexScorePopup, setIndexScorePopup] = useState({
+      open: false,
+      loading: false,
+      error: "",
+      payload: null,
+    });
     const sectorSaveSeqRef = useRef(0);
     const leaderCalendarRef = useRef(null);
     const manualSummaryRef = useRef(null);
@@ -11327,7 +11650,9 @@
     const scoreHistoryHoverOpenRef = useRef(null);
     const scoreHistoryHoverCloseRef = useRef(null);
     const scoreHistoryCacheRef = useRef({});
+    const indexScoreCacheRef = useRef({});
     const scoreHistoryRequestSeqRef = useRef(0);
+    const indexScoreRequestSeqRef = useRef(0);
     const [calendarCopyState, setCalendarCopyState] = useState({ status: "", message: "" });
     const [manualSummaryCopyState, setManualSummaryCopyState] = useState({ status: "", message: "" });
     const [scoreTableCopyState, setScoreTableCopyState] = useState({ status: "", message: "" });
@@ -12121,13 +12446,23 @@
           null,
           capturePlain
             ? h("span", { className: "theme-capture-stock-label" }, row.stock_name || "-")
-            : h(TradingViewStockLink, {
-                row: row,
-                label: row.stock_name || "-",
-                onOpenChart: function (chartRow, symbol, label) {
-                  openStockChartPopup(chartRow || row, symbol, label || row.stock_name || "-");
+            : h(
+                "button",
+                {
+                  type: "button",
+                  className: "tradingview-stock-link inline-button",
+                  onClick: function (event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openTelegramStockSearch({
+                      name: row.stock_name || "",
+                      code: row.stock_code || "",
+                    });
+                  },
+                  title: (row.stock_name || "-") + " 종목정보 검색기로 이동",
                 },
-              })
+                row.stock_name || "-"
+              )
         )
       );
     }
@@ -12590,6 +12925,38 @@
       });
     }
 
+    function closeIndexScorePopup() {
+      setIndexScorePopup(function (current) {
+        return Object.assign({}, current, { open: false });
+      });
+    }
+
+    function openIndexScorePopup() {
+      const cacheKey = String(calendarScoreBasis || "score");
+      const cachedPayload = indexScoreCacheRef.current[cacheKey];
+      if (cachedPayload) {
+        setIndexScorePopup({ open: true, loading: false, error: "", payload: cachedPayload });
+        return;
+      }
+      indexScoreRequestSeqRef.current += 1;
+      const requestSeq = indexScoreRequestSeqRef.current;
+      setIndexScorePopup({ open: true, loading: true, error: "", payload: null });
+      fetchJson("/api/theme-calendar-index-score?limit=65&score_basis=" + encodeURIComponent(calendarScoreBasis), { noCache: true })
+        .then(function (payload) {
+          if (indexScoreRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          indexScoreCacheRef.current[cacheKey] = payload || {};
+          setIndexScorePopup({ open: true, loading: false, error: "", payload: payload || {} });
+        })
+        .catch(function (error) {
+          if (indexScoreRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          setIndexScorePopup({ open: true, loading: false, error: error.message || String(error), payload: null });
+        });
+    }
+
     function buildTodayThemeExcel() {
       if (reloadingExcel) {
         return;
@@ -12879,6 +13246,60 @@
       );
     }
 
+    function renderIndexScorePopup() {
+      if (!indexScorePopup.open) {
+        return null;
+      }
+      const payload = indexScorePopup.payload || {};
+      const rows = ensureArray(payload.rows);
+      const summary = payload.summary || {};
+      const scoreLabel = payload.score_basis === "score_o" ? "상위 10개 당일점수 평균" : "상위 10개 종합점수 평균";
+      const content = indexScorePopup.loading
+        ? h(LoadingBlock, { compact: true, title: "지수/점수 비교 로드 중...", label: "최근 3개월 상위 10개 평균점수와 KOSPI/KOSDAQ 지수를 불러옵니다." })
+        : indexScorePopup.error
+          ? h("div", { className: "notice-box error" }, indexScorePopup.error)
+          : rows.length
+            ? h(
+                React.Fragment,
+                null,
+                h(
+                  "div",
+                  { className: "summary-grid summary-grid-small score-history-summary" },
+                  h(SummaryCard, { label: "기간", value: (payload.start_date || "").slice(5) + " ~ " + (payload.end_date || "").slice(5), help: "최근 약 3개월" }),
+                  h(SummaryCard, { label: "최근 평균점수", value: numberFormat(summary.latest_score, 2), help: scoreLabel }),
+                  h(SummaryCard, { label: "KOSPI", value: numberFormat(summary.latest_kospi_close, 2), help: "종가" }),
+                  h(SummaryCard, { label: "KOSDAQ", value: numberFormat(summary.latest_kosdaq_close, 2), help: "종가" })
+                ),
+                h("div", { className: "summary-help" }, "배경 지수는 시작값 100 기준으로 정규화했습니다."),
+                h(ThemeCalendarIndexChart, { rows: rows })
+              )
+            : EmptyState({ message: "표시할 지수/점수 데이터가 없습니다.", compact: true });
+      return h(
+        "div",
+        {
+          className: "modal-backdrop score-history-backdrop",
+          onClick: closeIndexScorePopup,
+        },
+        h(
+          "div",
+          {
+            className: "modal-panel score-history-modal",
+            onClick: function (event) { event.stopPropagation(); },
+          },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "Index Score Overlay"),
+              h("h2", null, "상위 10개 평균점수 vs KOSPI/KOSDAQ")
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeIndexScorePopup }, "닫기")
+          ),
+          content
+        )
+      );
+    }
+
     function renderSectorMarketCapPopup() {
       if (!sectorMarketCapPopup.open) {
         return null;
@@ -12919,6 +13340,7 @@
       React.Fragment,
       null,
       renderScoreHistoryPopup(),
+      renderIndexScorePopup(),
       renderTradingViewPopup(),
       renderSectorMarketCapPopup(),
       h(
@@ -13020,11 +13442,10 @@
                   {
                     type: "button",
                     className: "mini-button",
-                    onClick: reloadThemeExcel,
-                    disabled: reloadingExcel,
-                    title: "SQL에 저장된 최신 데이터를 기준으로 현재 화면만 다시 불러옵니다.",
+                    onClick: openIndexScorePopup,
+                    title: "최근 3개월 상위 10개 평균점수와 KOSPI, KOSDAQ 지수를 함께 확인합니다.",
                   },
-                  reloadingExcel ? "데이터 로드 중..." : "데이터 직접 로드"
+                  "지수점수 확인"
                 ),
                 reloadingExcel
                   ? h(
@@ -13371,6 +13792,8 @@
                       h("th", null, "종목"),
                       h("th", null, "Sortino"),
                       h("th", null, "당일점수"),
+                      h("th", null, "시총(억)"),
+                      h("th", null, "거래대금(억)"),
                       h("th", null, "등락률"),
                       h("th", null, "종합점수"),
                       h("th", null, "비고")
@@ -13391,6 +13814,8 @@
                         h("td", null, renderStockNameWithCode(captureRow)),
                         h("td", null, renderNumberCell(row.sortino_norm, 4)),
                         h("td", null, renderNumberCell(row.score_o, 2)),
+                        h("td", null, renderNumberCell(row.market_cap_100m, 0)),
+                        h("td", null, renderNumberCell(row.trading_value_100m, 0)),
                         h("td", null, renderSignedPercent(row.change_pct)),
                         h("td", null, renderTodayScore(row.score)),
                         h("td", null, row.note || "-")
@@ -13434,6 +13859,21 @@
     const [reloadMessage, setReloadMessage] = useState("");
     const [themeTableSortState, setThemeTableSortState] = useState({ key: "score", direction: "desc" });
     const [chartPopup, setChartPopup] = useState({ open: false, row: null, loading: false, error: "", data: null });
+    const scoreHistoryHoverOpenRef = useRef(null);
+    const scoreHistoryHoverCloseRef = useRef(null);
+    const scoreHistoryCacheRef = useRef({});
+    const indexScoreCacheRef = useRef({});
+    const scoreHistoryRequestSeqRef = useRef(0);
+    const indexScoreRequestSeqRef = useRef(0);
+    const [scoreHistoryPopup, setScoreHistoryPopup] = useState({
+      open: false,
+      mode: "modal",
+      loading: false,
+      error: "",
+      row: null,
+      payload: null,
+      position: null,
+    });
     const [datePickerMonth, setDatePickerMonth] = useState(function () {
       const today = new Date();
       return today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0");
@@ -13636,6 +14076,239 @@
         });
     }
 
+    function scoreHistoryPositionFromEvent(event) {
+      const width = 430;
+      const height = 360;
+      const left = Math.max(10, Math.min((event.clientX || 0) + 14, window.innerWidth - width - 10));
+      const top = Math.max(10, Math.min((event.clientY || 0) + 14, window.innerHeight - height - 34));
+      return { left: left, top: top };
+    }
+
+    function buildScoreHistoryKey(row) {
+      const code = String((row || {}).stock_code || "").trim().toUpperCase();
+      const name = (row || {}).resolved_name || (row || {}).stock_name || "";
+      const endDate = themes.file_date || selectedFileDate || "";
+      const regionKey = selectedRegion || "";
+      const cacheLoadedAt = themes && themes.cache_loaded_at ? String(themes.cache_loaded_at) : "";
+      return [config.pageKey || "global", regionKey, code, name, endDate, cacheLoadedAt].join("|");
+    }
+
+    function openScoreHistory(row, options) {
+      if (!row) {
+        return;
+      }
+      const openOptions = options || {};
+      const mode = openOptions.mode || "modal";
+      const position = openOptions.position || null;
+      const code = String(row.stock_code || "").trim().toUpperCase();
+      const name = row.resolved_name || row.stock_name || "";
+      const endDate = themes.file_date || selectedFileDate || "";
+      const cacheKey = buildScoreHistoryKey(row);
+      const cached = scoreHistoryCacheRef.current[cacheKey];
+      scoreHistoryRequestSeqRef.current += 1;
+      const requestSeq = scoreHistoryRequestSeqRef.current;
+      if (cached) {
+        setScoreHistoryPopup({ open: true, mode: mode, loading: false, error: "", row: row, payload: cached, position: position });
+        return;
+      }
+      setScoreHistoryPopup({ open: true, mode: mode, loading: true, error: "", row: row, payload: null, position: position });
+      const params = new URLSearchParams();
+      if (code) params.set("code", code);
+      if (name) params.set("name", name);
+      if (endDate) params.set("end_date", endDate);
+      params.set("days", "62");
+      params.set("market", config.pageKey === "asia-themes" ? "asia" : "us");
+      if (config.pageKey === "asia-themes" && selectedRegion) {
+        params.set("region", selectedRegion);
+      }
+      fetchJson("/api/themes/score-history?" + params.toString(), { noCache: true })
+        .then(function (payload) {
+          scoreHistoryCacheRef.current[cacheKey] = payload;
+          if (scoreHistoryRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          setScoreHistoryPopup({ open: true, mode: mode, loading: false, error: "", row: row, payload: payload, position: position });
+        })
+        .catch(function (error) {
+          if (scoreHistoryRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          setScoreHistoryPopup({ open: true, mode: mode, loading: false, error: error.message || String(error), row: row, payload: null, position: position });
+        });
+    }
+
+    function closeScoreHistory() {
+      scoreHistoryRequestSeqRef.current += 1;
+      setScoreHistoryPopup({ open: false, mode: "modal", loading: false, error: "", row: null, payload: null, position: null });
+    }
+
+    function scheduleScoreHistoryHover(row, event) {
+      const position = scoreHistoryPositionFromEvent(event);
+      if (scoreHistoryHoverCloseRef.current) {
+        clearTimeout(scoreHistoryHoverCloseRef.current);
+      }
+      if (scoreHistoryHoverOpenRef.current) {
+        clearTimeout(scoreHistoryHoverOpenRef.current);
+      }
+      scoreHistoryHoverOpenRef.current = setTimeout(function () {
+        openScoreHistory(row, { mode: "hover", position: position });
+      }, 180);
+    }
+
+    function updateScoreHistoryHoverPosition(event) {
+      if (!scoreHistoryPopup.open || scoreHistoryPopup.mode !== "hover") {
+        return;
+      }
+      const position = scoreHistoryPositionFromEvent(event);
+      setScoreHistoryPopup(function (current) {
+        if (!current.open || current.mode !== "hover") {
+          return current;
+        }
+        return Object.assign({}, current, { position: position });
+      });
+    }
+
+    function scheduleScoreHistoryHoverClose() {
+      if (scoreHistoryHoverOpenRef.current) {
+        clearTimeout(scoreHistoryHoverOpenRef.current);
+      }
+      if (scoreHistoryHoverCloseRef.current) {
+        clearTimeout(scoreHistoryHoverCloseRef.current);
+      }
+      scoreHistoryHoverCloseRef.current = setTimeout(function () {
+        scoreHistoryRequestSeqRef.current += 1;
+        setScoreHistoryPopup(function (current) {
+          if (current.mode !== "hover") {
+            return current;
+          }
+          return { open: false, mode: "modal", loading: false, error: "", row: null, payload: null, position: null };
+        });
+      }, 160);
+    }
+
+    function keepScoreHistoryHoverOpen() {
+      if (scoreHistoryHoverCloseRef.current) {
+        clearTimeout(scoreHistoryHoverCloseRef.current);
+      }
+    }
+
+    function renderScoreValueCell(row) {
+      const number = Number(row && row.score);
+      if (!Number.isFinite(number)) {
+        return "-";
+      }
+      return h(
+        "button",
+        {
+          type: "button",
+          className: "today-score-cell today-score-button",
+          title: "Open score trend",
+          onClick: function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            openScoreHistory(row, { mode: "modal" });
+          },
+          onMouseEnter: function (event) { scheduleScoreHistoryHover(row, event); },
+          onMouseMove: updateScoreHistoryHoverPosition,
+          onMouseLeave: scheduleScoreHistoryHoverClose,
+        },
+        numberFormat(number, 2)
+      );
+    }
+
+    function renderScoreHistoryPopup() {
+      if (!scoreHistoryPopup.open) {
+        return null;
+      }
+      const payload = scoreHistoryPopup.payload || {};
+      const popupRow = scoreHistoryPopup.row || {};
+      const historyRows = ensureArray(payload.rows);
+      const summary = payload.summary || {};
+      const stockName = payload.stock_name || popupRow.resolved_name || popupRow.stock_name || "Stock";
+      const stockCode = payload.stock_code || popupRow.stock_code || "";
+      const isHover = scoreHistoryPopup.mode === "hover";
+      const content = scoreHistoryPopup.loading
+        ? h(LoadingBlock, { compact: true, title: "Loading score trend", label: "Fetching recent score history" })
+        : scoreHistoryPopup.error
+          ? h("div", { className: "notice-box error" }, scoreHistoryPopup.error)
+          : historyRows.length
+            ? h(
+                React.Fragment,
+                null,
+                isHover
+                  ? h(
+                      "div",
+                      { className: "score-history-hover-summary" },
+                      h("span", null, "Latest " + numberFormat(summary.latest_score, 2)),
+                      h("span", null, "Average " + numberFormat(summary.avg_score, 2)),
+                      h("span", null, numberFormat(summary.count, 0) + " rows")
+                    )
+                  : h(
+                      "div",
+                      { className: "summary-grid summary-grid-small score-history-summary" },
+                      h(SummaryCard, { label: "Period", value: (payload.start_date || "").slice(5) + " ~ " + (payload.end_date || "").slice(5), help: "Recent 3 months" }),
+                      h(SummaryCard, { label: "Latest", value: numberFormat(summary.latest_score, 2), help: "Selected end date" }),
+                      h(SummaryCard, { label: "Average", value: numberFormat(summary.avg_score, 2), help: numberFormat(summary.count, 0) + " observations" }),
+                      h(SummaryCard, { label: "Peak", value: numberFormat(summary.max_score, 2), help: "Highest in window" })
+                    ),
+                h(ScoreHistoryChart, { rows: historyRows }),
+                isHover
+                  ? null
+                  : h(
+                      "div",
+                      { className: "score-history-list" },
+                      historyRows.slice().reverse().map(function (item) {
+                        return h(
+                          "div",
+                          { key: item.date, className: "score-history-item" },
+                          h("strong", null, item.date),
+                          h("span", null, "Score " + numberFormat(item.score, 2)),
+                          h("span", { className: Number(item.change_pct || 0) >= 0 ? "metric-up-light" : "metric-down-light" }, formatPercent(item.change_pct, 2)),
+                          h("span", null, numberFormat(item.rank, 0) + "위")
+                        );
+                      })
+                    )
+              )
+            : EmptyState({ message: "최근 3달 점수 이력이 없습니다.", compact: true });
+      if (isHover) {
+        const position = scoreHistoryPopup.position || { left: 16, top: 16 };
+        return h(
+          "div",
+          {
+            className: "score-history-hover-card",
+            style: { left: position.left + "px", top: position.top + "px" },
+            onMouseEnter: keepScoreHistoryHoverOpen,
+            onMouseLeave: scheduleScoreHistoryHoverClose,
+          },
+          h(
+            "div",
+            { className: "score-history-hover-head" },
+            h("strong", null, stockName),
+            stockCode ? h("span", null, stockCode) : null
+          ),
+          content
+        );
+      }
+      return h(
+        "div",
+        { className: "modal-backdrop score-history-backdrop", onClick: closeScoreHistory },
+        h(
+          "div",
+          { className: "modal-panel score-history-modal", onClick: function (event) { event.stopPropagation(); } },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "Score Trend"),
+              h("h2", null, stockName + (stockCode ? " (" + stockCode + ")" : ""))
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeScoreHistory }, "닫기")
+          ),
+          content
+        )
+      );
+    }
+
     function selectCalendarDate(date, sector) {
       if (!date) return;
       setSelectedFileDate(date);
@@ -13746,6 +14419,7 @@
     return h(
       React.Fragment,
       null,
+      renderScoreHistoryPopup(),
       renderChartPopup(),
       ensureArray(config.regionOptions).length
         ? h(
@@ -14079,7 +14753,7 @@
                       h("td", { className: "theme-stock-name-cell theme-col-stock_name truncate-cell", style: columnWidthStyle("stock_name") }, renderNameCell(row)),
                       h("td", { className: "theme-col-sortino_norm numeric-cell", style: columnWidthStyle("sortino_norm") }, renderNumberCell(row.sortino_norm, 4)),
                       h("td", { className: "theme-col-score_o numeric-cell", style: columnWidthStyle("score_o") }, renderNumberCell(row.score_o, 2)),
-                      h("td", { className: "theme-col-score numeric-cell", style: columnWidthStyle("score") }, renderNumberCell(row.score, 2)),
+                      h("td", { className: "theme-col-score numeric-cell", style: columnWidthStyle("score") }, renderScoreValueCell(row)),
                       h("td", { className: "theme-col-change_pct numeric-cell", style: columnWidthStyle("change_pct") }, renderSignedPercent(row.change_pct)),
                       h("td", { className: "theme-col-market_cap_100m numeric-cell", style: columnWidthStyle("market_cap_100m"), title: renderCompactUsdCell(row.market_cap_usd, row.market_cap_100m) }, renderCompactUsdCell(row.market_cap_usd, row.market_cap_100m)),
                       h("td", { className: "theme-col-trading_value_100m numeric-cell", style: columnWidthStyle("trading_value_100m"), title: renderCompactUsdCell(row.trading_value_usd, row.trading_value_100m) }, renderCompactUsdCell(row.trading_value_usd, row.trading_value_100m)),
@@ -18715,6 +19389,16 @@
       window.addEventListener(WINDOW_TITLE_DETAIL_EVENT, handleTitleDetail);
       return function () {
         window.removeEventListener(WINDOW_TITLE_DETAIL_EVENT, handleTitleDetail);
+      };
+    }, []);
+
+    useEffect(function () {
+      function handleOpenTelegramStock() {
+        setPage("telegram");
+      }
+      window.addEventListener(OPEN_TELEGRAM_STOCK_EVENT, handleOpenTelegramStock);
+      return function () {
+        window.removeEventListener(OPEN_TELEGRAM_STOCK_EVENT, handleOpenTelegramStock);
       };
     }, []);
 

@@ -1267,6 +1267,62 @@ table {
   align-items: stretch;
 }
 
+.telegram-stock-overview-panel {
+  margin-top: 10px;
+}
+
+.telegram-stock-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(220px, 0.85fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.telegram-stock-overview-panel .stock-chart-preview {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  box-sizing: border-box;
+  pointer-events: auto;
+  box-shadow: none;
+  border-radius: 14px;
+}
+
+.telegram-stock-overview-chart {
+  min-width: 0;
+}
+
+.telegram-stock-overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.telegram-stock-metric {
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.telegram-stock-metric.wide {
+  grid-column: 1 / -1;
+}
+
+.telegram-stock-metric span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.telegram-stock-metric strong {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 900;
+}
+
 .earnings-trend-side-panel {
   min-height: 560px;
   max-height: 560px;
@@ -1417,6 +1473,10 @@ table {
 
 @media (max-width: 1080px) {
   .earnings-result-visual-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .telegram-stock-overview-grid {
     grid-template-columns: 1fr;
   }
 

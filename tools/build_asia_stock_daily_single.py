@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -35,6 +38,7 @@ OUTPUT_DIR = Path(
 FORMULA_CONFIG_PATH = OUTPUT_DIR / "score_formula_config.json"
 FAST_DB_PATH = Path(os.getenv("STOCK_DAILY_ASIA_FAST_DB_PATH", str(ROOT_DIR / "backend" / "asia_stock_daily_fast.sqlite")))
 FAST_PARQUET_PATH = Path(os.getenv("STOCK_DAILY_ASIA_FAST_PARQUET_PATH", str(ROOT_DIR / "backend" / "asia_stock_daily_fast.parquet")))
+YAHOO_CACHE_DIR = ROOT_DIR / "backend" / ".yahoo_cache" / "asia_daily"
 
 DEFAULT_FORMULA_CONFIG: dict[str, Any] = {
     "score_formula": {
@@ -72,6 +76,8 @@ DEFAULT_FORMULA_CONFIG: dict[str, Any] = {
 }
 
 TWSE_LISTING_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+TWSE_LISTING_CACHE_PATH = YAHOO_CACHE_DIR / "twse_listing.json"
+ASIA_LISTING_CACHE_PATH = YAHOO_CACHE_DIR / "asia_listing.parquet"
 TWSE_INDUSTRY_CODE_MAP: dict[str, str] = {
     "01": "시멘트",
     "02": "식품",
@@ -217,9 +223,13 @@ def _to_yahoo_symbol(exchange_code: str, symbol: str) -> str:
 
 
 def _load_twse_listing() -> pd.DataFrame:
-    response = requests.get(TWSE_LISTING_URL, timeout=30)
-    response.raise_for_status()
-    payload = response.json()
+    payload = _load_cached_json(TWSE_LISTING_CACHE_PATH, 86400)
+    if not isinstance(payload, list):
+        response = requests.get(TWSE_LISTING_URL, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            _store_cached_json(TWSE_LISTING_CACHE_PATH, payload)
     if not isinstance(payload, list):
         raise RuntimeError("invalid TWSE listing payload")
     rows: list[dict[str, Any]] = []
@@ -250,6 +260,13 @@ def _load_twse_listing() -> pd.DataFrame:
 
 
 def _load_asia_listing() -> pd.DataFrame:
+    try:
+        if ASIA_LISTING_CACHE_PATH.exists() and (time.time() - ASIA_LISTING_CACHE_PATH.stat().st_mtime) <= 43200:
+            cached_listing = pd.read_parquet(ASIA_LISTING_CACHE_PATH)
+            if isinstance(cached_listing, pd.DataFrame) and not cached_listing.empty:
+                return cached_listing
+    except Exception:
+        pass
     frames: list[pd.DataFrame] = []
     market_specs = [("TSE", "JP"), ("SSE", "CN"), ("SZSE", "CN")]
     for exchange_code, region in market_specs:
@@ -271,91 +288,95 @@ def _load_asia_listing() -> pd.DataFrame:
     frames.append(_load_twse_listing())
     listing = pd.concat(frames, ignore_index=True)
     listing = listing.drop_duplicates(subset=["Symbol"], keep="first").reset_index(drop=True)
+    try:
+        ASIA_LISTING_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        listing.to_parquet(ASIA_LISTING_CACHE_PATH, index=False)
+    except Exception:
+        pass
     return listing
 
 
-def _load_yahoo_chart_meta(symbol: str) -> dict[str, Any]:
+def _cache_path(kind: str, symbol: str) -> Path:
+    digest = hashlib.sha1(symbol.encode("utf-8")).hexdigest()[:16]
+    safe_symbol = re.sub(r"[^A-Za-z0-9._-]+", "_", symbol)[:40] or "symbol"
+    return YAHOO_CACHE_DIR / kind / f"{safe_symbol}_{digest}.json"
+
+
+def _load_cached_json(path: Path, max_age_seconds: int) -> Any | None:
+    try:
+        if not path.exists():
+            return None
+        if max_age_seconds > 0 and (time.time() - path.stat().st_mtime) > max_age_seconds:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _store_cached_json(path: Path, payload: Any) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_cached_yahoo_json(url: str, params: dict[str, Any], cache_path: Path, *, max_age_seconds: int = 43200) -> dict[str, Any]:
+    cached = _load_cached_json(cache_path, max_age_seconds)
+    if isinstance(cached, dict):
+        return cached
     response = requests.get(
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-        params={"range": "1y", "interval": "1d"},
+        url,
+        params=params,
         headers={"User-Agent": "Mozilla/5.0"},
         timeout=20,
     )
     response.raise_for_status()
-    result = (response.json().get("chart", {}).get("result") or [{}])[0]
+    payload = response.json()
+    if isinstance(payload, dict):
+        _store_cached_json(cache_path, payload)
+    return payload
+
+
+def _load_yahoo_chart_result(symbol: str) -> dict[str, Any]:
+    payload = _load_cached_yahoo_json(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+        {"range": "18mo", "interval": "1d", "includePrePost": "false", "events": "div,splits"},
+        _cache_path("chart", symbol),
+    )
+    return (payload.get("chart", {}).get("result") or [{}])[0]
+
+
+def _build_chart_frame(result: dict[str, Any], default_tz: str) -> tuple[dict[str, Any], pd.DataFrame]:
     meta = result.get("meta", {}) or {}
+    market_tz = ZoneInfo(str(meta.get("exchangeTimezoneName") or "").strip() or default_tz)
     quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
-    closes = [float(value) for value in quote.get("close", []) if value not in (None, "")]
-    first_close = closes[0] if closes else None
-    last_close = closes[-1] if closes else None
-    previous_close = closes[-2] if len(closes) >= 2 else float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0.0)
-    return {
-        "price": float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0.0),
-        "previous_close": previous_close,
-        "volume": float(meta.get("regularMarketVolume") or 0.0),
-        "exchange": str(meta.get("fullExchangeName") or meta.get("exchangeName") or ""),
-        "long_name": str(meta.get("longName") or "").strip(),
-        "short_name": str(meta.get("shortName") or "").strip(),
-        "one_year_return_pct": ((last_close / first_close - 1.0) * 100.0) if first_close and last_close else None,
-    }
-
-
-def _fetch_snapshot_for_symbol(symbol: str, yahoo_symbol: str, stock_name: str, market_cap_proxy_multiplier: float) -> dict[str, Any] | None:
-    try:
-        chart_meta = _load_yahoo_chart_meta(yahoo_symbol)
-    except Exception:
-        return None
-    price = float(chart_meta.get("price") or 0.0)
-    previous_close = float(chart_meta.get("previous_close") or 0.0)
-    volume = float(chart_meta.get("volume") or 0.0)
-    trading_value = price * volume
-    market_cap_proxy = trading_value * max(1.0, float(market_cap_proxy_multiplier))
-    if price <= 0 or volume <= 0 or trading_value <= 0 or market_cap_proxy <= 0:
-        return None
-    change_pct = ((price / previous_close) - 1.0) * 100.0 if previous_close > 0 else 0.0
-    resolved_name = stock_name
-    if str(symbol).startswith("TWSE:"):
-        resolved_name = str(chart_meta.get("long_name") or chart_meta.get("short_name") or stock_name).strip() or stock_name
-    return {
-        "Symbol": symbol,
-        "stock_name": resolved_name,
-        "close_price": price,
-        "volume": volume,
-        "market_cap": float(market_cap_proxy),
-        "trading_value": float(trading_value),
-        "change_pct": change_pct,
-        "exchange": str(chart_meta.get("exchange") or ""),
-    }
-
-
-def _fetch_asia_snapshots(listing: pd.DataFrame, max_workers: int, market_cap_proxy_multiplier: float) -> pd.DataFrame:
+    timestamps = result.get("timestamp") or []
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
     rows: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                _fetch_snapshot_for_symbol,
-                row.Symbol,
-                str(row.yahoo_symbol or ""),
-                str(row.Name or row.Symbol),
-                market_cap_proxy_multiplier,
-            ): row.Symbol
-            for row in listing.itertuples(index=False)
-        }
-        for future in as_completed(futures):
-            payload = future.result()
-            if payload:
-                rows.append(payload)
-    return pd.DataFrame(rows)
+    for idx, raw_ts in enumerate(timestamps):
+        if raw_ts in (None, ""):
+            continue
+        close_value = closes[idx] if idx < len(closes) else None
+        if close_value in (None, ""):
+            continue
+        local_dt = datetime.fromtimestamp(int(raw_ts), timezone.utc).astimezone(market_tz)
+        volume_value = volumes[idx] if idx < len(volumes) else 0
+        rows.append(
+            {
+                "date_key": local_dt.strftime("%Y%m%d"),
+                "close": float(close_value),
+                "volume": float(volume_value or 0.0),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame = frame.sort_values("date_key").drop_duplicates(subset=["date_key"], keep="last").reset_index(drop=True)
+    return meta, frame
 
 
-def _calc_history_metrics(symbol: str, end_date: str) -> dict[str, float]:
-    try:
-        hist = fdr.DataReader(symbol, start="2025-01-01", end=f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}")
-    except Exception:
-        return {"sortino_norm": 0.5, "is_52w_high": 0}
-    if hist is None or hist.empty or "Close" not in hist.columns:
-        return {"sortino_norm": 0.5, "is_52w_high": 0}
-    close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
+def _calc_history_metrics_from_close(close: pd.Series) -> dict[str, float]:
     if close.empty:
         return {"sortino_norm": 0.5, "is_52w_high": 0}
     daily_ret = close.pct_change().dropna().tail(20)
@@ -377,6 +398,68 @@ def _calc_history_metrics(symbol: str, end_date: str) -> dict[str, float]:
     recent_252 = close.tail(252)
     is_52w_high = int(not recent_252.empty and float(close.iloc[-1]) >= float(recent_252.max()))
     return {"sortino_norm": sortino_norm, "is_52w_high": is_52w_high}
+
+
+def _fetch_snapshot_for_symbol(symbol: str, yahoo_symbol: str, stock_name: str, market_cap_proxy_multiplier: float, target_date: str) -> dict[str, Any] | None:
+    try:
+        result = _load_yahoo_chart_result(yahoo_symbol)
+    except Exception:
+        return None
+    default_tz = "Asia/Tokyo" if str(symbol).startswith("TSE:") else "Asia/Shanghai"
+    if str(symbol).startswith("TWSE:"):
+        default_tz = "Asia/Taipei"
+    meta, history_frame = _build_chart_frame(result, default_tz)
+    if history_frame.empty:
+        return None
+    target_frame = history_frame[history_frame["date_key"] <= target_date].reset_index(drop=True)
+    if target_frame.empty:
+        return None
+    target_row = target_frame.iloc[-1]
+    price = float(target_row["close"] or 0.0)
+    previous_close = float(target_frame.iloc[-2]["close"] or 0.0) if len(target_frame) >= 2 else price
+    volume = float(target_row["volume"] or 0.0)
+    trading_value = price * volume
+    market_cap_proxy = trading_value * max(1.0, float(market_cap_proxy_multiplier))
+    if price <= 0 or volume <= 0 or trading_value <= 0 or market_cap_proxy <= 0:
+        return None
+    change_pct = ((price / previous_close) - 1.0) * 100.0 if previous_close > 0 else 0.0
+    resolved_name = stock_name
+    if str(symbol).startswith("TWSE:"):
+        resolved_name = str(meta.get("longName") or meta.get("shortName") or stock_name).strip() or stock_name
+    metrics = _calc_history_metrics_from_close(pd.to_numeric(target_frame["close"], errors="coerce").dropna())
+    return {
+        "Symbol": symbol,
+        "stock_name": resolved_name,
+        "close_price": price,
+        "volume": volume,
+        "market_cap": float(market_cap_proxy),
+        "trading_value": float(trading_value),
+        "change_pct": change_pct,
+        "exchange": str(meta.get("fullExchangeName") or meta.get("exchangeName") or ""),
+        "sortino_norm": float(metrics.get("sortino_norm", 0.5)),
+        "is_52w_high": int(metrics.get("is_52w_high", 0)),
+    }
+
+
+def _fetch_asia_snapshots(listing: pd.DataFrame, max_workers: int, market_cap_proxy_multiplier: float, target_date: str) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _fetch_snapshot_for_symbol,
+                row.Symbol,
+                str(row.yahoo_symbol or ""),
+                str(row.Name or row.Symbol),
+                market_cap_proxy_multiplier,
+                target_date,
+            ): row.Symbol
+            for row in listing.itertuples(index=False)
+        }
+        for future in as_completed(futures):
+            payload = future.result()
+            if payload:
+                rows.append(payload)
+    return pd.DataFrame(rows)
 
 
 def _load_recent_score_history_map(conn: sqlite3.Connection, target_date: str, symbols: list[str]) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
@@ -480,7 +563,7 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     trend_cfg = formula_cfg.get("trend_adjustment_formula", {})
 
     listing = _load_asia_listing()
-    quote_df = _fetch_asia_snapshots(listing, config.max_workers, config.market_cap_proxy_multiplier)
+    quote_df = _fetch_asia_snapshots(listing, config.max_workers, config.market_cap_proxy_multiplier, config.date_key)
     if quote_df.empty:
         raise RuntimeError("Asia quote snapshot is empty.")
     base = listing.merge(quote_df, on="Symbol", how="inner")
@@ -505,21 +588,8 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     if base.empty:
         raise RuntimeError("No Asia stocks matched the liquidity threshold.")
 
-    history_rows: dict[str, dict[str, float]] = {}
-    with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
-        futures = {
-            executor.submit(_calc_history_metrics, row.Symbol, config.date_key): row.Symbol
-            for row in base.itertuples(index=False)
-        }
-        for future in as_completed(futures):
-            symbol = futures[future]
-            try:
-                history_rows[symbol] = future.result()
-            except Exception:
-                history_rows[symbol] = {"sortino_norm": 0.5, "is_52w_high": 0}
-
-    base["sortino_norm"] = base["Symbol"].map(lambda s: history_rows.get(s, {}).get("sortino_norm", 0.5))
-    base["is_52w_high"] = base["Symbol"].map(lambda s: int(history_rows.get(s, {}).get("is_52w_high", 0)))
+    base["sortino_norm"] = pd.to_numeric(base.get("sortino_norm"), errors="coerce").fillna(0.5)
+    base["is_52w_high"] = pd.to_numeric(base.get("is_52w_high"), errors="coerce").fillna(0).astype(int)
 
     amount_100m = pd.to_numeric(base["trading_value_100m"], errors="coerce").fillna(0.0)
     marcap_100m = pd.to_numeric(base["market_cap_100m"], errors="coerce").fillna(0.0)

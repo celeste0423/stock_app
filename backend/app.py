@@ -4131,6 +4131,46 @@ def load_stock_chart_preview_cached(stock_code: str, months: int = 3) -> dict[st
     return payload
 
 
+def build_kr_stock_overview(stock_code: str | None = None, stock_name: str | None = None, months: int = 3) -> dict[str, Any]:
+    resolved = resolve_stock_payload(code=stock_code, name=stock_name)
+    if not resolved:
+        raise LookupError(f"종목을 찾지 못했습니다: {stock_name or stock_code or '-'}")
+    code = str(resolved.get("code") or "").strip().zfill(6)
+    name = str(resolved.get("name") or stock_name or code).strip()
+    chart_payload = load_stock_chart_preview(stock_code=code, stock_name=name, months=months)
+    rows = [
+        row for row in chart_payload.get("rows", [])
+        if all(to_float(row.get(key)) is not None for key in ("open", "high", "low", "close"))
+    ]
+    if not rows:
+        raise ValueError("주가 차트 데이터를 만들 수 없습니다.")
+    last_row = rows[-1]
+    prev_row = rows[-2] if len(rows) >= 2 else None
+    price = float(to_float(last_row.get("close")) or 0.0)
+    prev_close = float(to_float(prev_row.get("close")) or 0.0) if prev_row else 0.0
+    change = price - prev_close if prev_close else 0.0
+    change_pct = ((price / prev_close) - 1.0) * 100.0 if prev_close else 0.0
+    shares = to_float(resolved.get("stocks"))
+    market_cap = to_float(resolved.get("marcap"))
+    if market_cap in (None, 0) and shares not in (None, 0) and price > 0:
+        market_cap = float(shares) * price
+    return {
+        "stock_code": code,
+        "stock_name": name,
+        "market": str(resolved.get("market") or ""),
+        "price": round(price, 2),
+        "prev_close": round(prev_close, 2) if prev_close else None,
+        "change": round(change, 2),
+        "change_pct": round(change_pct, 2),
+        "volume": int(to_float(last_row.get("volume")) or 0),
+        "shares_outstanding": round(float(shares), 2) if shares not in (None, 0) else None,
+        "market_cap_krw": round(float(market_cap), 0) if market_cap not in (None, 0) else None,
+        "market_cap_100m": round(float(market_cap) / 100000000.0, 1) if market_cap not in (None, 0) else None,
+        "chart": chart_payload,
+        "source": "FinanceDataReader / KRX listing",
+    }
+
+
 @lru_cache(maxsize=512)
 def build_stock_sector_entry_markers(
     stock_code: str | None,
@@ -16974,6 +17014,39 @@ def _collect_missing_market_dates(
     return missing_dates
 
 
+def _collect_bootstrap_history_dates(
+    *,
+    db_path: Path,
+    target_compact: str,
+    resolve_market_date: Callable[[str | None], str],
+    target_history_count: int = 60,
+    lookback_calendar_days: int = 140,
+) -> list[str]:
+    existing_dates = {
+        value
+        for value in _load_screening_existing_date_keys(db_path)
+        if re.fullmatch(r"20\d{6}", value) and value <= target_compact
+    }
+    if len(existing_dates) >= int(target_history_count):
+        return []
+
+    target_date = datetime.strptime(target_compact, "%Y%m%d").date()
+    planned: list[str] = []
+    seen_dates = set(existing_dates)
+    probe = target_date
+    scanned = 0
+    while scanned < int(lookback_calendar_days) and len(existing_dates) + len(planned) < int(target_history_count):
+        if probe.weekday() < 5:
+            resolved_date = resolve_market_date(probe.strftime("%Y%m%d"))
+            if re.fullmatch(r"20\d{6}", resolved_date) and resolved_date <= target_compact and resolved_date not in seen_dates:
+                planned.append(resolved_date)
+                seen_dates.add(resolved_date)
+        probe -= timedelta(days=1)
+        scanned += 1
+    planned.sort()
+    return planned
+
+
 def _run_daily_builder(script_path: Path, date_keys: list[str], *, timeout: int = 1800) -> list[dict[str, Any]]:
     build_results: list[dict[str, Any]] = []
     for date_key in date_keys:
@@ -17004,11 +17077,20 @@ def create_us_theme_today_data_and_reload(request: ThemeBuildTodayExcelRequest) 
     today_iso = f"{today_compact[:4]}-{today_compact[4:6]}-{today_compact[6:]}"
     existing_date_keys = _load_screening_existing_date_keys(US_SCREENING_FAST_DB_PATH)
     script_path = BASE_DIR / "tools" / "build_us_stock_daily_single.py"
+    bootstrap_dates = _collect_bootstrap_history_dates(
+        db_path=US_SCREENING_FAST_DB_PATH,
+        target_compact=today_compact,
+        resolve_market_date=resolve_us_screening_market_date,
+        target_history_count=60,
+        lookback_calendar_days=150,
+    )
     missing_dates = _collect_missing_market_dates(
         db_path=US_SCREENING_FAST_DB_PATH,
         target_compact=today_compact,
         resolve_market_date=resolve_us_screening_market_date,
     )
+    if bootstrap_dates:
+        missing_dates = list(dict.fromkeys(list(bootstrap_dates) + list(missing_dates)))
     if today_compact not in existing_date_keys and today_compact not in missing_dates:
         missing_dates.append(today_compact)
     if not missing_dates:
@@ -17290,11 +17372,20 @@ def create_asia_theme_today_data_and_reload(request: ThemeBuildTodayExcelRequest
     today_iso = f"{today_compact[:4]}-{today_compact[4:6]}-{today_compact[6:]}"
     existing_date_keys = _load_screening_existing_date_keys(ASIA_SCREENING_FAST_DB_PATH)
     script_path = BASE_DIR / "tools" / "build_asia_stock_daily_single.py"
+    bootstrap_dates = _collect_bootstrap_history_dates(
+        db_path=ASIA_SCREENING_FAST_DB_PATH,
+        target_compact=today_compact,
+        resolve_market_date=resolve_asia_screening_market_date,
+        target_history_count=60,
+        lookback_calendar_days=150,
+    )
     missing_dates = _collect_missing_market_dates(
         db_path=ASIA_SCREENING_FAST_DB_PATH,
         target_compact=today_compact,
         resolve_market_date=resolve_asia_screening_market_date,
     )
+    if bootstrap_dates:
+        missing_dates = list(dict.fromkeys(list(bootstrap_dates) + list(missing_dates)))
     if today_compact not in existing_date_keys and today_compact not in missing_dates:
         missing_dates.append(today_compact)
     if not missing_dates:
@@ -17690,6 +17781,293 @@ def build_stock_score_history(
     }
 
 
+def build_us_stock_score_history(
+    stock_code: str | None = None,
+    stock_name: str | None = None,
+    end_date: str | None = None,
+    days: int = 31,
+) -> dict[str, Any]:
+    target_code = str(stock_code or "").strip().upper()
+    target_name = str(stock_name or "").strip()
+    normalized_target_name = normalize_text(target_name)
+    available_entries = us_screening_available_file_entries(limit=None)
+    available_dates = [item["file_date"] for item in available_entries]
+    if not available_dates:
+        raise FileNotFoundError("US SQL 캐시에 주도주 데이터가 없습니다.")
+    requested_date = ""
+    if end_date:
+        digits = re.sub(r"\D", "", str(end_date))
+        requested_date = datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d") if len(digits) == 8 else str(end_date).strip()
+    selected_date = requested_date if requested_date in available_dates else available_dates[0]
+    end_dt = datetime.strptime(selected_date, "%Y-%m-%d")
+    start_dt = end_dt - timedelta(days=max(7, min(int(days or 31), 90)) - 1)
+    rows: list[dict[str, Any]] = []
+
+    if US_SCREENING_FAST_DB_PATH.exists():
+        start_key = start_dt.strftime("%Y%m%d")
+        end_key = end_dt.strftime("%Y%m%d")
+        where_sql = ""
+        params: list[Any] = [start_key, end_key]
+        if target_code:
+            where_sql = "AND r.stock_code = ?"
+            params.append(target_code)
+        elif normalized_target_name:
+            where_sql = "AND REPLACE(LOWER(r.stock_name), ' ', '') = ?"
+            params.append(normalized_target_name)
+        else:
+            return {
+                "stock_code": "",
+                "stock_name": target_name,
+                "end_date": selected_date,
+                "start_date": start_dt.strftime("%Y-%m-%d"),
+                "rows": [],
+                "summary": {"count": 0, "latest_score": None, "max_score": None, "avg_score": None},
+            }
+
+        with sqlite3.connect(str(US_SCREENING_FAST_DB_PATH)) as conn:
+            query = f"""
+                WITH ranked_rows AS (
+                    SELECT
+                        r.file_date AS date,
+                        r.file_date_key,
+                        r.stock_code,
+                        r.stock_name,
+                        r.score_s AS score,
+                        RANK() OVER (PARTITION BY r.file_date_key ORDER BY r.score_s DESC, r.stock_code ASC) AS day_rank,
+                        r.change_pct,
+                        r.note
+                    FROM screening_rows r
+                    WHERE r.file_date_key BETWEEN ? AND ?
+                )
+                SELECT
+                    rr.date,
+                    rr.stock_code,
+                    rr.stock_name,
+                    rr.score,
+                    rr.day_rank,
+                    rr.change_pct,
+                    rr.note,
+                    COALESCE(c.close_price, NULL) AS close_price
+                FROM ranked_rows rr
+                LEFT JOIN daily_close_cache c
+                  ON c.file_date_key = rr.file_date_key
+                 AND c.stock_code = rr.stock_code
+                WHERE 1=1
+                {where_sql.replace('r.', 'rr.')}
+                ORDER BY rr.file_date_key
+            """
+            history_df = pd.read_sql_query(query, conn, params=params)
+
+        if not history_df.empty:
+            history_df["score"] = pd.to_numeric(history_df["score"], errors="coerce")
+            history_df["day_rank"] = pd.to_numeric(history_df["day_rank"], errors="coerce")
+            history_df["change_pct"] = pd.to_numeric(history_df["change_pct"], errors="coerce")
+            history_df["close_price"] = pd.to_numeric(history_df["close_price"], errors="coerce")
+            history_df = history_df.dropna(subset=["score"]).copy()
+            rows = [
+                {
+                    "date": str(row["date"]),
+                    "score": None if pd.isna(row["score"]) else round(float(row["score"]), 2),
+                    "change_pct": None if pd.isna(row["change_pct"]) else round(float(row["change_pct"]), 2),
+                    "rank": 0 if pd.isna(row["day_rank"]) else int(row["day_rank"]),
+                    "note": str(row["note"] or ""),
+                    "stock_code": str(row["stock_code"] or "").strip().upper(),
+                    "stock_name": str(row["stock_name"] or target_name),
+                    "resolved_name": str(row["stock_name"] or target_name),
+                    "close": None if pd.isna(row["close_price"]) else round(float(row["close_price"]), 2),
+                }
+                for _, row in history_df.iterrows()
+            ]
+
+    rows = sorted(rows, key=lambda item: item["date"])
+    if rows:
+        normalized_close = 100.0
+        for index, item in enumerate(rows):
+            change_pct = to_float(item.get("change_pct"))
+            if index == 0:
+                item["close_normalized"] = round(normalized_close, 2)
+                continue
+            if change_pct is None:
+                item["close_normalized"] = round(normalized_close, 2)
+                continue
+            normalized_close *= 1.0 + (float(change_pct) / 100.0)
+            item["close_normalized"] = round(normalized_close, 2)
+    display_name = target_name
+    display_code = target_code
+    for item in reversed(rows):
+        display_name = item.get("resolved_name") or item.get("stock_name") or display_name
+        display_code = item.get("stock_code") or display_code
+        if display_name:
+            break
+
+    return {
+        "stock_code": display_code,
+        "stock_name": display_name,
+        "end_date": selected_date,
+        "start_date": start_dt.strftime("%Y-%m-%d"),
+        "rows": rows,
+        "summary": {
+            "count": len(rows),
+            "latest_score": rows[-1].get("score") if rows else None,
+            "max_score": max((float(row.get("score") or 0) for row in rows), default=None),
+            "avg_score": round(
+                sum(float(row.get("score") or 0) for row in rows) / len(rows),
+                2,
+            ) if rows else None,
+        },
+    }
+
+
+def build_asia_stock_score_history(
+    stock_code: str | None = None,
+    stock_name: str | None = None,
+    end_date: str | None = None,
+    days: int = 31,
+    region: str = "jp",
+) -> dict[str, Any]:
+    target_code = str(stock_code or "").strip().upper()
+    target_name = str(stock_name or "").strip()
+    normalized_target_name = normalize_text(target_name)
+    normalized_region = normalize_asia_theme_region(region)
+    available_entries = asia_screening_available_file_entries(limit=None)
+    available_dates = [item["file_date"] for item in available_entries]
+    if not available_dates:
+        raise FileNotFoundError("ASIA SQL 캐시에 주도주 데이터가 없습니다.")
+    requested_date = ""
+    if end_date:
+        digits = re.sub(r"\D", "", str(end_date))
+        requested_date = datetime.strptime(digits, "%Y%m%d").strftime("%Y-%m-%d") if len(digits) == 8 else str(end_date).strip()
+    selected_date = requested_date if requested_date in available_dates else available_dates[0]
+    end_dt = datetime.strptime(selected_date, "%Y-%m-%d")
+    start_dt = end_dt - timedelta(days=max(7, min(int(days or 31), 90)) - 1)
+    rows: list[dict[str, Any]] = []
+
+    if ASIA_SCREENING_FAST_DB_PATH.exists():
+        start_key = start_dt.strftime("%Y%m%d")
+        end_key = end_dt.strftime("%Y%m%d")
+        where_sql = ""
+        params: list[Any] = [start_key, end_key]
+        if target_code:
+            where_sql = "AND r.stock_code = ?"
+            params.append(target_code)
+        elif normalized_target_name:
+            where_sql = "AND REPLACE(LOWER(r.stock_name), ' ', '') = ?"
+            params.append(normalized_target_name)
+        else:
+            return {
+                "stock_code": "",
+                "stock_name": target_name,
+                "end_date": selected_date,
+                "start_date": start_dt.strftime("%Y-%m-%d"),
+                "rows": [],
+                "summary": {"count": 0, "latest_score": None, "max_score": None, "avg_score": None},
+            }
+
+        with sqlite3.connect(str(ASIA_SCREENING_FAST_DB_PATH)) as conn:
+            query = f"""
+                WITH ranked_rows AS (
+                    SELECT
+                        r.file_date AS date,
+                        r.file_date_key,
+                        r.stock_code,
+                        r.stock_name,
+                        r.sector,
+                        r.industry,
+                        r.score_s AS score,
+                        RANK() OVER (PARTITION BY r.file_date_key ORDER BY r.score_s DESC, r.stock_code ASC) AS day_rank,
+                        r.change_pct,
+                        r.note
+                    FROM screening_rows r
+                    WHERE r.file_date_key BETWEEN ? AND ?
+                )
+                SELECT
+                    rr.date,
+                    rr.stock_code,
+                    rr.stock_name,
+                    rr.sector,
+                    rr.industry,
+                    rr.score,
+                    rr.day_rank,
+                    rr.change_pct,
+                    rr.note,
+                    COALESCE(c.close_price, NULL) AS close_price
+                FROM ranked_rows rr
+                LEFT JOIN daily_close_cache c
+                  ON c.file_date_key = rr.file_date_key
+                 AND c.stock_code = rr.stock_code
+                WHERE 1=1
+                {where_sql.replace('r.', 'rr.')}
+                ORDER BY rr.file_date_key
+            """
+            history_df = pd.read_sql_query(query, conn, params=params)
+
+        if not history_df.empty:
+            history_df["score"] = pd.to_numeric(history_df["score"], errors="coerce")
+            history_df["day_rank"] = pd.to_numeric(history_df["day_rank"], errors="coerce")
+            history_df["change_pct"] = pd.to_numeric(history_df["change_pct"], errors="coerce")
+            history_df["close_price"] = pd.to_numeric(history_df["close_price"], errors="coerce")
+            history_df = history_df.dropna(subset=["score"]).copy()
+            if normalized_region:
+                history_df = history_df[
+                    history_df.apply(
+                        lambda row: infer_asia_theme_region(row.get("stock_code"), row.get("industry"), row.get("sector")) == normalized_region,
+                        axis=1,
+                    )
+                ].copy()
+            rows = [
+                {
+                    "date": str(row["date"]),
+                    "score": None if pd.isna(row["score"]) else round(float(row["score"]), 2),
+                    "change_pct": None if pd.isna(row["change_pct"]) else round(float(row["change_pct"]), 2),
+                    "rank": 0 if pd.isna(row["day_rank"]) else int(row["day_rank"]),
+                    "note": str(row["note"] or ""),
+                    "stock_code": str(row["stock_code"] or "").strip().upper(),
+                    "stock_name": str(row["stock_name"] or target_name),
+                    "resolved_name": str(row["stock_name"] or target_name),
+                    "close": None if pd.isna(row["close_price"]) else round(float(row["close_price"]), 2),
+                }
+                for _, row in history_df.iterrows()
+            ]
+
+    rows = sorted(rows, key=lambda item: item["date"])
+    if rows:
+        normalized_close = 100.0
+        for index, item in enumerate(rows):
+            change_pct = to_float(item.get("change_pct"))
+            if index == 0:
+                item["close_normalized"] = round(normalized_close, 2)
+                continue
+            if change_pct is None:
+                item["close_normalized"] = round(normalized_close, 2)
+                continue
+            normalized_close *= 1.0 + (float(change_pct) / 100.0)
+            item["close_normalized"] = round(normalized_close, 2)
+    display_name = target_name
+    display_code = target_code
+    for item in reversed(rows):
+        display_name = item.get("resolved_name") or item.get("stock_name") or display_name
+        display_code = item.get("stock_code") or display_code
+        if display_name:
+            break
+
+    return {
+        "stock_code": display_code,
+        "stock_name": display_name,
+        "end_date": selected_date,
+        "start_date": start_dt.strftime("%Y-%m-%d"),
+        "rows": rows,
+        "summary": {
+            "count": len(rows),
+            "latest_score": rows[-1].get("score") if rows else None,
+            "max_score": max((float(row.get("score") or 0) for row in rows), default=None),
+            "avg_score": round(
+                sum(float(row.get("score") or 0) for row in rows) / len(rows),
+                2,
+            ) if rows else None,
+        },
+    }
+
+
 def build_theme_sector_calendar(
     min_score: float = 50.0,
     limit: int = 60,
@@ -17851,6 +18229,95 @@ def build_theme_sector_calendar(
     calendar_cache[calendar_key] = payload
     save_screening_cache(cache)
     return payload
+
+
+def build_theme_calendar_index_score(limit: int = 65, score_basis: str = "score") -> dict[str, Any]:
+    normalized_limit = max(20, min(int(limit or 65), 120))
+    calendar_payload = build_theme_sector_calendar(
+        min_score=0.0,
+        limit=normalized_limit,
+        force_refresh=False,
+        score_basis=score_basis,
+    )
+    raw_days = calendar_payload.get("days")
+    days = raw_days if isinstance(raw_days, list) else []
+    if not days:
+        return {
+            "score_basis": calendar_payload.get("score_basis", score_basis),
+            "rows": [],
+            "start_date": "",
+            "end_date": "",
+            "summary": {},
+        }
+
+    parsed_days: list[dict[str, Any]] = []
+    for item in days:
+        date_text = str(item.get("date") or "").strip()
+        if not date_text:
+            continue
+        try:
+            parsed_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        parsed_days.append({"date": parsed_date, "raw": item})
+    if not parsed_days:
+        return {
+            "score_basis": calendar_payload.get("score_basis", score_basis),
+            "rows": [],
+            "start_date": "",
+            "end_date": "",
+            "summary": {},
+        }
+
+    start_date = parsed_days[0]["date"]
+    end_date = parsed_days[-1]["date"]
+    kospi_close_map = load_strategy_benchmark_close_map("KS11", start_date, end_date)
+    kosdaq_close_map = load_strategy_benchmark_close_map("KQ11", start_date, end_date)
+
+    first_kospi_close: float | None = None
+    first_kosdaq_close: float | None = None
+    rows: list[dict[str, Any]] = []
+    for item in parsed_days:
+        date_text = item["date"].isoformat()
+        day = item["raw"]
+        score_value = float(to_float(day.get("top10_avg_score")) or 0.0)
+        kospi_close = to_float(kospi_close_map.get(date_text))
+        kosdaq_close = to_float(kosdaq_close_map.get(date_text))
+        if first_kospi_close is None and kospi_close not in (None, 0):
+            first_kospi_close = float(kospi_close)
+        if first_kosdaq_close is None and kosdaq_close not in (None, 0):
+            first_kosdaq_close = float(kosdaq_close)
+        rows.append(
+            {
+                "date": date_text,
+                "score": round(score_value, 2),
+                "kospi_close": round(float(kospi_close), 2) if kospi_close not in (None, 0) else None,
+                "kosdaq_close": round(float(kosdaq_close), 2) if kosdaq_close not in (None, 0) else None,
+                "kospi_normalized": round((float(kospi_close) / first_kospi_close) * 100.0, 2)
+                if first_kospi_close and kospi_close not in (None, 0)
+                else None,
+                "kosdaq_normalized": round((float(kosdaq_close) / first_kosdaq_close) * 100.0, 2)
+                if first_kosdaq_close and kosdaq_close not in (None, 0)
+                else None,
+            }
+        )
+
+    latest_row = rows[-1] if rows else {}
+    score_values = [float(row.get("score") or 0.0) for row in rows]
+    return {
+        "score_basis": calendar_payload.get("score_basis", score_basis),
+        "rows": rows,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "summary": {
+            "latest_score": latest_row.get("score"),
+            "latest_kospi_close": latest_row.get("kospi_close"),
+            "latest_kosdaq_close": latest_row.get("kosdaq_close"),
+            "max_score": round(max(score_values) if score_values else 0.0, 2),
+            "avg_score": round(float(np.mean(score_values)) if score_values else 0.0, 2),
+            "count": len(rows),
+        },
+    }
 
 
 def split_sector_group_detail(sector_name: str) -> tuple[str, str]:
@@ -20647,16 +21114,34 @@ def themes_score_history(
     name: str | None = None,
     end_date: str | None = None,
     days: int = 31,
+    market: str = "kr",
+    region: str = "jp",
 ) -> JSONResponse:
     try:
-        return JSONResponse(
-            build_stock_score_history(
+        normalized_market = str(market or "kr").strip().lower()
+        if normalized_market == "us":
+            payload = build_us_stock_score_history(
                 stock_code=code,
                 stock_name=name,
                 end_date=end_date,
                 days=max(7, min(days, 90)),
             )
-        )
+        elif normalized_market == "asia":
+            payload = build_asia_stock_score_history(
+                stock_code=code,
+                stock_name=name,
+                end_date=end_date,
+                days=max(7, min(days, 90)),
+                region=region,
+            )
+        else:
+            payload = build_stock_score_history(
+                stock_code=code,
+                stock_name=name,
+                end_date=end_date,
+                days=max(7, min(days, 90)),
+            )
+        return JSONResponse(payload)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -20685,6 +21170,20 @@ def stocks_chart_preview(
 ) -> JSONResponse:
     try:
         return JSONResponse(load_stock_chart_preview(stock_code=code, stock_name=name, months=months))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/stocks/overview")
+def stocks_overview(
+    code: str | None = None,
+    name: str | None = None,
+    months: int = 3,
+) -> JSONResponse:
+    try:
+        return JSONResponse(build_kr_stock_overview(stock_code=code, stock_name=name, months=months))
+    except LookupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -20855,6 +21354,14 @@ def sector_db_save_groups(request: SectorDatabaseSaveRequest) -> JSONResponse:
 def theme_sector_calendar(min_score: float = 50.0, limit: int = 60, force_refresh: bool = False, score_basis: str = "score") -> JSONResponse:
     try:
         return JSONResponse(build_theme_sector_calendar(min_score=min_score, limit=max(1, min(limit, 120)), force_refresh=force_refresh, score_basis=score_basis))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/api/theme-calendar-index-score")
+def theme_calendar_index_score(limit: int = 65, score_basis: str = "score") -> JSONResponse:
+    try:
+        return JSONResponse(build_theme_calendar_index_score(limit=max(20, min(limit, 120)), score_basis=score_basis))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
