@@ -900,9 +900,31 @@ table {
 
 .earnings-search-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
   gap: 8px;
   align-items: end;
+}
+
+.earnings-jump-button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.earnings-jump-button:hover:not(:disabled) {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+
+.earnings-jump-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .earnings-action-buttons {
@@ -1123,6 +1145,9 @@ table {
 .investor-flow-modal {
   width: min(1180px, calc(100vw - 28px));
   max-height: min(88vh, 820px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .investor-flow-head {
@@ -1158,7 +1183,9 @@ table {
 }
 
 .investor-flow-table-wrap {
-  max-height: 62vh;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   border: 1px solid #dbe4f0;
   border-radius: 14px;
@@ -1262,65 +1289,90 @@ table {
 
 .earnings-result-visual-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   align-items: stretch;
+}
+
+.earnings-overview-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 6px 0 8px;
+}
+
+.earnings-trend-toggle.active {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 
 .telegram-stock-overview-panel {
   margin-top: 10px;
+  padding: 10px 12px;
 }
 
 .telegram-stock-overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(220px, 0.85fr);
-  gap: 12px;
-  align-items: stretch;
+  grid-template-columns: minmax(320px, 1.2fr) minmax(210px, 0.8fr);
+  gap: 8px;
+  align-items: start;
 }
 
 .telegram-stock-overview-panel .stock-chart-preview {
   position: relative;
   inset: auto;
+  z-index: 1;
   width: 100%;
   box-sizing: border-box;
   pointer-events: auto;
   box-shadow: none;
-  border-radius: 14px;
+  border-radius: 8px;
+  padding: 8px;
 }
 
 .telegram-stock-overview-chart {
   min-width: 0;
 }
 
-.telegram-stock-overview-metrics {
+.telegram-stock-overview-table {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.telegram-stock-metric {
-  display: grid;
-  gap: 4px;
-  padding: 10px 11px;
+  gap: 0;
   border: 1px solid #dbe4f0;
-  border-radius: 12px;
+  border-radius: 8px;
   background: #ffffff;
+  overflow: hidden;
 }
 
-.telegram-stock-metric.wide {
-  grid-column: 1 / -1;
+.telegram-stock-overview-row {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-bottom: 1px solid #edf2f7;
 }
 
-.telegram-stock-metric span {
+.telegram-stock-overview-row:last-child {
+  border-bottom: 0;
+}
+
+.telegram-stock-overview-key {
   color: #64748b;
   font-size: 11px;
   font-weight: 800;
+  white-space: nowrap;
 }
 
-.telegram-stock-metric strong {
+.telegram-stock-overview-value {
   color: #0f172a;
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 900;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .earnings-trend-side-panel {
@@ -1471,7 +1523,7 @@ table {
   justify-content: center;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 760px) {
   .earnings-result-visual-grid {
     grid-template-columns: 1fr;
   }
@@ -2958,9 +3010,14 @@ button.sector-entry-stock-chip.clickable:hover {
 
 .global-search-wrap {
   position: relative;
+  z-index: 30;
   max-width: 720px;
   display: grid;
   gap: 8px;
+}
+
+.global-search-wrap:focus-within {
+  z-index: 60;
 }
 
 .global-search-input {
@@ -6774,117 +6831,6 @@ button.sector-entry-stock-chip.clickable:hover {
   white-space: pre-wrap;
 }
 
-.global-ai-brief-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.global-ai-brief-card {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #f8fafc;
-  min-width: 0;
-}
-
-.global-ai-brief-card h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.global-ai-brief-overview {
-  margin: 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-}
-
-.global-ai-brief-note {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.global-ai-history-list,
-.global-ai-segment-list {
-  display: grid;
-  gap: 8px;
-}
-
-.global-ai-history-item {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-}
-
-.global-ai-history-item strong,
-.global-ai-segment-head strong {
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.global-ai-history-item span {
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.global-ai-segment-card {
-  grid-column: 1 / -1;
-}
-
-.global-ai-segment-item {
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-}
-
-.global-ai-segment-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-}
-
-.global-ai-segment-head span {
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-.global-ai-segment-item p {
-  margin: 0;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.global-ai-risk-list {
-  margin: 0;
-  padding-left: 18px;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-@media (max-width: 960px) {
-  .global-ai-brief-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 .segmented-control {
   display: inline-flex;
   padding: 3px;
@@ -9144,9 +9090,19 @@ body {
   display: grid;
   gap: 6px;
   margin-top: 14px;
-  max-height: 180px;
-  overflow: auto;
   padding: 2px;
+}
+
+.score-history-modal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.score-history-modal-body {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .score-history-item {

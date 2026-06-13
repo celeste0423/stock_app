@@ -19,6 +19,7 @@ import hashlib
 import html as html_lib
 import threading
 import uuid
+import webbrowser
 import zlib
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -137,6 +138,7 @@ KIND_BUSINESS_SEGMENT_CACHE_DIR = STATE_DIR / "kind_business_segment_cache"
 GLOBAL_INDICES_PAYLOAD_CACHE_DIR = STATE_DIR / "global_indices_payload_cache"
 CHART_PREVIEW_CACHE_DIR = STATE_DIR / "stock_chart_preview_cache"
 GLOBAL_COMPANY_AI_CACHE_PATH = STATE_DIR / "global_company_ai_cache.json"
+ASIA_LISTING_CACHE_PATH = CURRENT_DIR / ".yahoo_cache" / "asia_daily" / "asia_listing.parquet"
 GLOBAL_INDICES_PAYLOAD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 GLOBAL_INDICES_PAYLOAD_CACHE_VERSION = "v3"
 PORTFOLIO_PERFORMANCE_CACHE: dict[str, Any] = {}
@@ -1086,6 +1088,8 @@ def kind_disclosure_category(title: str) -> str:
     text = normalize_text(title)
     if any(token in text for token in ["잠정실적", "영업실적", "매출액", "영업이익", "분기보고서", "반기보고서", "사업보고서"]):
         return "실적/보고서"
+    if any(token in text for token in ["배당", "자기주식", "자사주", "주식소각", "자기주식취득신탁", "취득신탁계약"]):
+        return "주주환원"
     if any(token in text for token in ["단일판매", "공급계약", "수주", "계약체결"]):
         return "수주/계약"
     if any(token in text for token in ["시설투자", "신규시설", "타법인", "취득", "양수", "증설"]):
@@ -1094,8 +1098,6 @@ def kind_disclosure_category(title: str) -> str:
         return "자금조달"
     if any(token in text for token in ["합병", "분할", "영업양수", "영업양도"]):
         return "합병/분할"
-    if any(token in text for token in ["배당", "자기주식", "자사주", "주식소각"]):
-        return "주주환원"
     if any(token in text for token in ["주주총회", "기준일", "명의개서"]):
         return "주주일정"
     if any(token in text for token in ["투자주의", "투자경고", "단기과열", "거래정지", "관리종목"]):
@@ -1914,6 +1916,7 @@ class TelegramEarningsSearchRequest(BaseModel):
     category: str | None = "earnings"
     limit: int | None = 30
     offset_id: int | None = None
+    days: int | None = 365
 
 
 class TelegramMarketEarningsRequest(BaseModel):
@@ -1929,6 +1932,10 @@ class TelegramUiStateRequest(BaseModel):
 class TradingViewOpenRequest(BaseModel):
     stock_code: str | None = None
     stock_name: str | None = None
+
+
+class ExternalBrowserOpenRequest(BaseModel):
+    url: str
 
 
 class SectorAssignmentRequest(BaseModel):
@@ -2304,7 +2311,116 @@ def normalize_global_symbol(symbol: str) -> str:
     text = str(symbol or "").strip().upper()
     if not text:
         return ""
+    paren_match = re.search(r"\(([A-Z0-9.\-=\^]+)\)\s*$", text)
+    if paren_match:
+        return paren_match.group(1).strip()
+    token_matches = re.findall(r"[A-Z0-9.\-=\^]+", text)
+    if len(token_matches) >= 1:
+        for token in reversed(token_matches):
+            if any(char.isalpha() for char in token) and len(token) <= 16:
+                return token.strip()
     return text
+
+
+@lru_cache(maxsize=1)
+def load_asia_company_listing() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        if ASIA_LISTING_CACHE_PATH.exists():
+            frame = pd.read_parquet(ASIA_LISTING_CACHE_PATH)
+        else:
+            frame = pd.DataFrame()
+        if frame.empty:
+            frame = fdr.StockListing("TSE").copy()
+            frame["Symbol"] = frame["Symbol"].map(lambda value: str(value or "").strip().upper())
+            frame = frame[frame["Symbol"] != ""].copy()
+            frame["raw_symbol"] = frame["Symbol"]
+            frame["yahoo_symbol"] = frame["raw_symbol"].map(lambda value: f"{value}.T")
+            frame["exchange"] = "TSE"
+            frame["region"] = "JP"
+            frame["Sector"] = frame.get("Industry", pd.Series(index=frame.index, dtype=object)).fillna("")
+        for _, item in frame.iterrows():
+            exchange = str(item.get("exchange") or "").strip().upper()
+            region = str(item.get("region") or "").strip().upper()
+            raw_symbol = str(item.get("raw_symbol") or "").strip().upper()
+            yahoo_symbol = str(item.get("yahoo_symbol") or "").strip().upper()
+            name = str(item.get("Name") or item.get("name") or "").strip()
+            sector = str(item.get("Sector") or item.get("sector") or "").strip()
+            industry = str(item.get("Industry") or item.get("industry") or "").strip()
+            if not raw_symbol or not yahoo_symbol or not name:
+                continue
+            rows.append(
+                {
+                    "symbol": yahoo_symbol,
+                    "raw_symbol": raw_symbol,
+                    "name": name,
+                    "exchange": exchange or "TSE",
+                    "region": region or ("JP" if yahoo_symbol.endswith(".T") else ""),
+                    "sector": sector,
+                    "industry": industry,
+                    "source": "ASIA_LISTING",
+                }
+            )
+    except Exception:
+        return []
+    return rows
+
+
+def search_japan_companies(query: str, limit: int = 8) -> list[dict[str, Any]]:
+    raw_query = str(query or "").strip()
+    normalized_query = normalize_text(raw_query)
+    if not raw_query:
+        return []
+    query_upper = raw_query.upper()
+    query_compact = query_upper.replace("TSE:", "").replace(".T", "").strip()
+    matches: list[tuple[int, int, str, dict[str, Any]]] = []
+    for item in load_asia_company_listing():
+        if str(item.get("region") or "").upper() != "JP":
+            continue
+        symbol = str(item.get("symbol") or "").strip().upper()
+        raw_symbol = str(item.get("raw_symbol") or "").strip().upper()
+        name = str(item.get("name") or "").strip()
+        sector = str(item.get("sector") or "").strip()
+        name_key = normalize_text(name)
+        sector_key = normalize_text(sector)
+        name_tokens = [token for token in re.split(r"[^A-Za-z0-9]+", name.lower()) if token]
+        query_token = raw_query.strip().lower()
+        score = None
+        if query_upper == symbol or query_upper == f"TSE:{raw_symbol}":
+            score = 0
+        elif query_compact and query_compact == raw_symbol:
+            score = 1
+        elif query_upper and symbol.startswith(query_upper):
+            score = 2
+        elif query_compact and raw_symbol.startswith(query_compact):
+            score = 3
+        elif query_token and query_token in name_tokens:
+            score = 4
+        elif normalized_query and normalized_query == name_key:
+            score = 5
+        elif normalized_query and normalized_query in name_key:
+            score = 6
+        elif normalized_query and normalized_query in sector_key:
+            score = 7
+        if score is None:
+            continue
+        matches.append((score, abs(len(name_key) - len(normalized_query)), symbol, item))
+    matches.sort(key=lambda pair: (pair[0], pair[1], pair[2]))
+    return [item for _, _, _, item in matches[: max(1, int(limit))]]
+
+
+def resolve_global_symbol_reference(symbol: str) -> dict[str, Any] | None:
+    normalized = normalize_global_symbol(symbol)
+    if not normalized:
+        return None
+    query_upper = str(symbol or "").strip().upper()
+    query_compact = query_upper.replace("TSE:", "").replace(".T", "").strip()
+    for item in load_asia_company_listing():
+        candidate_symbol = str(item.get("symbol") or "").strip().upper()
+        raw_symbol = str(item.get("raw_symbol") or "").strip().upper()
+        if normalized == candidate_symbol or query_upper == f"TSE:{raw_symbol}" or (query_compact and query_compact == raw_symbol):
+            return item
+    return None
 
 
 def sec_symbol_key(symbol: str) -> str:
@@ -2379,6 +2495,7 @@ def search_global_companies(query: str, limit: int = 12) -> list[dict[str, Any]]
     alias_symbol = GLOBAL_COMPANY_ALIASES.get(normalized_query) or GLOBAL_COMPANY_ALIASES.get(raw_query.lower())
     if alias_symbol:
         candidates.append({"symbol": normalize_global_symbol(alias_symbol), "name": raw_query, "source": "Alias"})
+    candidates.extend(search_japan_companies(raw_query, limit=limit))
     query_upper = normalize_global_symbol(raw_query)
     for item in get_global_company_tickers():
         symbol = normalize_global_symbol(item.get("symbol", ""))
@@ -2861,16 +2978,30 @@ def build_yahoo_global_company_detail(symbol: str, company: dict[str, Any] | Non
 def build_global_company_detail(symbol: str) -> dict[str, Any]:
     raw_symbol = str(symbol or "").strip()
     alias_symbol = GLOBAL_COMPANY_ALIASES.get(normalize_text(raw_symbol)) or GLOBAL_COMPANY_ALIASES.get(raw_symbol.lower())
-    normalized_symbol = normalize_global_symbol(alias_symbol or raw_symbol)
+    resolved_company = resolve_global_symbol_reference(alias_symbol or raw_symbol)
+    normalized_symbol = normalize_global_symbol((resolved_company or {}).get("symbol") or alias_symbol or raw_symbol)
     if not normalized_symbol:
         raise ValueError("검색할 티커를 입력해 주세요.")
-    search_items = search_global_companies(normalized_symbol, limit=5)
-    company = next((item for item in search_items if normalize_global_symbol(item.get("symbol", "")) == normalized_symbol), None)
+    search_items = search_global_companies(raw_symbol or normalized_symbol, limit=5)
+    company = next((item for item in search_items if normalize_global_symbol(item.get("symbol", "")) == normalized_symbol), None) or resolved_company
+    if company and not normalized_symbol.endswith((".T", ".TW", ".SS", ".SZ")) and normalize_text(raw_symbol) == normalize_text(company.get("name", "")):
+        normalized_symbol = normalize_global_symbol(company.get("symbol", ""))
+    if not company and search_items:
+        company = search_items[0]
+        normalized_symbol = normalize_global_symbol(company.get("symbol", ""))
     cik = (company or {}).get("cik") or sec_symbol_to_cik(normalized_symbol)
     if not cik:
         return build_yahoo_global_company_detail(normalized_symbol, company)
 
-    facts = load_sec_company_facts(str(cik))
+    try:
+        facts = load_sec_company_facts(str(cik))
+    except requests.HTTPError as exc:
+        response = getattr(exc, "response", None)
+        if response is not None and response.status_code == 404:
+            return build_yahoo_global_company_detail(normalized_symbol, company)
+        raise
+    except Exception:
+        return build_yahoo_global_company_detail(normalized_symbol, company)
     meta = load_yahoo_chart_meta(normalized_symbol)
     fx = get_usd_krw_rate()
     rate = to_float(fx.get("rate")) or 0
@@ -4154,6 +4285,54 @@ def build_kr_stock_overview(stock_code: str | None = None, stock_name: str | Non
     market_cap = to_float(resolved.get("marcap"))
     if market_cap in (None, 0) and shares not in (None, 0) and price > 0:
         market_cap = float(shares) * price
+    biz_date = ""
+    per = None
+    pbr = None
+    dividend_yield = None
+    dps = None
+    payout_ratio = None
+    eps = None
+    bps = None
+    foreign_ownership_pct = None
+    krx = get_krx_settings()
+    if krx.get("id") and krx.get("password"):
+        try:
+            os.environ["KRX_ID"] = str(krx["id"])
+            os.environ["KRX_PW"] = str(krx["password"])
+            login_fn = getattr(pykrx_stock, "login", None)
+            if callable(login_fn):
+                login_fn()
+            record_krx_login_result(str(krx["id"]), str(krx["password"]), success=True)
+        except Exception as exc:
+            record_krx_login_result(str(krx["id"]), str(krx["password"]), success=False, error=str(exc))
+    try:
+        biz_date = pykrx_stock.get_nearest_business_day_in_a_week(date.today().strftime("%Y%m%d"))
+    except Exception:
+        biz_date = str(((chart_payload.get("summary") or {}).get("end_date") or "")).replace("-", "")[:8] or date.today().strftime("%Y%m%d")
+    try:
+        fundamentals = pykrx_stock.get_market_fundamental_by_date(biz_date, biz_date, code)
+        if fundamentals is not None and not fundamentals.empty:
+            latest = fundamentals.iloc[-1]
+            per = to_float(latest.get("PER"))
+            pbr = to_float(latest.get("PBR"))
+            dividend_yield = to_float(latest.get("DIV"))
+            dps = to_float(latest.get("DPS"))
+            eps = to_float(latest.get("EPS"))
+            bps = to_float(latest.get("BPS"))
+    except Exception:
+        pass
+    try:
+        foreign_frame = pykrx_stock.get_exhaustion_rates_of_foreign_investment_by_date(biz_date, biz_date, code)
+        if foreign_frame is not None and not foreign_frame.empty:
+            latest = foreign_frame.iloc[-1]
+            foreign_ownership_pct = to_float(latest.get("지분율"))
+    except Exception:
+        pass
+    if payout_ratio is None and dps is not None and eps is not None and eps > 0:
+        try:
+            payout_ratio = max(0.0, (float(dps) / float(eps)) * 100.0)
+        except Exception:
+            payout_ratio = None
     return {
         "stock_code": code,
         "stock_name": name,
@@ -4166,8 +4345,17 @@ def build_kr_stock_overview(stock_code: str | None = None, stock_name: str | Non
         "shares_outstanding": round(float(shares), 2) if shares not in (None, 0) else None,
         "market_cap_krw": round(float(market_cap), 0) if market_cap not in (None, 0) else None,
         "market_cap_100m": round(float(market_cap) / 100000000.0, 1) if market_cap not in (None, 0) else None,
+        "per": round(float(per), 2) if per is not None and math.isfinite(per) else None,
+        "pbr": round(float(pbr), 2) if pbr is not None and math.isfinite(pbr) else None,
+        "dividend_yield": round(float(dividend_yield), 2) if dividend_yield is not None and math.isfinite(dividend_yield) else None,
+        "dps": round(float(dps), 2) if dps is not None and math.isfinite(dps) else None,
+        "payout_ratio": round(float(payout_ratio), 2) if payout_ratio is not None and math.isfinite(payout_ratio) else None,
+        "eps": round(float(eps), 2) if eps is not None and math.isfinite(eps) else None,
+        "bps": round(float(bps), 2) if bps is not None and math.isfinite(bps) else None,
+        "foreign_ownership_pct": round(float(foreign_ownership_pct), 2) if foreign_ownership_pct is not None and math.isfinite(foreign_ownership_pct) else None,
+        "fundamental_date": biz_date,
         "chart": chart_payload,
-        "source": "FinanceDataReader / KRX listing",
+        "source": "FinanceDataReader / KRX listing / pykrx",
     }
 
 
@@ -6471,7 +6659,7 @@ def screening_available_file_entries(limit: int | None = None) -> list[dict[str,
             {
                 "file_date_key": date_key,
                 "file_date": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}",
-                "file_name": str(file_name or f"{date_key}_데일리_기업스크리닝.xlsx"),
+                "file_name": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]} SQL 캐시",
             }
         )
     return result
@@ -6693,7 +6881,7 @@ def us_screening_available_file_entries(limit: int | None = None) -> list[dict[s
             {
                 "file_date_key": date_key,
                 "file_date": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}",
-                "file_name": str(file_name or f"{date_key}_us_daily_screening.xlsx"),
+                "file_name": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]} SQL 캐시",
             }
         )
     return result
@@ -6851,7 +7039,7 @@ def asia_screening_available_file_entries(limit: int | None = None) -> list[dict
             {
                 "file_date_key": date_key,
                 "file_date": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}",
-                "file_name": str(file_name or f"{date_key}_asia_daily_screening.xlsx"),
+                "file_name": f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]} SQL 캐시",
             }
         )
     return result
@@ -8736,6 +8924,23 @@ def open_tradingview_desktop(stock_code: str | None, stock_name: str | None) -> 
         "url": web_url,
         "message": "TradingView 앱을 열었습니다. 특정 종목이 바로 열리지 않으면 앱의 링크 처리 제한 때문입니다.",
     }
+
+
+def open_url_in_default_browser(url: str) -> dict[str, Any]:
+    target = str(url or "").strip()
+    if not target:
+        raise ValueError("열 URL이 비어 있습니다.")
+    parsed = urlparse(target)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("http 또는 https URL만 열 수 있습니다.")
+    try:
+        if os.name == "nt" and hasattr(os, "startfile"):
+            os.startfile(target)  # type: ignore[attr-defined]
+        else:
+            webbrowser.open(target, new=2)
+    except Exception as exc:
+        raise RuntimeError(f"기본 브라우저에서 열지 못했습니다: {exc}") from exc
+    return {"ok": True, "url": target, "message": "기본 브라우저에서 열었습니다."}
 
 
 @lru_cache(maxsize=1024)
@@ -16057,7 +16262,7 @@ def resolve_screening_file_date(file_date: str | None = None) -> tuple[str, str]
     selected_date = requested_date if requested_date in available_map else str(available_entries[0].get("file_date") or "")
     if not selected_date:
         raise FileNotFoundError("SQL 캐시에 주도주 데이터가 없습니다.")
-    return selected_date, str(available_map.get(selected_date) or f"{selected_date.replace('-', '')}_데일리_기업스크리닝.xlsx")
+    return selected_date, str(available_map.get(selected_date) or f"{selected_date} SQL 캐시")
 
 
 def update_screening_note(request: ThemeNoteUpdateRequest) -> dict[str, Any]:
@@ -16252,7 +16457,7 @@ def build_screening_summary_from_sql(file_date: str, min_score: float) -> dict[s
         grouped_records = grouped.to_dict(orient="records")
 
     return {
-        "file_name": available_file_map.get(file_date, f"{str(file_date).replace('-', '')}_데일리_기업스크리닝.xlsx"),
+        "file_name": available_file_map.get(file_date, f"{str(file_date)} SQL 캐시"),
         "file_date": file_date,
         "min_score": min_score,
         "score_basis": "sql_score_s",
@@ -16329,7 +16534,7 @@ def build_us_screening_summary_from_sql(file_date: str, min_score: float) -> dic
         grouped["max_score"] = grouped["max_score"].round(2)
         grouped_records = grouped.to_dict(orient="records")
     return {
-        "file_name": available_file_map.get(file_date, f"{str(file_date).replace('-', '')}_us_daily_screening.xlsx"),
+        "file_name": available_file_map.get(file_date, f"{str(file_date)} SQL 캐시"),
         "file_date": file_date,
         "min_score": min_score,
         "score_basis": "sql_score_s",
@@ -16463,7 +16668,7 @@ def build_asia_screening_summary_from_sql(file_date: str, min_score: float, regi
         grouped["max_score"] = grouped["max_score"].round(2)
         grouped_records = grouped.to_dict(orient="records")
     return {
-        "file_name": available_file_map.get(file_date, f"{str(file_date).replace('-', '')}_asia_daily_screening.xlsx"),
+        "file_name": available_file_map.get(file_date, f"{str(file_date)} SQL 캐시"),
         "file_date": file_date,
         "min_score": min_score,
         "selected_region": normalized_region,
@@ -16727,6 +16932,15 @@ def load_screening_summary(
         cached_payload = summaries_cache.get(payload_cache_key)
         if isinstance(cached_payload, dict):
             payload = json.loads(json.dumps(cached_payload, ensure_ascii=False))
+            payload["file_name"] = f"{selected_date} SQL 캐시"
+            payload["available_files"] = [
+                {
+                    "file_name": f"{str(item.get('file_date') or '')} SQL 캐시",
+                    "file_date": str(item.get("file_date") or ""),
+                }
+                for item in list(payload.get("available_files") or [])
+                if str(item.get("file_date") or "").strip()
+            ]
             payload["requested_file_date"] = requested_date
             payload["fallback_file_date"] = selected_date if fallback_used else ""
             payload["fallback_reason"] = "requested_file_missing" if fallback_used else ""
@@ -16740,11 +16954,12 @@ def load_screening_summary(
     payload["recent_leaders"] = build_recent_leader_stats_from_summaries(recent_summaries, min_score=min_score)
     payload["available_files"] = [
         {
-            "file_name": item["file_name"],
+            "file_name": f"{item['file_date']} SQL 캐시",
             "file_date": item["file_date"],
         }
         for item in available_entries
     ]
+    payload["file_name"] = f"{selected_date} SQL 캐시"
     payload["cache_loaded_at"] = datetime.now().isoformat(timespec="seconds")
     payload["cache_source"] = "sql"
     payload["requested_file_date"] = requested_date
@@ -16904,7 +17119,7 @@ def build_us_theme_sector_calendar(min_score: float = 50.0, limit: int = 60) -> 
         days.append(
             {
                 "date": file_date,
-                "file_name": next((entry["file_name"] for entry in available_entries if entry["file_date"] == file_date), f"{file_date.replace('-', '')}_us_daily_screening.xlsx"),
+                "file_name": next((entry["file_name"] for entry in available_entries if entry["file_date"] == file_date), f"{file_date} SQL 캐시"),
                 "qualified_count": len(rows),
                 "assigned_count": len(rows),
                 "top50_avg_score": round(float(np.mean([float(row.get("score") or 0.0) for row in rows[:50]])) if rows else 0.0, 2),
@@ -17284,7 +17499,7 @@ def build_asia_theme_sector_calendar(min_score: float = 50.0, limit: int = 60, r
         days.append(
             {
                 "date": file_date,
-                "file_name": next((entry["file_name"] for entry in available_entries if entry["file_date"] == file_date), f"{file_date.replace('-', '')}_asia_daily_screening.xlsx"),
+                "file_name": next((entry["file_name"] for entry in available_entries if entry["file_date"] == file_date), f"{file_date} SQL 캐시"),
                 "qualified_count": len(filtered_rows),
                 "assigned_count": len(filtered_rows),
                 "top50_avg_score": round(float(np.mean([float(row.get("score") or 0.0) for row in filtered_rows[:50]])) if filtered_rows else 0.0, 2),
@@ -17573,6 +17788,7 @@ def create_theme_today_excel_and_reload(request: ThemeBuildTodayExcelRequest) ->
         return {
             "ok": True,
             "file_date": today_iso,
+            "file_name": f"{today_iso} SQL 캐시",
             "today_excel_build": {
                 "ok": True,
                 "date": today_iso,
@@ -17606,17 +17822,20 @@ def create_theme_today_excel_and_reload(request: ThemeBuildTodayExcelRequest) ->
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "오늘자 데이터 생성 실패").strip())
     invalidate_screening_runtime_caches()
-    return {
+    payload = load_screening_summary(
+        min_score=float(request.min_score),
+        recent_limit=int(request.recent_limit),
+        file_date=today_iso,
+        force_reload=True,
+    )
+    payload["today_excel_build"] = {
         "ok": True,
-        "file_date": today_iso,
-        "today_excel_build": {
-            "ok": True,
-            "date": today_iso,
-            "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
-            "stdout": result.stdout,
-            "mode": "sql_direct",
-        },
+        "date": today_iso,
+        "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
+        "stdout": result.stdout,
+        "mode": "sql_direct",
     }
+    return payload
 
 
 def build_stock_score_history(
@@ -18211,7 +18430,7 @@ def build_theme_sector_calendar(
         days.append(
             {
                 "date": file_date,
-                "file_name": next((item["file_name"] for item in available_entries if item["file_date"] == file_date), f"{file_date.replace('-', '')}_데일리_기업스크리닝.xlsx"),
+                "file_name": next((item["file_name"] for item in available_entries if item["file_date"] == file_date), f"{file_date} SQL 캐시"),
                 "qualified_count": int(len(rows)),
                 "assigned_count": assigned_count,
                 "top10_avg_score": round(top10_avg_score, 2),
@@ -19338,7 +19557,22 @@ def is_orders_disclosure_text(text: str) -> bool:
     report = disclosure_report_name(source)
     normalized_report = normalize_search_text(report)
     normalized_source = normalize_search_text(source)
-    exclude_tokens = ["대량보유", "주식등의대량보유", "보유상황", "소유상황", "주요계약체결", "장내매매", "주요주주"]
+    exclude_tokens = [
+        "대량보유",
+        "주식등의대량보유",
+        "보유상황",
+        "소유상황",
+        "주요계약체결",
+        "장내매매",
+        "주요주주",
+        "자기주식",
+        "자사주",
+        "주식소각",
+        "취득신탁계약",
+        "자기주식취득신탁",
+        "주주가치증대",
+        "주가안정",
+    ]
     if any(normalize_search_text(token) in normalized_report or normalize_search_text(token) in normalized_source for token in exclude_tokens):
         return False
     include_report_tokens = ["단일판매공급계약", "판매공급계약", "공급계약", "수주", "계약수주"]
@@ -20182,7 +20416,8 @@ async def telegram_earnings_search_payload(request: TelegramEarningsSearchReques
     result_limit = max(1, min(request.limit if request.limit and request.limit > 0 else 30, 60))
     search_limit = max(result_limit * 5, 80)
     offset_id = int(request.offset_id or 0) or None
-    oldest_date = date.today() - timedelta(days=365 * 3 + 1)
+    search_days = max(30, min(int(request.days or 365), 365 * 3 + 1))
+    oldest_date = date.today() - timedelta(days=search_days)
     client, temp_dir = build_telegram_readonly_client()
     try:
         await client.connect()
@@ -20245,6 +20480,7 @@ async def telegram_earnings_search_payload(request: TelegramEarningsSearchReques
             "has_more": has_more,
             "scanned_count": scanned,
             "oldest_date": oldest_date.isoformat(),
+            "days": search_days,
             "message": f"{dialog.name}에서 {len(results)}개의 {category_label} 공시를 찾았습니다.",
         }
     finally:
@@ -20269,6 +20505,7 @@ def compact_earnings_search_job(job: dict[str, Any]) -> dict[str, Any]:
         "has_more": bool(job.get("has_more")),
         "scanned_count": int(job.get("scanned_count", 0)),
         "oldest_date": job.get("oldest_date", ""),
+        "days": int(job.get("days", 365) or 365),
         "message": job.get("message", ""),
         "error": job.get("error", ""),
         "finished": job["status"] in {"completed", "failed", "cancelled"},
@@ -20287,7 +20524,8 @@ async def run_telegram_earnings_search_job(job_id: str, request: TelegramEarning
         result_limit = max(1, min(request.limit if request.limit and request.limit > 0 else 30, 60))
         search_limit = max(result_limit * 5, 80)
         offset_id = int(request.offset_id or 0) or None
-        oldest_date = date.today() - timedelta(days=365 * 3 + 1)
+        search_days = max(30, min(int(request.days or 365), 365 * 3 + 1))
+        oldest_date = date.today() - timedelta(days=search_days)
         job.update({
             "company": company,
             "resolved_company": target.get("name") or company,
@@ -20295,6 +20533,7 @@ async def run_telegram_earnings_search_job(job_id: str, request: TelegramEarning
             "category": category,
             "category_label": category_label,
             "oldest_date": oldest_date.isoformat(),
+            "days": search_days,
             "message": "텔레그램 공시 채널 연결 중...",
         })
         client = build_telegram_client()
@@ -20771,6 +21010,14 @@ def kis_status(check_token: bool = False) -> JSONResponse:
 def tradingview_open(request: TradingViewOpenRequest) -> JSONResponse:
     try:
         return JSONResponse(open_tradingview_desktop(request.stock_code, request.stock_name))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/api/system/open-default-browser")
+def system_open_default_browser(request: ExternalBrowserOpenRequest) -> JSONResponse:
+    try:
+        return JSONResponse(open_url_in_default_browser(request.url))
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -21739,6 +21986,7 @@ async def telegram_earnings_search_jobs(request: TelegramEarningsSearchRequest) 
             "has_more": False,
             "scanned_count": 0,
             "oldest_date": "",
+            "days": max(30, min(int(request.days or 365), 365 * 3 + 1)),
             "message": "실적 공시 검색을 시작했습니다.",
             "error": "",
             "cancel_requested": False,
@@ -21750,6 +21998,7 @@ async def telegram_earnings_search_jobs(request: TelegramEarningsSearchRequest) 
                 "category": request.category,
                 "limit": request.limit,
                 "offset_id": request.offset_id,
+                "days": request.days,
             },
         )
         return JSONResponse(compact_earnings_search_job(TELEGRAM_EARNINGS_SEARCH_JOBS[job_id]))
@@ -22243,11 +22492,15 @@ def shared_dashboard() -> FileResponse:
 @app.get("/shared/leader-capture")
 def shared_leader_capture(
     market: str = "kr",
-    min_score: float = 50.0,
+    min_score: float | None = None,
     file_date: str | None = None,
     region: str = "jp",
 ) -> HTMLResponse:
-    return HTMLResponse(render_leader_capture_html(market=market, min_score=min_score, file_date=file_date, region=region))
+    normalized_market = str(market or "kr").strip().lower()
+    effective_min_score = 15.0 if normalized_market == "us" else 50.0
+    if min_score is not None:
+        effective_min_score = float(min_score)
+    return HTMLResponse(render_leader_capture_html(market=market, min_score=effective_min_score, file_date=file_date, region=region))
 
 
 @app.get("/")

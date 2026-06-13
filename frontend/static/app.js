@@ -1307,7 +1307,7 @@
     );
   }
 
-  function linkifyText(text) {
+  function linkifyText(text, onOpenLink) {
     const source = String(text || "");
     const pattern = /((?:https?:\/\/|www\.)[^\s<>()]+)/gi;
     const parts = [];
@@ -1319,7 +1319,18 @@
       }
       const raw = match[0];
       const href = /^https?:\/\//i.test(raw) ? raw : "https://" + raw;
-      parts.push(h("a", { key: href + "-" + match.index, href: href, target: "_blank", rel: "noreferrer" }, raw));
+      if (typeof onOpenLink === "function") {
+        parts.push(h("a", {
+          key: href + "-" + match.index,
+          href: href,
+          onClick: function (event) {
+            event.preventDefault();
+            onOpenLink(href);
+          },
+        }, raw));
+      } else {
+        parts.push(h("a", { key: href + "-" + match.index, href: href, target: "_blank", rel: "noreferrer" }, raw));
+      }
       lastIndex = match.index + raw.length;
     }
     if (lastIndex < source.length) {
@@ -1329,7 +1340,7 @@
   }
 
   function LinkifiedText(props) {
-    return h("div", { className: "telegram-text" }, linkifyText(props.text));
+    return h("div", { className: "telegram-text" }, linkifyText(props.text, props.onOpenLink));
   }
 
   function loadTelegramSearchState() {
@@ -6123,13 +6134,17 @@
             h(
               "div",
               { className: "telegram-bubble" },
-              h(LinkifiedText, { text: row.text || "(\uD14D\uC2A4\uD2B8 \uC5C6\uC74C)" }),
+              h(LinkifiedText, { text: row.text || "(\uD14D\uC2A4\uD2B8 \uC5C6\uC74C)", onOpenLink: props.onOpenLink }),
               row.attachment_url
                 ? h("a", {
                     className: "attachment-pill",
                     href: row.attachment_url,
-                    target: "_blank",
-                    rel: "noreferrer",
+                    onClick: function (event) {
+                      if (typeof props.onOpenLink === "function") {
+                        event.preventDefault();
+                        props.onOpenLink(row.attachment_url);
+                      }
+                    },
                   }, row.file_name || "\uCCA8\uBD80\uD30C\uC77C \uC5F4\uAE30")
                 : null,
               ensureArray(row.links).length
@@ -6137,7 +6152,16 @@
                     "div",
                     { className: "telegram-links" },
                     ensureArray(row.links).map(function (link, index) {
-                      return h("a", { key: link + index, href: link, target: "_blank", rel: "noreferrer" }, link);
+                      return h("a", {
+                        key: link + index,
+                        href: link,
+                        onClick: function (event) {
+                          if (typeof props.onOpenLink === "function") {
+                            event.preventDefault();
+                            props.onOpenLink(link);
+                          }
+                        },
+                      }, link);
                     })
                   )
                 : null
@@ -6260,13 +6284,22 @@
             h("span", null, "\uC601\uC5C5\uC775 " + (row.operating_profit || "-")),
             h("span", null, "\uC21C\uC774\uC775 " + (row.net_income || "-"))
           ),
-          h("div", { className: "earnings-message-text" }, h(LinkifiedText, { text: row.text || "" })),
+          h("div", { className: "earnings-message-text" }, h(LinkifiedText, { text: row.text || "", onOpenLink: props.onOpenLink })),
           links.length
             ? h(
                 "div",
                 { className: "telegram-links" },
                 links.map(function (link) {
-                  return h("a", { key: link.href, href: link.href, target: "_blank", rel: "noreferrer" }, link.label);
+                  return h("a", {
+                    key: link.href,
+                    href: link.href,
+                    onClick: function (event) {
+                      if (typeof props.onOpenLink === "function") {
+                        event.preventDefault();
+                        props.onOpenLink(link.href);
+                      }
+                    },
+                  }, link.label);
                 })
               )
             : null
@@ -7497,6 +7530,7 @@
             { className: "earnings-scroll-box" },
             h(TelegramEarningsResults, {
               rows: earningsResults,
+              onOpenLink: openTelegramResultLink,
               emptyMessage: earningsLoading ? "공시를 검색 중입니다." : "기업명을 입력하면 선택한 유형의 공시를 최근 3년 범위에서 표시합니다.",
             }),
             earningsResults.length
@@ -8334,6 +8368,18 @@
       }
     }
 
+    async function openTelegramResultLink(url) {
+      const target = String(url || "").trim();
+      if (!target) {
+        return;
+      }
+      try {
+        await postJson("/api/system/open-default-browser", { url: target });
+      } catch (err) {
+        setEarningsMessage(err.message || String(err));
+      }
+    }
+
     function closeInvestorFlowPopup() {
       setInvestorFlowModal({ open: false, loading: false, error: "", payload: null });
     }
@@ -8700,6 +8746,7 @@
             { className: "earnings-scroll-box" },
             h(TelegramEarningsResults, {
               rows: earningsResults,
+              onOpenLink: openTelegramResultLink,
               emptyMessage: earningsLoading ? "공시를 검색 중입니다." : "기업명을 입력하면 선택한 유형의 공시를 최근 3년 범위에서 표시합니다.",
             }),
             earningsResults.length
@@ -8975,6 +9022,7 @@
                 h(SectionTitle, null, "최근 실적 요약"),
         h(TelegramChatFeed, {
           rows: results,
+          onOpenLink: openTelegramResultLink,
           emptyMessage: jobState && !jobState.finished ? "검색 진행 중입니다. 첫 결과가 잡히면 바로 표시합니다." : "조건에 맞는 메시지가 없습니다.",
         })
       )
@@ -9509,7 +9557,6 @@
         query: String(parsed.query || ""),
         selected: parsed.selected || null,
         detail: parsed.detail || null,
-        aiBrief: parsed.aiBrief || null,
         statementMode: parsed.statementMode === "annual" ? "annual" : "quarter",
       };
     } catch (err) {
@@ -9523,7 +9570,6 @@
         query: state.query || "",
         selected: state.selected || null,
         detail: state.detail || null,
-        aiBrief: state.aiBrief || null,
         statementMode: state.statementMode || "quarter",
       }));
     } catch (err) {
@@ -9538,12 +9584,9 @@
     const [activeIndex, setActiveIndex] = useState(0);
     const [selected, setSelected] = useState(savedGlobalCompanyState.selected || null);
     const [detail, setDetail] = useState(savedGlobalCompanyState.detail || null);
-    const [aiBrief, setAiBrief] = useState(savedGlobalCompanyState.aiBrief || null);
     const [loadingSearch, setLoadingSearch] = useState(false);
     const [loadingDetail, setLoadingDetail] = useState(false);
-    const [loadingAiBrief, setLoadingAiBrief] = useState(false);
     const [message, setMessage] = useState("");
-    const [aiMessage, setAiMessage] = useState("");
     const [statementMode, setStatementMode] = useState(savedGlobalCompanyState.statementMode || "quarter");
     const searchTimerRef = useRef(null);
 
@@ -9560,10 +9603,9 @@
         query: query,
         selected: selected,
         detail: detail,
-        aiBrief: aiBrief,
         statementMode: statementMode,
       });
-    }, [query, selected, detail, aiBrief, statementMode]);
+    }, [query, selected, detail, statementMode]);
 
     useEffect(function () {
       const companyName = (detail && (detail.name || detail.symbol)) || (selected && (selected.name || selected.symbol)) || query || "";
@@ -9608,8 +9650,6 @@
       setQuery((item.name || item.symbol) + " (" + item.symbol + ")");
       setSuggestions([]);
       setMessage("");
-      setAiBrief(null);
-      setAiMessage("");
       setLoadingDetail(true);
       fetchJson("/api/global-stocks/detail?symbol=" + encodeURIComponent(item.symbol))
         .then(function (payload) {
@@ -9618,7 +9658,6 @@
             query: (item.name || item.symbol) + " (" + item.symbol + ")",
             selected: item,
             detail: payload,
-            aiBrief: null,
             statementMode: statementMode,
           });
         })
@@ -9630,26 +9669,6 @@
           setLoadingDetail(false);
         });
     }
-
-    useEffect(function () {
-      const symbol = detail && detail.symbol ? String(detail.symbol) : "";
-      if (!symbol) {
-        return;
-      }
-      setLoadingAiBrief(true);
-      setAiMessage("");
-      fetchJson("/api/global-stocks/ai-brief?symbol=" + encodeURIComponent(symbol))
-        .then(function (payload) {
-          setAiBrief(payload);
-        })
-        .catch(function (err) {
-          setAiBrief(null);
-          setAiMessage(err.message || String(err));
-        })
-        .finally(function () {
-          setLoadingAiBrief(false);
-        });
-    }, [detail && detail.symbol]);
 
     function handleKeyDown(event) {
       const items = ensureArray(suggestions);
@@ -9664,7 +9683,12 @@
         if (items.length) {
           chooseCompany(items[activeIndex || 0]);
         } else if (query.trim()) {
-          chooseCompany({ symbol: query.trim().toUpperCase(), name: query.trim() });
+          const rawQuery = query.trim();
+          const tickerMatch = rawQuery.match(/\(([A-Za-z0-9.\-=\^]+)\)\s*$/);
+          const fallbackSymbol = tickerMatch
+            ? tickerMatch[1].toUpperCase()
+            : rawQuery.toUpperCase().split(/\s+/).pop();
+          chooseCompany({ symbol: fallbackSymbol, name: rawQuery });
         }
       } else if (event.key === "Escape") {
         setSuggestions([]);
@@ -9682,7 +9706,6 @@
     const revenueMax = Math.max.apply(null, visibleStatements.map(function (row) { return Math.abs(Number(row.revenue) || 0); }).concat([1]));
     const opMax = Math.max.apply(null, visibleStatements.map(function (row) { return Math.abs(Number(row.operating_income) || 0); }).concat([1]));
     const netMax = Math.max.apply(null, visibleStatements.map(function (row) { return Math.abs(Number(row.net_income) || 0); }).concat([1]));
-    const aiBriefPayload = aiBrief && aiBrief.brief ? aiBrief.brief : null;
     const statGroups = [
       [
         ["전일 종가", formatGlobalPrice(stats.previous_close)],
@@ -9849,93 +9872,6 @@
             h(SectionTitle, null, "현재 진입 후보"),
                 h("pre", { className: "global-earnings-note" }, buildGlobalEarningsText(detail, visibleStatements, latest, rate))
               )
-            ),
-            h(
-              "div",
-              { className: "panel" },
-              h(
-                "div",
-                { className: "section-toolbar" },
-                h("div", null,
-                  h("div", { className: "eyebrow" }, "AI Company Brief"),
-                  h(SectionTitle, null, "\ucc28\ud2b8 \uc544\ub798 \uae30\uc5c5 \ube0c\ub9ac\ud504")
-                ),
-                detail && detail.symbol
-                  ? h("button", {
-                      type: "button",
-                      className: "mini-button",
-                      onClick: function () {
-                        setLoadingAiBrief(true);
-                        setAiMessage("");
-                        fetchJson("/api/global-stocks/ai-brief?symbol=" + encodeURIComponent(detail.symbol) + "&force_refresh=true", { noCache: true })
-                          .then(function (payload) { setAiBrief(payload); })
-                          .catch(function (err) {
-                            setAiBrief(null);
-                            setAiMessage(err.message || String(err));
-                          })
-                          .finally(function () { setLoadingAiBrief(false); });
-                      },
-                      disabled: loadingAiBrief,
-                    }, loadingAiBrief ? "\uc0dd\uc131 \uc911..." : "AI \uc0c8\ub85c\uace0\uce68")
-                  : null
-              ),
-              loadingAiBrief && !aiBriefPayload
-          ? h(LoadingBlock, { compact: true, title: "AI \ube0c\ub9ac\ud504 \uc0dd\uc131 \uc911", label: "\ud574\ub2f9 \uae30\uc5c5\uc758 \ucd5c\uc2e0 \ub370\uc774\ud130\ub97c \uc815\ub9ac\ud558\uace0 \uc788\uc2b5\ub2c8\ub2e4." })
-                : aiMessage
-                  ? h("div", { className: "notice-box error" }, aiMessage)
-                  : aiBriefPayload
-                    ? h(
-                        "div",
-                        { className: "global-ai-brief-grid" },
-                        h(
-                          "div",
-                          { className: "global-ai-brief-card" },
-                          h("h3", null, "\uae30\uc5c5 \uac1c\uc694"),
-                          h("p", { className: "global-ai-brief-overview" }, aiBriefPayload.overview || "-"),
-                          h("div", { className: "global-ai-brief-note" }, (aiBriefPayload.model || "") + (aiBrief && aiBrief.cached_at ? " ? " + aiBrief.cached_at : ""))
-                        ),
-                        h(
-                          "div",
-                          { className: "global-ai-brief-card" },
-                          h("h3", null, "\uc5f0\ud601"),
-                          ensureArray(aiBriefPayload.history).length
-                            ? h("div", { className: "global-ai-history-list" }, ensureArray(aiBriefPayload.history).map(function (item, index) {
-                                return h("div", { key: "hist-" + index, className: "global-ai-history-item" },
-                                  h("strong", null, item.year || "-"),
-                                  h("span", null, item.event || "-")
-                                );
-                              }))
-                : h(EmptyState, { compact: true, message: "표시할 분기 실적 데이터가 없습니다." })
-                        ),
-                        h(
-                          "div",
-                          { className: "global-ai-brief-card global-ai-segment-card" },
-                          h("h3", null, "\uc0ac\uc5c5 \ubd84\uc57c"),
-                          ensureArray(aiBriefPayload.business_segments).length
-                            ? h("div", { className: "global-ai-segment-list" }, ensureArray(aiBriefPayload.business_segments).map(function (item, index) {
-                                return h("div", { key: "seg-" + index, className: "global-ai-segment-item" },
-                                  h("div", { className: "global-ai-segment-head" },
-                                    h("strong", null, item.name || "-"),
-                                    h("span", null, item.share_pct == null ? "\ub9e4\ucd9c \ube44\uc911 \uc815\ubcf4 \uc5c6\uc74c" : numberFormat(item.share_pct, 1) + "%")
-                                  ),
-                                  h("p", null, item.description || "-")
-                                );
-                              }))
-                  : h(EmptyState, { compact: true, message: "현재 조건을 만족하는 진입 후보가 없습니다." }),
-                          h("div", { className: "global-ai-brief-note" }, aiBriefPayload.revenue_mix_note || "\uc0ac\uc5c5 \ubd84\uc57c\uc640 \ub9e4\ucd9c \ube44\uc911\uc740 AI \uc694\uc57d \uae30\uc900\uc785\ub2c8\ub2e4.")
-                        ),
-                        ensureArray(aiBriefPayload.risks).length
-                          ? h(
-                              "div",
-                              { className: "global-ai-brief-card" },
-                              h("h3", null, "\uc8fc\uc694 \ub9ac\uc2a4\ud06c"),
-                              h("ul", { className: "global-ai-risk-list" }, ensureArray(aiBriefPayload.risks).map(function (item, index) {
-                                return h("li", { key: "risk-" + index }, item);
-                              }))
-                            )
-                          : null
-                      )
-                : h(EmptyState, { compact: true, message: "표시할 분기 실적 데이터가 없습니다." })
             ),
             h(
               "div",
