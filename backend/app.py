@@ -15,6 +15,7 @@ import time
 import asyncio
 import base64
 import csv
+import ctypes
 import hashlib
 import html as html_lib
 import threading
@@ -28,7 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -44,6 +45,7 @@ import FinanceDataReader as fdr
 import numpy as np
 import OpenDartReader
 import pandas as pd
+from PIL import Image
 try:
     from pykrx import stock as pykrx_stock
     PYKRX_IMPORT_ERROR: Exception | None = None
@@ -1936,6 +1938,10 @@ class TradingViewOpenRequest(BaseModel):
 
 class ExternalBrowserOpenRequest(BaseModel):
     url: str
+
+
+class ClipboardImageRequest(BaseModel):
+    image_base64: str
 
 
 class SectorAssignmentRequest(BaseModel):
@@ -4262,6 +4268,73 @@ def load_stock_chart_preview_cached(stock_code: str, months: int = 3) -> dict[st
     return payload
 
 
+def _stringify_column_label(label: Any) -> str:
+    if isinstance(label, tuple):
+        return " ".join(str(item) for item in label if item is not None)
+    return str(label or "")
+
+
+def _extract_latest_table_row_value(
+    frame: pd.DataFrame,
+    row_keyword: str,
+    *,
+    prefer_actual: bool = False,
+) -> float | None:
+    if frame is None or frame.empty or not len(frame.columns):
+        return None
+    label_column = frame.columns[0]
+    normalized_keyword = normalize_text(row_keyword)
+    label_series = frame[label_column].apply(normalize_text)
+    matches = frame.loc[label_series.str.contains(normalized_keyword, na=False)]
+    if matches.empty:
+        return None
+    row = matches.iloc[-1]
+    candidate_columns = list(frame.columns[1:])
+    if prefer_actual:
+        actual_columns = [
+            column
+            for column in candidate_columns
+            if "(e)" not in normalize_text(_stringify_column_label(column))
+        ]
+        if actual_columns:
+            candidate_columns = actual_columns
+    for column in reversed(candidate_columns):
+        value = parse_korean_number(row.get(column))
+        if value is not None and math.isfinite(value):
+            return float(value)
+    return None
+
+
+@lru_cache(maxsize=256)
+def fetch_kr_stock_dividend_fallback(code: str) -> dict[str, float | None]:
+    normalized_code = re.sub(r"\D", "", str(code or "")).zfill(6)
+    if not re.fullmatch(r"\d{6}", normalized_code):
+        return {"dividend_yield": None, "dps": None, "payout_ratio": None}
+    try:
+        tables = pd.read_html(f"https://finance.naver.com/item/main.naver?code={normalized_code}", encoding="euc-kr")
+    except Exception:
+        return {"dividend_yield": None, "dps": None, "payout_ratio": None}
+    dividend_yield = None
+    dps = None
+    payout_ratio = None
+    for table in tables:
+        if table is None or table.empty:
+            continue
+        if dividend_yield is None:
+            dividend_yield = _extract_latest_table_row_value(table, "배당수익률")
+        if dps is None:
+            dps = _extract_latest_table_row_value(table, "주당배당금", prefer_actual=True)
+        if payout_ratio is None:
+            payout_ratio = _extract_latest_table_row_value(table, "배당성향", prefer_actual=True)
+        if dividend_yield is not None and dps is not None and payout_ratio is not None:
+            break
+    return {
+        "dividend_yield": dividend_yield,
+        "dps": dps,
+        "payout_ratio": payout_ratio,
+    }
+
+
 def build_kr_stock_overview(stock_code: str | None = None, stock_name: str | None = None, months: int = 3) -> dict[str, Any]:
     resolved = resolve_stock_payload(code=stock_code, name=stock_name)
     if not resolved:
@@ -4328,6 +4401,20 @@ def build_kr_stock_overview(stock_code: str | None = None, stock_name: str | Non
             foreign_ownership_pct = to_float(latest.get("지분율"))
     except Exception:
         pass
+    if any(value in (None, 0, 0.0) for value in (dividend_yield, dps, payout_ratio)):
+        fallback_dividend = fetch_kr_stock_dividend_fallback(code)
+        if dividend_yield in (None, 0, 0.0):
+            fallback_yield = to_float(fallback_dividend.get("dividend_yield"))
+            if fallback_yield is not None and fallback_yield > 0:
+                dividend_yield = fallback_yield
+        if dps in (None, 0, 0.0):
+            fallback_dps = to_float(fallback_dividend.get("dps"))
+            if fallback_dps is not None and fallback_dps > 0:
+                dps = fallback_dps
+        if payout_ratio in (None, 0, 0.0):
+            fallback_payout = to_float(fallback_dividend.get("payout_ratio"))
+            if fallback_payout is not None and math.isfinite(fallback_payout):
+                payout_ratio = max(0.0, fallback_payout)
     if payout_ratio is None and dps is not None and eps is not None and eps > 0:
         try:
             payout_ratio = max(0.0, (float(dps) / float(eps)) * 100.0)
@@ -8941,6 +9028,76 @@ def open_url_in_default_browser(url: str) -> dict[str, Any]:
     except Exception as exc:
         raise RuntimeError(f"기본 브라우저에서 열지 못했습니다: {exc}") from exc
     return {"ok": True, "url": target, "message": "기본 브라우저에서 열었습니다."}
+
+
+def copy_png_bytes_to_windows_clipboard(png_bytes: bytes) -> dict[str, Any]:
+    if os.name != "nt":
+        raise RuntimeError("이미지 클립보드 복사는 Windows에서만 지원합니다.")
+    if not png_bytes:
+        raise ValueError("클립보드에 복사할 이미지가 비어 있습니다.")
+    try:
+        image = Image.open(BytesIO(png_bytes)).convert("RGB")
+    except Exception as exc:
+        raise RuntimeError(f"PNG 이미지를 읽지 못했습니다: {exc}") from exc
+
+    dib_buffer = BytesIO()
+    image.save(dib_buffer, format="BMP")
+    dib_data = dib_buffer.getvalue()[14:]
+    if not dib_data:
+        raise RuntimeError("DIB 이미지 변환에 실패했습니다.")
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    GMEM_MOVEABLE = 0x0002
+    CF_DIB = 8
+
+    handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+    if not handle:
+        raise RuntimeError("클립보드 메모리를 할당하지 못했습니다.")
+
+    locked = kernel32.GlobalLock(handle)
+    if not locked:
+        kernel32.GlobalFree(handle)
+        raise RuntimeError("클립보드 메모리를 잠그지 못했습니다.")
+
+    ctypes.memmove(locked, dib_data, len(dib_data))
+    kernel32.GlobalUnlock(handle)
+
+    opened = False
+    try:
+        if not user32.OpenClipboard(None):
+            raise RuntimeError("클립보드를 열지 못했습니다.")
+        opened = True
+        if not user32.EmptyClipboard():
+            raise RuntimeError("클립보드를 비우지 못했습니다.")
+        if not user32.SetClipboardData(CF_DIB, handle):
+            raise RuntimeError("클립보드에 이미지를 기록하지 못했습니다.")
+        handle = None
+    finally:
+        if opened:
+            user32.CloseClipboard()
+        if handle:
+            kernel32.GlobalFree(handle)
+
+    return {
+        "ok": True,
+        "width": image.width,
+        "height": image.height,
+        "message": "운영체제 클립보드에 이미지를 복사했습니다.",
+    }
+
+
+def copy_base64_png_to_clipboard(image_base64: str) -> dict[str, Any]:
+    payload = str(image_base64 or "").strip()
+    if not payload:
+        raise ValueError("image_base64 값이 비어 있습니다.")
+    if "," in payload and payload.startswith("data:"):
+        payload = payload.split(",", 1)[1]
+    try:
+        png_bytes = base64.b64decode(payload)
+    except Exception as exc:
+        raise RuntimeError(f"base64 이미지 디코딩에 실패했습니다: {exc}") from exc
+    return copy_png_bytes_to_windows_clipboard(png_bytes)
 
 
 @lru_cache(maxsize=1024)
@@ -16247,6 +16404,49 @@ def update_screening_note_sql(file_date: str, stock_code: str | None, stock_name
         conn.commit()
 
 
+def carry_forward_screening_notes(target_file_date_key: str) -> int:
+    if not SCREENING_FAST_DB_PATH.exists():
+        return 0
+    target_key = re.sub(r"\D", "", str(target_file_date_key or ""))
+    if not re.fullmatch(r"20\d{6}", target_key):
+        return 0
+    with sqlite3.connect(str(SCREENING_FAST_DB_PATH)) as conn:
+        previous_row = conn.execute(
+            """
+            SELECT MAX(file_date_key)
+            FROM screening_rows
+            WHERE file_date_key < ?
+            """,
+            (target_key,),
+        ).fetchone()
+        previous_key = str((previous_row or [None])[0] or "").strip()
+        if not re.fullmatch(r"20\d{6}", previous_key):
+            return 0
+        updated = conn.execute(
+            """
+            UPDATE screening_rows AS current
+            SET note = (
+                SELECT prev.note
+                FROM screening_rows AS prev
+                WHERE prev.file_date_key = ?
+                  AND prev.stock_code = current.stock_code
+            )
+            WHERE current.file_date_key = ?
+              AND COALESCE(TRIM(current.note), '') = ''
+              AND EXISTS (
+                  SELECT 1
+                  FROM screening_rows AS prev
+                  WHERE prev.file_date_key = ?
+                    AND prev.stock_code = current.stock_code
+                    AND COALESCE(TRIM(prev.note), '') <> ''
+              )
+            """,
+            (previous_key, target_key, previous_key),
+        ).rowcount or 0
+        conn.commit()
+    return int(updated)
+
+
 def resolve_screening_file_date(file_date: str | None = None) -> tuple[str, str]:
     available_entries = screening_available_file_entries(limit=None)
     if not available_entries:
@@ -16421,7 +16621,7 @@ def build_screening_summary_from_sql(file_date: str, min_score: float) -> dict[s
                 "is_52w_high": int(to_float(row.get("is_52w_high")) or 0),
                 "market_cap_100m": round(float(market_cap_100m), 1),
                 "trading_value_100m": round(float(to_float(row.get("trading_value_100m")) or 0.0), 1),
-                "market": "" if pd.isna(row.get("market")) else str(row.get("market") or ""),
+                "market": str((find_listing_row_by_code(stock_code) or {}).get("market") or ("" if pd.isna(row.get("market")) else str(row.get("market") or ""))).strip(),
                 "industry": "" if pd.isna(row.get("industry")) else str(row.get("industry") or "").strip(),
                 "execution_strength": None,
                 "avg_1m": round(float(to_float(row.get("avg_1m")) or 0.0), 2) if to_float(row.get("avg_1m")) is not None else None,
@@ -17821,6 +18021,7 @@ def create_theme_today_excel_and_reload(request: ThemeBuildTodayExcelRequest) ->
     )
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "오늘자 데이터 생성 실패").strip())
+    carried_note_count = carry_forward_screening_notes(today_compact)
     invalidate_screening_runtime_caches()
     payload = load_screening_summary(
         min_score=float(request.min_score),
@@ -17834,6 +18035,7 @@ def create_theme_today_excel_and_reload(request: ThemeBuildTodayExcelRequest) ->
         "requested_date": f"{requested_compact[:4]}-{requested_compact[4:6]}-{requested_compact[6:]}",
         "stdout": result.stdout,
         "mode": "sql_direct",
+        "carried_note_count": carried_note_count,
     }
     return payload
 
@@ -21022,6 +21224,14 @@ def system_open_default_browser(request: ExternalBrowserOpenRequest) -> JSONResp
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+@app.post("/api/system/clipboard-image")
+def system_copy_image_to_clipboard(request: ClipboardImageRequest) -> JSONResponse:
+    try:
+        return JSONResponse(copy_base64_png_to_clipboard(request.image_base64))
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 @app.get("/api/stocks/investor-flows")
 def stock_investor_flows(code: str | None = None, name: str | None = None, days: int = 31) -> JSONResponse:
     try:
@@ -22169,14 +22379,14 @@ async def telegram_attachment(chat_id: int, message_id: int) -> FileResponse:
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                raise HTTPException(status_code=401, detail="?붾젅洹몃옩 濡쒓렇?몄씠 ?꾩슂?⑸땲??")
+                raise HTTPException(status_code=401, detail="텔레그램 로그인이 필요합니다.")
 
             entity = await client.get_input_entity(chat_id)
             message = await client.get_messages(entity, ids=message_id)
             if not message:
-                raise HTTPException(status_code=404, detail="硫붿떆吏瑜?李얠쓣 ???놁뒿?덈떎.")
+                raise HTTPException(status_code=404, detail="메시지를 찾을 수 없습니다.")
             if not message_has_file(message):
-                raise HTTPException(status_code=404, detail="泥⑤??뚯씪???녿뒗 硫붿떆吏?낅땲??")
+                raise HTTPException(status_code=404, detail="첨부파일이 없는 메시지입니다.")
 
             display_name, stored_name, _ = build_attachment_metadata(chat_id, message_id, message)
             TELEGRAM_ATTACHMENT_DIR.mkdir(parents=True, exist_ok=True)

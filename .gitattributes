@@ -1,0 +1,25 @@
+* text=auto eol=lf
+
+*.py text working-tree-encoding=UTF-8 eol=lf
+*.js text working-tree-encoding=UTF-8 eol=lf
+*.html text working-tree-encoding=UTF-8 eol=lf
+*.css text working-tree-encoding=UTF-8 eol=lf
+*.md text working-tree-encoding=UTF-8 eol=lf
+*.json text working-tree-encoding=UTF-8 eol=lf
+*.yml text working-tree-encoding=UTF-8 eol=lf
+*.yaml text working-tree-encoding=UTF-8 eol=lf
+*.ps1 text working-tree-encoding=UTF-8 eol=lf
+
+frontend/static/*.js text working-tree-encoding=UTF-8-BOM eol=lf
+frontend/*.html text working-tree-encoding=UTF-8-BOM eol=lf
+frontend/static/*.css text working-tree-encoding=UTF-8-BOM eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.parquet binary
+*.sqlite binary
+*.xlsx binary
+*.zip binary

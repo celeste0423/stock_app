@@ -180,7 +180,41 @@ def _load_us_listing() -> pd.DataFrame:
     listing["Sector"] = listing.get("Sector", pd.Series(index=listing.index, dtype=object)).fillna("")
     listing["Industry"] = listing.get("Industry", pd.Series(index=listing.index, dtype=object)).fillna("")
     listing["exchange"] = "S&P500"
-    return listing
+    try:
+        response = requests.get(
+            "https://api.nasdaq.com/api/quote/list-type/nasdaq100",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        rows = (((response.json() or {}).get("data") or {}).get("data") or {}).get("rows") or []
+    except Exception:
+        rows = []
+    if not isinstance(rows, list) or not rows:
+        return listing
+
+    nasdaq_rows: list[dict[str, Any]] = []
+    for row in rows:
+        symbol = _normalize_symbol((row or {}).get("symbol"))
+        if not symbol:
+            continue
+        name = str((row or {}).get("companyName") or "").strip() or symbol
+        nasdaq_rows.append(
+            {
+                "Symbol": symbol,
+                "Name": name,
+                "Sector": str((row or {}).get("sector") or "").strip(),
+                "Industry": "",
+                "exchange": "NASDAQ100",
+            }
+        )
+    if not nasdaq_rows:
+        return listing
+
+    nasdaq_df = pd.DataFrame(nasdaq_rows)
+    combined = pd.concat([listing, nasdaq_df], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["Symbol"], keep="first").reset_index(drop=True)
+    return combined
 
 
 def _cache_path(kind: str, symbol: str) -> Path:

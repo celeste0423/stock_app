@@ -169,6 +169,42 @@ def _load_sector_map() -> dict[str, str]:
         return {}
 
 
+def _load_recent_stock_name_map(target_date: str) -> dict[str, str]:
+    if not FAST_DB_PATH.exists():
+        return {}
+    try:
+        with sqlite3.connect(str(FAST_DB_PATH)) as conn:
+            row = conn.execute(
+                """
+                SELECT file_date_key
+                FROM file_meta
+                WHERE file_date_key < ?
+                ORDER BY file_date_key DESC
+                LIMIT 1
+                """,
+                (target_date,),
+            ).fetchone()
+            if not row or not row[0]:
+                return {}
+            rows = conn.execute(
+                """
+                SELECT stock_code, stock_name
+                FROM screening_rows
+                WHERE file_date_key = ?
+                """,
+                (str(row[0]),),
+            ).fetchall()
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for stock_code, stock_name in rows:
+        code = _normalize_code(stock_code)
+        name = str(stock_name or "").strip()
+        if code and name:
+            out[code] = name
+    return out
+
+
 def _build_score_history_maps(target_date: str) -> tuple[dict[str, float], dict[str, float]]:
     if not FAST_DB_PATH.exists():
         return {}, {}
@@ -332,7 +368,28 @@ def _fetch_base_snapshot(date_key: str, krx_id: str = "", krx_password: str = ""
     ]
 
     ohlcv["stock_code"] = ohlcv["stock_code"].astype(str).str.zfill(6)
-    ohlcv["stock_name"] = ohlcv["stock_code"].map(lambda c: pykrx_stock.get_market_ticker_name(c))
+    cached_name_map = _load_recent_stock_name_map(effective_date)
+    unresolved_codes: list[str] = []
+    resolved_names: list[str] = []
+    for raw_code in ohlcv["stock_code"].tolist():
+        code = str(raw_code or "").zfill(6)
+        cached_name = str(cached_name_map.get(code) or "").strip()
+        if cached_name:
+            resolved_names.append(cached_name)
+            continue
+        unresolved_codes.append(code)
+        resolved_names.append("")
+    if unresolved_codes:
+        fetched_names: dict[str, str] = {}
+        for code in unresolved_codes:
+            if code in fetched_names:
+                continue
+            try:
+                fetched_names[code] = str(pykrx_stock.get_market_ticker_name(code) or "").strip()
+            except Exception:
+                fetched_names[code] = ""
+        resolved_names = [name or fetched_names.get(str(code or "").zfill(6), "") for code, name in zip(ohlcv["stock_code"].tolist(), resolved_names)]
+    ohlcv["stock_name"] = resolved_names
     ohlcv["market_cap"] = pd.to_numeric(ohlcv["market_cap"], errors="coerce").fillna(0.0)
     ohlcv["trading_value"] = pd.to_numeric(ohlcv["trading_value"], errors="coerce").fillna(0.0)
     ohlcv["change_pct"] = pd.to_numeric(ohlcv["change_pct"], errors="coerce").fillna(0.0)
@@ -612,7 +669,7 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> None:
     FAST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    file_name = f"{date_key}_데일리_기업스크리닝.xlsx"
+    file_name = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]} SQL 캐시"
     file_date = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}"
     payload = out.copy()
     payload["file_date"] = file_date

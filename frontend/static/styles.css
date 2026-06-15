@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #171310;
   --bg-alt: #211b16;
   --panel: rgba(41, 34, 28, 0.9);
@@ -1294,6 +1294,31 @@ table {
   align-items: stretch;
 }
 
+.earnings-search-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.earnings-nav-button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.earnings-nav-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .earnings-overview-actions {
   display: flex;
   justify-content: flex-end;
@@ -1308,13 +1333,15 @@ table {
 
 .telegram-stock-overview-panel {
   margin-top: 10px;
-  padding: 10px 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
 }
 
 .telegram-stock-overview-grid {
   display: grid;
   grid-template-columns: minmax(320px, 1.2fr) minmax(210px, 0.8fr);
-  gap: 8px;
+  gap: 12px;
   align-items: start;
 }
 
@@ -1336,20 +1363,22 @@ table {
 
 .telegram-stock-overview-table {
   display: grid;
+  align-self: stretch;
   gap: 0;
   border: 1px solid #dbe4f0;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #ffffff;
   overflow: hidden;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
 }
 
 .telegram-stock-overview-row {
   display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
+  min-height: 34px;
+  padding: 0 12px;
   border-bottom: 1px solid #edf2f7;
 }
 
@@ -1360,19 +1389,33 @@ table {
 .telegram-stock-overview-key {
   color: #64748b;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 900;
   white-space: nowrap;
 }
 
 .telegram-stock-overview-value {
   color: #0f172a;
-  font-size: 12px;
-  font-weight: 900;
+  font-size: 13px;
+  font-weight: 950;
   line-height: 1.2;
   text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.telegram-stock-overview-value.metric-up {
+  color: #dc2626;
+}
+
+.telegram-stock-overview-value.metric-down {
+  color: #2563eb;
+}
+
+@media (max-width: 820px) {
+  .telegram-stock-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .earnings-trend-side-panel {
@@ -1525,6 +1568,10 @@ table {
 
 @media (max-width: 760px) {
   .earnings-result-visual-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .earnings-search-row {
     grid-template-columns: 1fr;
   }
 
@@ -8913,11 +8960,36 @@ body {
   gap: 4px;
   min-width: 0;
   white-space: nowrap;
+  justify-content: flex-start;
 }
 
 .theme-stock-code {
   flex: 0 0 auto;
   font-size: 10px;
+}
+
+.theme-stock-code-inline {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  line-height: 1;
+}
+
+.theme-stock-code-inline.market-kospi {
+  color: #1e3a8a !important;
+}
+
+.theme-stock-code-inline.market-kosdaq {
+  color: #60a5fa !important;
+}
+
+.theme-stock-code.market-kospi {
+  color: #1e3a8a !important;
+}
+
+.theme-stock-code.market-kosdaq {
+  color: #60a5fa !important;
 }
 
 .heat-score-cell {
@@ -9091,6 +9163,10 @@ body {
   gap: 6px;
   margin-top: 14px;
   padding: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .score-history-modal {
@@ -9103,6 +9179,9 @@ body {
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+  display: grid;
+  align-content: start;
+  gap: 0;
 }
 
 .score-history-item {
@@ -9482,15 +9561,15 @@ body {
 
 .data-table.compact.theme-edit-table:not(.theme-capture-table) th:nth-child(3),
 .data-table.compact.theme-edit-table:not(.theme-capture-table) td:nth-child(3) {
-  width: 132px !important;
+  width: 156px !important;
   min-width: 0 !important;
 }
 
 .data-table.compact.theme-edit-table:not(.theme-capture-table) th:nth-child(4),
 .data-table.compact.theme-edit-table:not(.theme-capture-table) td:nth-child(4) {
-  width: 90px !important;
+  width: 74px !important;
   min-width: 0 !important;
-  max-width: 90px !important;
+  max-width: 74px !important;
 }
 
 .data-table.compact.theme-edit-table:not(.theme-capture-table) th:nth-child(5),
@@ -9505,9 +9584,9 @@ body {
 .data-table.compact.theme-edit-table:not(.theme-capture-table) td:nth-child(9),
 .data-table.compact.theme-edit-table:not(.theme-capture-table) th:nth-child(10),
 .data-table.compact.theme-edit-table:not(.theme-capture-table) td:nth-child(10) {
-  width: 58px !important;
+  width: 54px !important;
   min-width: 0 !important;
-  max-width: 58px !important;
+  max-width: 54px !important;
 }
 
 .data-table.compact.theme-edit-table:not(.theme-capture-table) th:nth-child(11),
@@ -9677,6 +9756,10 @@ body {
   color: #2563eb;
   font-weight: 700;
   line-height: 1.25;
+}
+
+.theme-capture-stock-label .theme-stock-code {
+  display: inline;
 }
 
 @media (max-width: 1080px) {
