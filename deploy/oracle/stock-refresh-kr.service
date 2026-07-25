@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh KR leader data
+After=stock-app.service
+Requires=stock-app.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-app
+EnvironmentFile=/opt/stock-app/.env
+ExecStart=/bin/bash -lc 'curl -fsS -X POST http://127.0.0.1:8124/api/themes/build-today-data -H "Content-Type: application/json" -d "{}"'

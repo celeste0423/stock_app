@@ -1,0 +1,19 @@
+[Unit]
+Description=Stock leader Telegram bot
+After=network-online.target stock-app.service
+Wants=network-online.target
+Requires=stock-app.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock-app
+EnvironmentFile=/opt/stock-app/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+ExecStartPre=/usr/bin/bash -lc 'for i in {1..60}; do curl -fsS http://127.0.0.1:8124/api/health >/dev/null && exit 0; sleep 2; done; exit 1'
+ExecStart=/usr/bin/bash -lc 'cd /opt/stock-app && /opt/stockapp-py311/bin/python tools/oracle_leader_telegram_bot.py --server-url http://127.0.0.1:8124'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

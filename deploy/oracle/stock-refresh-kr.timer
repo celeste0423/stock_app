@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh KR leader data after market close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:10:00 Asia/Seoul
+Persistent=true
+Unit=stock-refresh-kr.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Stock App FastAPI server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock-app
+EnvironmentFile=/opt/stock-app/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/usr/bin/bash -lc 'cd /opt/stock-app && /opt/stockapp-py311/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8124'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

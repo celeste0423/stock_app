@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh US leader data after US market close
+
+[Timer]
+OnCalendar=Tue..Sat *-*-* 06:10:00 Asia/Seoul
+Persistent=true
+Unit=stock-refresh-us.service
+
+[Install]
+WantedBy=timers.target
