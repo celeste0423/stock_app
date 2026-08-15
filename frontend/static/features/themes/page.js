@@ -28,7 +28,9 @@
     const removeBackgroundTask = deps.removeBackgroundTask;
     const renderHighDrawdownPercent = deps.renderHighDrawdownPercent;
     const THEME_STOCK_NAV_KEY = deps.THEME_STOCK_NAV_KEY;
-    const ThemesPage = deps.ThemesPage;
+    const DataTable = deps.DataTable;
+    const ErrorPanel = deps.ErrorPanel;
+    const LoadingPanel = deps.LoadingPanel;
     const upsertBackgroundTask = deps.upsertBackgroundTask;
     const useFetchJson = deps.useFetchJson;
     const calendarRankCellClass = deps.calendarRankCellClass;
@@ -61,6 +63,125 @@
     const ThemeNoteInput = deps.ThemeNoteInput;
     const ThemeSectorInput = deps.ThemeSectorInput;
     const TradingValueHistoryChart = deps.TradingValueHistoryChart;
+
+  function ThemesPage() {
+    const themesRequest = useFetchJson("/api/themes/today?min_score=50&recent_limit=20");
+    const dartRequest = useFetchJson("/api/dart/today");
+
+    if (themesRequest.loading || dartRequest.loading) {
+      return LoadingPanel({ label: [themesRequest.loading ? themesRequest.label : "", dartRequest.loading ? dartRequest.label : ""].filter(Boolean).join(" · ") });
+    }
+    if (themesRequest.error) {
+      return ErrorPanel({ message: themesRequest.error });
+    }
+    if (dartRequest.error) {
+      return ErrorPanel({ message: dartRequest.error });
+    }
+
+    const themes = themesRequest.data || {};
+    const dart = dartRequest.data || {};
+
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "div",
+        { className: "panel hero-panel alt" },
+        h("div", { className: "eyebrow" }, "Daily Theme Radar"),
+        h("h1", { className: "page-title" }, "포트폴리오 수익"),
+        h(
+          "p",
+          { className: "page-copy" },
+          "엑셀 목표 비중을 기준으로 시초가 매수·매도와 보유 수량 유지 규칙을 적용한 수익률입니다. 기본 차트는 월초 기준 0%에서 시작하며, 전체 기간도 선택할 수 있습니다."
+        ),
+        h(
+          "div",
+          { className: "summary-grid" },
+          h(SummaryCard, { label: "湲곗? ?뚯씪", value: themes.file_name || "-", help: themes.file_date || "" }),
+          h(SummaryCard, { label: "50점 이상 종목", value: numberFormat(themes.qualified_count, 0) + "개", help: "종합 50 이상 · 시총 2000억 이상" }),
+          h(SummaryCard, { label: "\ud14c\ub9c8 \uc218", value: numberFormat(ensureArray(themes.theme_summary).length, 0) + "\uac1c", help: "\ub2f9\uc77c \uc9d1\uacc4\ub41c \ud14c\ub9c8 \uac1c\uc218" }),
+          h(SummaryCard, { label: "DART \uc0c1\ud0dc", value: dart.enabled ? "\ud65c\uc131" : "\ube44\ud65c\uc131", help: dart.message || "" })
+        )
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "?ㅻ뒛 怨듭떆"),
+        h(DataTable, {
+          rows: ensureArray(themes.recent_leaders),
+          columns: [
+            { key: "stock_name", label: "종목" },
+            { key: "appearances", label: "\ub4f1\uc7a5 \ud69f\uc218", render: function (row) { return numberFormat(row.appearances, 0); } },
+            { key: "strong_days", label: "\uac15\ud55c \ub0a0 \uc218", render: function (row) { return numberFormat(row.strong_days, 0); } },
+            { key: "avg_score", label: "평균 점수", render: function (row) { return numberFormat(row.avg_score, 2); } },
+            { key: "max_score", label: "최고 점수", render: function (row) { return numberFormat(row.max_score, 2); } },
+            { key: "avg_change_pct", label: "\ud3c9\uade0 \ub4f1\ub77d\ub960", render: function (row) { return formatPercent(row.avg_change_pct, 2); } },
+            { key: "themes", label: "반복 테마", render: function (row) { return ensureArray(row.themes).join(", "); } },
+            { key: "notes", label: "핵심 메모", render: function (row) { return row.notes || "-"; } },
+          ],
+          emptyMessage: "최근 반복 등장 종목 데이터가 없습니다.",
+          compact: true,
+        })
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "?ㅻ뒛 怨듭떆"),
+        ensureArray(themes.theme_summary).length
+          ? h(
+              "div",
+              { className: "theme-grid" },
+              ensureArray(themes.theme_summary).map(function (item) {
+                return h(
+                  "div",
+                  { key: item.theme, className: "theme-card" },
+                  h("div", { className: "theme-name" }, item.theme),
+                  h("div", { className: "theme-metrics" }, "\uc885\ubaa9 \uc218 " + numberFormat(item.count, 0) + "\uac1c / \ud3c9\uade0 \uc810\uc218 " + numberFormat(item.avg_score, 2)),
+                  h("div", { className: "theme-leaders" }, "\ub300\ud45c \uc885\ubaa9: " + (item.leaders || "-")),
+                  h("div", { className: "summary-help" }, "\ud575\uc2ec \ud0a4\uc6cc\ub4dc: " + (item.keywords || "-"))
+                );
+              })
+            )
+          : EmptyState({ message: "오늘 테마 데이터가 없습니다." })
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "오늘 조건 충족 종목"),
+        h(DataTable, {
+          rows: ensureArray(themes.qualified_stocks),
+          columns: [
+            { key: "stock_name", label: "종목" },
+            { key: "theme", label: "테마" },
+            { key: "score", label: "점수", render: function (row) { return numberFormat(row.score, 2); } },
+            { key: "change_pct", label: "\ub4f1\ub77d\ub960", render: function (row) { return formatPercent(row.change_pct, 2); } },
+            { key: "lead_count", label: "주도 횟수", render: function (row) { return numberFormat(row.lead_count, 0); } },
+            { key: "avg_lead_score", label: "평균 점수", render: function (row) { return numberFormat(row.avg_lead_score, 2); } },
+            { key: "note", label: "비고" },
+          ],
+          emptyMessage: "점수 50 이상 종목이 없습니다.",
+          compact: true,
+        })
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "?ㅻ뒛 怨듭떆"),
+        dart.message ? h("div", { className: "summary-help" }, dart.message) : null,
+        dart.items && dart.items.length
+          ? h(DataTable, {
+              rows: dart.items,
+              columns: [
+                { key: "corp_name", label: "?뚯궗" },
+                { key: "report_name", label: "\uacf5\uc2dc\uba85" },
+                { key: "date", label: "날짜" },
+              ],
+            })
+          : EmptyState({ message: dart.message || "?ㅻ뒛 怨듭떆媛 ?놁뒿?덈떎." })
+      )
+    );
+  }
+
 
   function ThemesPageV2() {
     const savedThemeState = loadThemeSectorState();

@@ -22,7 +22,7 @@
 4. 검증
    - 가능한 경우 수정 파일에 대해 즉시 구문 검증을 수행한다.
    - 백엔드 실행이 필요한 경우 Python 3.12 환경에서 확인한다.
-   - `frontend/static/app.shared.js`, `frontend/static/app.api.js`, `frontend/static/app.js`는 분리된 상태를 유지한다.
+   - `frontend/static/core/`와 `frontend/static/features/`의 모듈 경계를 유지한다.
    - `check_frontend.ps1`에서 UTF-8 BOM, 치환 문자(U+FFFD), JS 구문 오류를 검사한다.
 
 5. GitHub 백업

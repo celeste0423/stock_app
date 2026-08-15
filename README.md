@@ -14,7 +14,10 @@ Python 백엔드와 React 프런트엔드로 구성된 로컬 주식 분석 애�
 ## 주요 디렉터리
 
 - `backend/`: API, 데이터베이스, 계산 결과와 런타임 데이터
-- `frontend/`: React 화면과 정적 자산
+- `frontend/static/core/`: 앱 셸, API 및 공용 런타임
+- `frontend/static/features/`: 페이지별 독립 기능 모듈
+- `frontend/static/modules/`: 여러 기능이 공유하는 소규모 도메인 헬퍼
+- `frontend/vendor/`: 브라우저 벤더 라이브러리
 - `tools/`: 데이터 생성, 점수 재계산, 배포·운영 도구
 - `launchers_internal/`: 로컬 앱 실행과 재시작 스크립트
 - `deploy/`: Oracle 서버 배포 파일

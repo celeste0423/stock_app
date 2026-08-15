@@ -1,4 +1,4 @@
-﻿(function (global) {
+(function (global) {
   "use strict";
 
   const { useEffect, useRef, useState } = React;
@@ -320,3 +320,4 @@
     useFetchJson,
   };
 })(window);
+

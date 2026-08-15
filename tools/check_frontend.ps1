@@ -11,9 +11,9 @@ if (-not (Test-Path $node)) {
 }
 
 $defaultTargets = @(
-  "frontend/static/app.shared.js",
-  "frontend/static/app.api.js",
-  "frontend/static/app.js",
+  "frontend/static/core/shared.js",
+  "frontend/static/core/api.js",
+  "frontend/static/core/app-shell.js",
   "frontend/static/features/naver-blog/page.js",
   "frontend/static/features/building-management/page.js",
   "frontend/static/features/global-company/page.js",
@@ -53,9 +53,6 @@ function Assert-Utf8Integrity([string]$Path) {
   $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
   $relativePath = [System.IO.Path]::GetRelativePath($ProjectRoot, $Path).Replace("/", "\")
   $expectsBom = $relativePath -in @(
-    "frontend\static\app.shared.js",
-    "frontend\static\app.api.js",
-    "frontend\static\app.js",
     "frontend\static\styles.css",
     "frontend\index.html"
   )

@@ -1,4 +1,4 @@
-﻿(function (global) {
+(function (global) {
   "use strict";
 
   const LAST_PAGE_KEY = "stock-dashboard:last-page";
@@ -342,3 +342,4 @@
     normalizeAllocationLabel,
   };
 })(window);
+
