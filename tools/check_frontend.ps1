@@ -34,6 +34,9 @@ $defaultTargets = @(
   "frontend/static/features/themes/page.js",
   "frontend/static/features/sector-snapshot/page.js",
   "frontend/static/features/international-themes/page.js",
+  "frontend/static/features/strategy-backtest/page.js",
+  "frontend/static/features/disclosure/page.js",
+  "frontend/static/features/telegram/page.js",
   "frontend/index.html",
   "backend/app.py",
   "WORKFLOW.md"
