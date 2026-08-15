@@ -17,10 +17,11 @@ from openpyxl.formatting.rule import ColorScaleRule
 from pykrx import stock as pykrx_stock
 
 
-OUT_DIR = Path("D:/Study/Stock_Daily")
-LEGACY_DAILY_DIR = Path("D:/Study/주식_데일리")
-SECTOR_DB_PATH = Path("D:/Study/stock app/backend/sector_database.json")
-NOTE_DB_PATH = Path("D:/Study/stock app/backend/stock_note_database.json")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = PROJECT_ROOT / "data" / "screening" / "current"
+LEGACY_DAILY_DIR = PROJECT_ROOT / "data" / "screening" / "legacy"
+SECTOR_DB_PATH = PROJECT_ROOT / "backend" / "sector_database.json"
+NOTE_DB_PATH = PROJECT_ROOT / "backend" / "stock_note_database.json"
 CACHE_DIR = OUT_DIR / ".cache"
 SNAPSHOT_CACHE_DIR = CACHE_DIR / "snapshots"
 NAME_CACHE_PATH = CACHE_DIR / "ticker_name_cache.json"

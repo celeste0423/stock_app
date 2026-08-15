@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Continue"
 
-$workdir = "D:\Study\stock app"
+$workdir = Split-Path -Parent $PSScriptRoot
 $python = "C:\Users\jyeob\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-$logDir = "D:\Study\stock app\outputs"
+$logDir = Join-Path $workdir "outputs"
 $logFile = Join-Path $logDir ("screening_pipeline_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".log")
 
 if (!(Test-Path $logDir)) {
@@ -29,7 +29,7 @@ Run-Step "Verify samples" @"
 & `"$python`" - <<'PY'
 from pathlib import Path
 from openpyxl import load_workbook
-base = Path(r'D:/Study/주식_데일리')
+base = Path(r'$workdir/data/screening/legacy')
 for name in [
     '20260311_데일리_기업스크리닝.xlsx',
     '20260415_데일리_기업스크리닝.xlsm',

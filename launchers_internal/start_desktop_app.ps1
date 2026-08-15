@@ -129,6 +129,10 @@ if (-not (Test-Path $serverScript)) {
 Remove-Item -LiteralPath $stderrLog -ErrorAction SilentlyContinue
 $env:PYTHONPATH = "$projectRoot;$(Join-Path $projectRoot 'backend\vendor')"
 $env:STOCK_DASHBOARD_DESKTOP_PORT = "$desktopPort"
+$env:STOCK_DASHBOARD_SCREENING_DIR = Join-Path $projectRoot "data\screening\current"
+$env:STOCK_DASHBOARD_REAL_ESTATE_EXCEL_PATH = Join-Path $projectRoot "data\real-estate\안암해링턴 상가 관리.xlsx"
+$env:STOCK_DASHBOARD_REAL_ESTATE_BANK_IMPORT_DIR = Join-Path $projectRoot "data\real-estate\계좌입출금내역"
+$env:STOCK_DASHBOARD_REAL_ESTATE_BUILDING_EXPORT_DIR = Join-Path $projectRoot "data\real-estate\건물 정리"
 
 if (Test-AppHealth $healthUrl) {
     $serverProcess = $null
@@ -151,7 +155,7 @@ Write-LauncherLog "Desktop server is healthy at $baseUrl"
 
 $latestWrite = @(
     (Get-Item (Join-Path $projectRoot "frontend\index.html")).LastWriteTimeUtc,
-    (Get-Item (Join-Path $projectRoot "frontend\static\app.js")).LastWriteTimeUtc,
+    (Get-Item (Join-Path $projectRoot "frontend\static\core\app-shell.js")).LastWriteTimeUtc,
     (Get-Item (Join-Path $projectRoot "frontend\static\styles.css")).LastWriteTimeUtc
 ) | Sort-Object -Descending | Select-Object -First 1
 $appVersion = ([DateTimeOffset]$latestWrite).ToUnixTimeSeconds()

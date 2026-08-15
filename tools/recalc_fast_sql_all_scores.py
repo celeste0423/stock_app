@@ -41,7 +41,7 @@ DB_PATH = _resolve_existing_path(
     "STOCK_DASHBOARD_SCREENING_FAST_DB_PATH",
     [
         BASE_DIR / "backend" / "stock_daily_fast.sqlite",
-        Path("D:/Study/stock app/backend/stock_daily_fast.sqlite"),
+        BASE_DIR / "backend" / "stock_daily_fast.sqlite",
     ],
 )
 CONFIG_PATH = _resolve_existing_path(
@@ -50,14 +50,14 @@ CONFIG_PATH = _resolve_existing_path(
         (Path(screening_dir_env) / "score_formula_config.json") if screening_dir_env else None,
         BASE_DIR / "score_formula_config.json",
         BASE_DIR / "outputs" / "stock_daily" / "score_formula_config.json",
-        Path("D:/Study/Stock_Daily/score_formula_config.json"),
+        BASE_DIR / "data" / "screening" / "current" / "score_formula_config.json",
     ],
 )
 SETTINGS_PATH = _resolve_existing_path(
     "STOCK_DASHBOARD_LOCAL_SETTINGS_PATH",
     [
         BASE_DIR / "backend" / "local_settings.json",
-        Path("D:/Study/stock app/backend/local_settings.json"),
+        BASE_DIR / "backend" / "local_settings.json",
     ],
 )
 

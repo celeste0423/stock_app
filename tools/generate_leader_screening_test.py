@@ -17,8 +17,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill
 
 
-SCREENING_DIR = Path("D:/Study/\uc8fc\uc2dd_\ub370\uc77c\ub9ac")
 APP_DIR = Path(__file__).resolve().parents[1]
+SCREENING_DIR = APP_DIR / "data" / "screening" / "legacy"
 VENDOR_DIR = APP_DIR / "backend" / "vendor"
 if VENDOR_DIR.exists():
     sys.path.insert(0, str(VENDOR_DIR))

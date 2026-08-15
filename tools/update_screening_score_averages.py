@@ -12,7 +12,8 @@ from typing import Any
 from openpyxl import load_workbook
 
 
-SCREENING_DIR = Path("D:/Study/\uc8fc\uc2dd_\ub370\uc77c\ub9ac")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCREENING_DIR = PROJECT_ROOT / "data" / "screening" / "legacy"
 FILE_STEM = "\ub370\uc77c\ub9ac_\uae30\uc5c5\uc2a4\ud06c\ub9ac\ub2dd"
 SCREENING_SHEET = "\uc8fc\ub3c4\uc8fc \ucc3e\uae30"
 DB_PATH = SCREENING_DIR / "screening_score_history.sqlite"

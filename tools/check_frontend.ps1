@@ -1,5 +1,5 @@
 param(
-  [string]$ProjectRoot = "D:\Study\stock app",
+  [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
   [string[]]$Files = @()
 )
 

@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 
-LEGACY_OUTPUT_DIR = Path("D:/Study/Stock_Daily")
+LEGACY_OUTPUT_DIR = ROOT_DIR / "data" / "screening" / "current"
 OUTPUT_DIR = Path(
     os.getenv(
         "STOCK_DAILY_OUTPUT_DIR",

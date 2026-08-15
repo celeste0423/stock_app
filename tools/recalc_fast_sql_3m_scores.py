@@ -9,8 +9,9 @@ import numpy as np
 import pandas as pd
 
 
-DB_PATH = Path("D:/Study/stock app/backend/stock_daily_fast.sqlite")
-CONFIG_PATH = Path("D:/Study/Stock_Daily/score_formula_config.json")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = PROJECT_ROOT / "backend" / "stock_daily_fast.sqlite"
+CONFIG_PATH = PROJECT_ROOT / "data" / "screening" / "current" / "score_formula_config.json"
 
 
 def _load_weights() -> tuple[float, float, float, float, float]:

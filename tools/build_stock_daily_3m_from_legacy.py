@@ -12,9 +12,10 @@ import pandas as pd
 from openpyxl import load_workbook
 
 
-LEGACY_DIR = Path("D:/Study/주식_데일리")
-OUT_DIR = Path("D:/Study/Stock_Daily")
-SECTOR_DB_PATH = Path("D:/Study/stock app/backend/sector_database.json")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_DIR = PROJECT_ROOT / "data" / "screening" / "legacy"
+OUT_DIR = PROJECT_ROOT / "data" / "screening" / "current"
+SECTOR_DB_PATH = PROJECT_ROOT / "backend" / "sector_database.json"
 SHEET_NAME = "주도주 찾기"
 
 
@@ -244,4 +245,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -3,7 +3,7 @@ param(
   [string]$HostIp,
 
   [string]$User = "opc",
-  [string]$KeyPath = "D:\Study\stock app\ssh-key-2026-07-17.key",
+  [string]$KeyPath = (Join-Path (Split-Path -Parent $PSScriptRoot) "ssh-key-2026-07-17.key"),
   [string]$RemoteDir = "/opt/stock-app"
 )
 
@@ -19,7 +19,7 @@ Require-Command "ssh"
 Require-Command "scp"
 Require-Command "tar"
 
-$root = "D:\Study\stock app"
+$root = Split-Path -Parent $PSScriptRoot
 $archiveName = "stock-app-oracle-deploy.tar.gz"
 $archivePath = Join-Path $env:TEMP $archiveName
 $includeItems = @(

@@ -2165,7 +2165,7 @@
         h(
           "div",
           { className: "building-bank-actions" },
-          h("span", null, "경로: D:\\Study\\상가_관리_데이터\\계좌입출금내역"),
+          h("span", null, "경로: stock app\\data\\real-estate\\계좌입출금내역"),
           h(
             React.Fragment,
             null,
@@ -2204,7 +2204,7 @@
         h(
           "div",
           { className: "building-ledger-note" },
-          "\ud558\ub098\uc740\ud589 \uacc4\uc88c \uc785\ucd9c\uae08 \ub0b4\uc5ed\uc740 \uae30\ubcf8\uc801\uc73c\ub85c \uc790\ub3d9 \ub9e4\uce6d\ub41c \uc0c1\ud0dc\ub85c \ud45c\uc2dc\ub429\ub2c8\ub2e4. \uc2e0\uaddc \ud30c\uc77c\uc740 D:\\Study\\\uc0c1\uac00_\uad00\ub9ac_\ub370\uc774\ud130\\\uacc4\uc88c\uc785\ucd9c\uae08\ub0b4\uc5ed \ud3f4\ub354\uc5d0\uc11c \uc77d\uace0, \uacfc\uac70 \ub370\uc774\ud130\ub294 \uac70\ub798\ub0b4\uc5ed\uc870\ud68c_\uae30\ubcf8\uc5d0\uc11c \uac00\uc838\uc635\ub2c8\ub2e4. \uc774\ud6c4\uc5d0\ub294 \uac70\ub798\ub0b4\uc5ed\uc870\ud68c_202605 \uac19\uc740 \uc6d4\ubcc4 \ud30c\uc77c\uba85\uc744 \ucd94\uac00\ud558\uba74 \uc790\ub3d9\uc73c\ub85c \ubd88\ub7ec\uc635\ub2c8\ub2e4." +
+          "하나은행 계좌 입출금 내역은 기본적으로 자동 매칭된 상태로 표시됩니다. 신규 파일은 stock app\\data\\real-estate\\계좌입출금내역 폴더에서 읽고, 과거 데이터는 거래내역조회_기본에서 가져옵니다. 이후에는 거래내역조회_202605 같은 월별 파일명을 추가하면 자동으로 불러옵니다." +
             (bankImport.last_imported_at ? " 마지막 불러오기: " + bankImport.last_imported_at : "")
         ),
         bankImportErrors.length

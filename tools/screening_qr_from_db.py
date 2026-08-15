@@ -10,8 +10,9 @@ from typing import Iterable
 from openpyxl import load_workbook
 
 
-DEFAULT_BASE_DIR = Path("D:/Study/주식_데일리")
-DEFAULT_DB_PATH = Path("D:/Study/stock app/outputs/screening_avg_cache.sqlite3")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_BASE_DIR = PROJECT_ROOT / "data" / "screening" / "legacy"
+DEFAULT_DB_PATH = PROJECT_ROOT / "outputs" / "screening_avg_cache.sqlite3"
 SHEET_NAME = "주도주 찾기"
 
 
@@ -170,4 +171,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -438,7 +438,7 @@
         h(
           "label",
           { className: "trade-region-picker" },
-          h("span", null, "폴더: D:\\Study\\상가_관리_데이터"),
+          h("span", null, "폴더: stock app\\data\\real-estate"),
           h(
             "select",
             {

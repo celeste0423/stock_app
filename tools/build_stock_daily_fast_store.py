@@ -9,9 +9,10 @@ from typing import Any
 import pandas as pd
 
 
-DEFAULT_SCREENING_DIR = Path("D:/Study/Stock_Daily")
-DEFAULT_DB_PATH = Path("D:/Study/stock app/backend/stock_daily_fast.sqlite")
-DEFAULT_PARQUET_PATH = Path("D:/Study/stock app/backend/stock_daily_fast.parquet")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SCREENING_DIR = PROJECT_ROOT / "data" / "screening" / "current"
+DEFAULT_DB_PATH = PROJECT_ROOT / "backend" / "stock_daily_fast.sqlite"
+DEFAULT_PARQUET_PATH = PROJECT_ROOT / "backend" / "stock_daily_fast.parquet"
 
 
 def _date_key_from_name(name: str) -> str:
@@ -213,4 +214,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -11,7 +11,8 @@ import pandas as pd
 from openpyxl import load_workbook
 
 
-STOCK_DAILY_DIR = Path("D:/Study/Stock_Daily")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+STOCK_DAILY_DIR = PROJECT_ROOT / "data" / "screening" / "current"
 FORMULA_CONFIG_PATH = STOCK_DAILY_DIR / "score_formula_config.json"
 WINDOW_3M = 60
 

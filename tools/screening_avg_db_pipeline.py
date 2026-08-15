@@ -12,11 +12,12 @@ from typing import Any
 from openpyxl import load_workbook
 
 
-SCREENING_DIR = Path("D:/Study/주식_데일리")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCREENING_DIR = PROJECT_ROOT / "data" / "screening" / "legacy"
 FILE_STEM = "데일리_기업스크리닝"
 SCREENING_SHEET = "주도주 찾기"
 HIGH52_SHEET = "52주신고가"
-DB_PATH = Path("D:/Study/stock app/outputs/screening_avg_cache.sqlite3")
+DB_PATH = PROJECT_ROOT / "outputs" / "screening_avg_cache.sqlite3"
 
 
 @dataclass(frozen=True)

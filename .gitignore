@@ -14,6 +14,8 @@ desktop_edge_profile/
 .pycache_check/
 docs_cache/
 outputs/
+data/
+archive/
 .alert_state/
 edge_dump.txt
 edge_shared_dump.txt
