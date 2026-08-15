@@ -29,6 +29,11 @@ $defaultTargets = @(
   "frontend/static/features/market-calendar/page.js",
   "frontend/static/features/real-estate-prices/page.js",
   "frontend/static/features/subscription-list/page.js",
+  "frontend/static/features/chart-game/page.js",
+  "frontend/static/features/sector-watch/page.js",
+  "frontend/static/features/themes/page.js",
+  "frontend/static/features/sector-snapshot/page.js",
+  "frontend/static/features/international-themes/page.js",
   "frontend/index.html",
   "backend/app.py",
   "WORKFLOW.md"
