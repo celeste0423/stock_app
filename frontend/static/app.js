@@ -32734,6 +32734,21 @@
     );
   }
 
+  const naverBlogPageModule = getStockAppModule("naverBlogPage");
+  const ActiveNaverBlogBriefPage = typeof naverBlogPageModule.createPage === "function"
+    ? naverBlogPageModule.createPage({
+        React: React,
+        fetchJson: fetchJson,
+        postJson: postJson,
+        ensureArray: ensureArray,
+        numberFormat: numberFormat,
+        emitWindowTitleDetail: emitWindowTitleDetail,
+        SectionTitle: SectionTitle,
+        LoadingBlock: LoadingBlock,
+        EmptyState: EmptyState,
+      })
+    : NaverBlogBriefPage;
+
   function App() {
     const defaultTabGroups = [
       {
@@ -33093,7 +33108,7 @@
                 title: "네이버 블로그 브리핑",
                 message: "네이버 블로그 브리핑은 개인 로그인 세션을 사용하므로 공개 웹 배포 모드에서는 잠겨 있습니다.",
               })
-            : h(NaverBlogBriefPage);
+            : h(ActiveNaverBlogBriefPage);
       }
       if (pageKey === "real-estate-prices") {
         return h(RealEstatePricePage);
@@ -33147,10 +33162,10 @@
         h(
           "div",
           { className: "nav-list" },
-          orderedGroups.map(function (group) {
+          orderedGroups.map(function (group, groupIndex) {
             return h(
               "div",
-              { key: group.label, className: "nav-group" },
+              { key: group.label + ":" + groupIndex, className: "nav-group" },
               h("div", { className: "nav-group-title" }, group.label),
               group.tabs.map(function (tab) {
                 const shortcutIndex = orderedTabs.findIndex(function (item) { return item.key === tab.key; });

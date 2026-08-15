@@ -41,6 +41,9 @@ local_settings.json
 backend/local_settings.json
 backend/kis_token_cache.json
 backend/telegram_session/
+backend/naver_blog_storage_state.json
+ssh-key-*.key
+ssh-key-*.key.pub
 
 # Large vendored/runtime binaries
 backend/vendor/
@@ -52,7 +55,11 @@ temp_*.xlsx
 backend/*.xlsx
 backend/*.sqlite
 backend/*.sqlite3
+backend/*.db
 backend/*.parquet
+backend/backups/
+backend/runtime/
+backend/portfolio_manual_journal.json
 *_screening_cache.json
 *.xlsm.bak
 *.xlsx.bak
@@ -60,6 +67,8 @@ backend/*.parquet
 .komis_*.js
 frontend/static/*.bak
 .codex_backups/
+node_modules
+tmp_openapi.json
 
 # OS/editor
 .DS_Store

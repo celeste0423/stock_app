@@ -10,9 +10,9 @@
 *.yaml text working-tree-encoding=UTF-8 eol=lf
 *.ps1 text working-tree-encoding=UTF-8 eol=lf
 
-frontend/static/*.js text working-tree-encoding=UTF-8-BOM eol=lf
-frontend/*.html text working-tree-encoding=UTF-8-BOM eol=lf
-frontend/static/*.css text working-tree-encoding=UTF-8-BOM eol=lf
+frontend/static/*.js text eol=lf
+frontend/*.html text eol=lf
+frontend/static/*.css text eol=lf
 
 *.png binary
 *.jpg binary

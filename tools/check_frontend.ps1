@@ -14,6 +14,7 @@ $defaultTargets = @(
   "frontend/static/app.shared.js",
   "frontend/static/app.api.js",
   "frontend/static/app.js",
+  "frontend/static/features/naver-blog/page.js",
   "frontend/index.html",
   "backend/app.py",
   "WORKFLOW.md"
@@ -28,9 +29,14 @@ if ($Files -and $Files.Count -gt 0) {
 function Assert-Utf8Integrity([string]$Path) {
   $bytes = [System.IO.File]::ReadAllBytes($Path)
   $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
-  $expectsBom = $Path -like "*frontend\static\*.js" -or
-                $Path -like "*frontend\static\*.css" -or
-                $Path -like "*frontend\*.html"
+  $relativePath = [System.IO.Path]::GetRelativePath($ProjectRoot, $Path).Replace("/", "\")
+  $expectsBom = $relativePath -in @(
+    "frontend\static\app.shared.js",
+    "frontend\static\app.api.js",
+    "frontend\static\app.js",
+    "frontend\static\styles.css",
+    "frontend\index.html"
+  )
   if ($expectsBom -and -not $hasBom) {
     throw "UTF-8 BOM missing: $Path"
   }
