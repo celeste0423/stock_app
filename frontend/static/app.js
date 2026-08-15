@@ -16,18 +16,33 @@
   const DISCLOSURE_PAGE_STATE_VERSION = 5;
   const WINDOW_TITLE_DETAIL_EVENT = "stock-dashboard:title-detail";
   const PAGE_NAV_EVENT = "stock-dashboard:navigate-page";
+  const TAB_ORDER_KEY = "stock-dashboard:tab-order-v1";
   const THEME_STOCK_NAV_KEY = "stock-dashboard:theme-stock-navigation";
   const TELEGRAM_STOCK_NAV_KEY = "stock-dashboard:telegram-stock-navigation";
+  const GLOBAL_STOCK_NAV_KEY = "stock-dashboard:global-stock-navigation";
+  const GLOBAL_STOCK_NAV_EVENT = "stock-dashboard:global-stock-navigation";
+  const AUTO_DAILY_THEME_BUILD_KEY = "stock-dashboard:auto-daily-theme-build-v1";
+  const AUTO_DAILY_THEME_BUILD_EVENT = "stock-dashboard:auto-daily-theme-build";
+  const PAIR_CORRELATION_KEY = "stock-dashboard:pair-correlation-state";
+  const ETF_FLOW_PAGE_KEY = "stock-dashboard:etf-flow-page-state";
+  const SUBSCRIPTION_LIST_KEY = "stock-dashboard:subscription-list-state";
+  const SUBSCRIPTION_RUNTIME_CACHE_KEY = "stock-dashboard:subscription-runtime-cache-v5";
+  const NAVER_BLOG_PAGE_KEY = "stock-dashboard:naver-blog-page-state";
+  const CHART_GAME_STATE_KEY = "stock-dashboard:chart-game-state-v1";
   const PAGE_TITLE_LABELS = {
     "sector-watch": "관심종목 보드",
     "themes": "오늘의 주도주",
+    "chart-game": "차트 게임",
     "global-themes": "미국 주도주",
     "asia-themes": "아시아 주도주",
     "telegram": "종목 정보 검색기",
     "disclosure": "공시/실적",
     "stock-news": "뉴스 검색기",
     "global-company": "해외기업 검색기",
+    "pair-correlation": "주가 상관관계",
+    "etf-flow": "ETF 자금 추정",
     "global-indices": "지수/가격동향",
+    "institutional-rebalance": "기관 리밸런싱 추정",
     "portfolio": "포트폴리오 수익",
     "sector-entry": "섹터 진입 신호",
     "sector-snapshot": "섹터 비교 테이블",
@@ -35,15 +50,67 @@
     "economy-cycle": "경기순환",
     "strategy-backtest": "전략 백테스트",
     "market-calendar": "증시 일정",
+    "naver-blog": "네이버 블로그 브리핑",
     "real-estate-prices": "부동산 가격",
+    "subscription-list": "아파트 청약 리스트",
     "building-management": "건물 관리",
     "next": "추가 예정 페이지",
   };
   const ACTIVE_API_REQUESTS = {};
 
+  function getStockAppModule(name) {
+    const modules = window.StockAppModules || {};
+    return modules[name] || {};
+  }
+
   function requestPageNavigation(page, detail) {
     const payload = Object.assign({ page: page }, detail || {});
     window.dispatchEvent(new CustomEvent(PAGE_NAV_EVENT, { detail: payload }));
+  }
+
+  function moveArrayItem(items, fromIndex, toIndex) {
+    const list = Array.isArray(items) ? items.slice() : [];
+    if (fromIndex < 0 || toIndex < 0 || fromIndex >= list.length || toIndex >= list.length || fromIndex === toIndex) {
+      return list;
+    }
+    const removed = list.splice(fromIndex, 1);
+    if (!removed.length) {
+      return list;
+    }
+    list.splice(toIndex, 0, removed[0]);
+    return list;
+  }
+
+  function normalizeTabOrder(savedOrder, defaultKeys) {
+    const defaults = Array.isArray(defaultKeys) ? defaultKeys.filter(Boolean) : [];
+    const seen = {};
+    const ordered = [];
+    ensureArray(savedOrder).forEach(function (key) {
+      const text = String(key || "").trim();
+      if (!text || seen[text] || defaults.indexOf(text) < 0) {
+        return;
+      }
+      seen[text] = true;
+      ordered.push(text);
+    });
+    defaults.forEach(function (key) {
+      if (!seen[key]) {
+        seen[key] = true;
+        ordered.push(key);
+      }
+    });
+    return ordered;
+  }
+
+  function isEditableHotkeyTarget(target) {
+    if (!target) {
+      return false;
+    }
+    const tag = String(target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") {
+      return true;
+    }
+    return !!target.isContentEditable;
   }
 
   function stashThemeStockNavigation(query) {
@@ -80,8 +147,97 @@
       return null;
     }
   }
+
+  function stashGlobalStockNavigation(payload) {
+    const symbol = String((payload && payload.symbol) || "").trim().toUpperCase();
+    const name = String((payload && payload.name) || "").trim();
+    const query = String((payload && payload.query) || "").trim();
+    if (!symbol && !name && !query) {
+      return;
+    }
+    try {
+      sessionStorage.setItem(GLOBAL_STOCK_NAV_KEY, JSON.stringify({
+        symbol: symbol,
+        name: name,
+        query: query,
+      }));
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(GLOBAL_STOCK_NAV_EVENT));
+      }
+    } catch (error) {
+    }
+  }
+
+  function consumeGlobalStockNavigation() {
+    try {
+      const raw = sessionStorage.getItem(GLOBAL_STOCK_NAV_KEY);
+      if (!raw) {
+        return null;
+      }
+      sessionStorage.removeItem(GLOBAL_STOCK_NAV_KEY);
+      return JSON.parse(raw);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function openStockInGlobalCompany(row) {
+    const symbol = String((row && row.stock_code) || "").trim().toUpperCase();
+    const stockName = String((row && row.stock_name) || "").trim();
+    const displayQuery = stockName
+      ? stockName + (symbol ? " (" + symbol + ")" : "")
+      : symbol;
+    if (!displayQuery) {
+      return;
+    }
+    const previousState = loadGlobalCompanyState() || {};
+    persistGlobalCompanyState(Object.assign({}, previousState, {
+      query: displayQuery,
+      selected: symbol || stockName ? { symbol: symbol, name: stockName || symbol } : null,
+      detail: null,
+      aiBrief: null,
+    }));
+    stashGlobalStockNavigation({
+      symbol: symbol,
+      name: stockName,
+      query: displayQuery,
+    });
+    requestPageNavigation("global-company");
+  }
   const CHART_PREVIEW_CACHE = {};
+  const TARGET_HISTORY_CACHE = {};
+  const PORTFOLIO_AUTOCOMPLETE_SOURCE_CACHE = {
+    kr: null,
+    us: null,
+  };
   let API_REQUEST_SEQ = 0;
+
+  function loadChartGameState() {
+    try {
+      const raw = localStorage.getItem(CHART_GAME_STATE_KEY);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function persistChartGameState(payload) {
+    try {
+      localStorage.setItem(CHART_GAME_STATE_KEY, JSON.stringify(payload || {}));
+    } catch (error) {
+    }
+  }
+
+  function clearChartGameState() {
+    try {
+      localStorage.removeItem(CHART_GAME_STATE_KEY);
+    } catch (error) {
+    }
+  }
 
   function installDomMutationGuard() {
     if (!window.Node || window.__stockDashboardDomMutationGuard) {
@@ -101,6 +257,24 @@
 
   function compactTitleText(value) {
     return String(value || "").replace(/\s+/g, " ").trim().slice(0, 48);
+  }
+
+  function normalizeLooseSearchText(value) {
+    return String(value || "").toLowerCase().replace(/[\s\-_·•.,:/\\()\[\]{}<>|]+/g, "");
+  }
+
+  function normalizeNaverBlogName(value) {
+    let text = String(value || "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return "";
+    }
+    if (text.indexOf("네이버 블로그 | ") === 0) {
+      text = text.slice("네이버 블로그 | ".length).trim();
+    } else if (text.indexOf("NAVER Blog | ") === 0) {
+      text = text.slice("NAVER Blog | ".length).trim();
+    }
+    text = text.replace(/\s*[:|]\s*(?:네이버 블로그|NAVER Blog)\s*$/i, "").trim();
+    return text;
   }
 
   function emitWindowTitleDetail(page, detail) {
@@ -140,6 +314,26 @@
     return numberFormat(number, digits == null ? 2 : digits) + "%";
   }
 
+  function normalizeTimestampMs(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) {
+      return Date.now();
+    }
+    return number < 100000000000 ? Math.round(number * 1000) : Math.round(number);
+  }
+
+  function formatDateTimeShort(value) {
+    const timestamp = normalizeTimestampMs(value);
+    return new Intl.DateTimeFormat("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date(timestamp));
+  }
+
   function formatCurrency(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) {
@@ -152,11 +346,110 @@
     }).format(number);
   }
 
+  function formatMoneyByCurrency(value, currency, compact) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "-";
+    }
+    const normalizedCurrency = String(currency || "KRW").toUpperCase();
+    try {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: normalizedCurrency,
+        notation: compact ? "compact" : "standard",
+        maximumFractionDigits: compact ? 2 : 0,
+      }).format(number);
+    } catch (error) {
+      return (normalizedCurrency === "KRW" ? "₩" : normalizedCurrency + " ") + numberFormat(number, compact ? 2 : 0);
+    }
+  }
+
+  function formatMoneyByCurrencyKoreanCompact(value, currency) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "-";
+    }
+    const normalizedCurrency = String(currency || "KRW").toUpperCase();
+    if (normalizedCurrency !== "KRW") {
+      return formatMoneyByCurrency(number, normalizedCurrency, true);
+    }
+    const abs = Math.abs(number);
+    const sign = number < 0 ? "-" : "";
+    if (abs >= 100000000) {
+      const eok = abs / 100000000;
+      return sign + numberFormat(eok >= 10 ? Math.round(eok) : eok, eok >= 10 ? 0 : 2) + "억 원";
+    }
+    if (abs >= 10000) {
+      const man = abs / 10000;
+      return sign + numberFormat(man >= 1000 ? Math.round(man) : man, man >= 1000 ? 0 : 1) + "만 원";
+    }
+    return sign + numberFormat(abs, 0) + "원";
+  }
+
   function formatDateLabel(value) {
     if (!value) {
       return "";
     }
     return String(value).slice(5).replace("-", "/");
+  }
+
+  function formatYearMonthLabel(value) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})/);
+    if (!match) {
+      return "";
+    }
+    return match[1] + "/" + match[2];
+  }
+
+  function shiftIsoDate(dateText, deltaDays) {
+    if (!dateText) {
+      return "";
+    }
+    const base = new Date(String(dateText).slice(0, 10) + "T00:00:00");
+    if (Number.isNaN(base.getTime())) {
+      return "";
+    }
+    base.setDate(base.getDate() + Number(deltaDays || 0));
+    return base.getFullYear() + "-" + String(base.getMonth() + 1).padStart(2, "0") + "-" + String(base.getDate()).padStart(2, "0");
+  }
+
+  function mergeScoreHistoryPayloadRows(currentPayload, olderPayload) {
+    const currentRows = ensureArray(currentPayload && currentPayload.rows);
+    const olderRows = ensureArray(olderPayload && olderPayload.rows);
+    const mergedMap = {};
+    olderRows.forEach(function (item) {
+      if (item && item.date) {
+        mergedMap[String(item.date)] = item;
+      }
+    });
+    currentRows.forEach(function (item) {
+      if (item && item.date) {
+        mergedMap[String(item.date)] = item;
+      }
+    });
+    const mergedRows = Object.keys(mergedMap).sort().map(function (key) { return mergedMap[key]; });
+    return Object.assign({}, currentPayload || {}, olderPayload || {}, {
+      rows: mergedRows,
+      start_date: mergedRows.length ? String(mergedRows[0].date || (olderPayload && olderPayload.start_date) || "") : ((olderPayload && olderPayload.start_date) || (currentPayload && currentPayload.start_date) || ""),
+      end_date: currentPayload && currentPayload.end_date ? currentPayload.end_date : (olderPayload && olderPayload.end_date),
+      summary: currentPayload && currentPayload.summary ? currentPayload.summary : (olderPayload && olderPayload.summary),
+      stock_code: (currentPayload && currentPayload.stock_code) || (olderPayload && olderPayload.stock_code) || "",
+      stock_name: (currentPayload && currentPayload.stock_name) || (olderPayload && olderPayload.stock_name) || "",
+    });
+  }
+
+  function renderHighDrawdownPercent(row) {
+    const rawDistance = row && row.pct_to_52w_high;
+    if (rawDistance === null || rawDistance === undefined || rawDistance === "") {
+      return "-";
+    }
+    const distance = Number(rawDistance);
+    const tradingValue = Number((row && row.trading_value_100m) || 0);
+    if (!Number.isFinite(distance) || tradingValue <= 0) {
+      return "-";
+    }
+    const drawdown = distance <= 0 ? 0 : -((distance / (100 + distance)) * 100);
+    return h("span", null, formatPercent(drawdown, 2));
   }
 
   function formatNumber(value, digits) {
@@ -238,6 +531,25 @@
         return Number.isFinite(Number(row[key]));
       });
     });
+    const targetSeries = ensureArray(props.targetSeries);
+    const targetByDate = {};
+    targetSeries.forEach(function (row) {
+      const dateKey = String(row.date || "").slice(0, 10);
+      if (dateKey && Number.isFinite(Number(row.avg_target_price))) {
+        targetByDate[dateKey] = row;
+      }
+    });
+    const targetReportMap = {};
+    ensureArray(props.targetReports).forEach(function (row) {
+      const dateKey = String(row.report_date || "").slice(0, 10);
+      if (!dateKey || !Number.isFinite(Number(row.target_price))) {
+        return;
+      }
+      if (!targetReportMap[dateKey]) {
+        targetReportMap[dateKey] = [];
+      }
+      targetReportMap[dateKey].push(row);
+    });
     const markerByDate = {};
     ensureArray(props.markers).forEach(function (marker) {
       const dateKey = String(marker.date || "").slice(0, 10);
@@ -245,18 +557,28 @@
         markerByDate[dateKey] = marker;
       }
     });
-    const width = 318;
-    const height = 142;
-    const pad = { top: 10, right: 46, bottom: 22, left: 10 };
+    const width = 336;
+    const height = 176;
+    const pad = { top: 6, right: 40, bottom: 14, left: 4 };
     const chartWidth = width - pad.left - pad.right;
     const chartHeight = height - pad.top - pad.bottom;
     const lows = rows.map(function (row) { return Number(row.low); }).filter(Number.isFinite);
     const highs = rows.map(function (row) { return Number(row.high); }).filter(Number.isFinite);
+    const targetValues = rows
+      .map(function (row) {
+        const targetRow = targetByDate[String(row.date || "").slice(0, 10)];
+        return targetRow ? Number(targetRow.avg_target_price) : null;
+      })
+      .filter(Number.isFinite);
     if (!rows.length || !lows.length || !highs.length) {
       return h("div", { className: "stock-chart-empty" }, "차트 데이터 없음");
     }
     let minPrice = Math.min.apply(null, lows);
     let maxPrice = Math.max.apply(null, highs);
+    if (targetValues.length) {
+      minPrice = Math.min(minPrice, Math.min.apply(null, targetValues));
+      maxPrice = Math.max(maxPrice, Math.max.apply(null, targetValues));
+    }
     if (minPrice === maxPrice) {
       minPrice *= 0.98;
       maxPrice *= 1.02;
@@ -274,7 +596,23 @@
     const closePoints = rows.map(function (row, index) {
       return { x: x(index), y: y(row.close) };
     });
+    const targetPoints = rows
+      .map(function (row, index) {
+        const targetRow = targetByDate[String(row.date || "").slice(0, 10)];
+        if (!targetRow) {
+          return null;
+        }
+        return {
+          x: x(index),
+          y: y(Number(targetRow.avg_target_price)),
+          row: targetRow,
+        };
+      })
+      .filter(Boolean);
     const closeLine = closePoints.map(function (point) {
+      return point.x.toFixed(1) + "," + point.y.toFixed(1);
+    }).join(" ");
+    const targetLine = targetPoints.map(function (point) {
       return point.x.toFixed(1) + "," + point.y.toFixed(1);
     }).join(" ");
     const areaPath = closePoints.length
@@ -317,6 +655,32 @@
           h("rect", { x: itemX - candleWidth / 2, y: topY, width: candleWidth, height: bodyHeight, rx: 1 })
         );
       }),
+      targetPoints.length ? h("polyline", { points: targetLine, className: "stock-chart-target-line" }) : null,
+      targetPoints.map(function (point, index) {
+        const rowDate = String((point.row && point.row.date) || "").slice(0, 10);
+        const reports = ensureArray(targetReportMap[rowDate]);
+        const title = reports.length
+          ? reports.map(function (report) {
+              const brokerName = report.broker_short_name || report.broker_name || "-";
+              return [
+                report.report_date || rowDate,
+                brokerName,
+                report.report_title || "",
+                "목표가 " + numberFormat(report.target_price, 0),
+              ].filter(Boolean).join(" · ");
+            }).join("\n")
+          : [
+              rowDate,
+              "평균 목표가 " + numberFormat(point.row.avg_target_price, 0),
+            ].join(" · ");
+        return h(
+          "g",
+          { key: "target-line-point-" + index, className: "stock-target-marker" },
+          h("circle", { cx: point.x, cy: point.y, r: 2.2, className: "stock-target-marker-dot" }),
+          h("circle", { cx: point.x, cy: point.y, r: 7.5, className: "stock-target-marker-hit" }),
+          h("title", null, title)
+        );
+      }),
       h("polyline", { points: closeLine, className: "stock-chart-close-line" }),
       rows.map(function (row, index) {
         const marker = markerByDate[String(row.date || "").slice(0, 10)];
@@ -326,13 +690,14 @@
         const itemX = x(index);
         const itemY = y(row.close);
         const markerType = String(marker.type || marker.marker_type || "entry");
-        const markerLabel = marker.label || (markerType === "buy" ? "매수" : markerType === "sell" ? "매도" : marker.signal_level || "섹터 진입 신호");
+        if (markerType !== "entry" && markerType !== "exit") {
+          return null;
+        }
+        const markerLabel = marker.label || (markerType === "entry" ? "100점 상향 돌파" : "80점 하향 이탈");
         const title = [
           marker.date,
           markerLabel,
-          marker.sector ? "섹터: " + marker.sector : "",
-          marker.trading_rank ? "거래대금 " + marker.trading_rank + "위" : "",
-          marker.avg_score != null ? "평균점수 " + numberFormat(marker.avg_score, 1) : "",
+          marker.score != null ? "종합점수 " + numberFormat(marker.score, 2) : "",
           marker.price != null ? "가격 " + numberFormat(marker.price, 0) : "",
           marker.return_pct != null ? "수익률 " + formatPercent(marker.return_pct, 2) : "",
         ].filter(Boolean).join(" · ");
@@ -345,6 +710,150 @@
         );
       })
     );
+  }
+
+  function StockOverviewTradingChart(props) {
+    const containerRef = useRef(null);
+    const rows = ensureArray(props.rows);
+    const markers = ensureArray(props.markers);
+    const targetSeries = ensureArray(props.targetSeries);
+
+    useEffect(function () {
+      const container = containerRef.current;
+      const lib = window.LightweightCharts;
+      if (!container || !lib) {
+        return undefined;
+      }
+      const candleRows = rows.map(function (row) {
+        const time = String(row.date || row.time || "").slice(0, 10);
+        const open = Number(row.open);
+        const high = Number(row.high);
+        const low = Number(row.low);
+        const close = Number(row.close);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(time) || ![open, high, low, close].every(Number.isFinite)) {
+          return null;
+        }
+        return { time: time, open: open, high: high, low: low, close: close, volume: Number(row.volume || row.trading_volume || 0) };
+      }).filter(Boolean).sort(function (left, right) { return left.time.localeCompare(right.time); });
+      if (!candleRows.length) {
+        return undefined;
+      }
+      container.innerHTML = "";
+      const chart = lib.createChart(container, {
+        width: Math.max(container.clientWidth || 0, 320),
+        height: Math.max(container.clientHeight || 0, 250),
+        layout: {
+          background: { color: "#f8fafc" },
+          textColor: "#64748b",
+          fontFamily: "\"Segoe UI\", \"Apple SD Gothic Neo\", sans-serif",
+        },
+        grid: { vertLines: { color: "#e7edf5" }, horzLines: { color: "#e7edf5" } },
+        crosshair: { mode: lib.CrosshairMode ? lib.CrosshairMode.Normal : 0 },
+        rightPriceScale: {
+          visible: true,
+          borderColor: "#d7dee8",
+          scaleMargins: { top: 0.08, bottom: 0.25 },
+        },
+        timeScale: {
+          borderColor: "#d7dee8",
+          timeVisible: false,
+          secondsVisible: false,
+          rightOffset: 2,
+          barSpacing: 7,
+        },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+        localization: {
+          locale: "ko-KR",
+          priceFormatter: function (value) { return numberFormat(value, 0); },
+        },
+      });
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: "#ef4444",
+        downColor: "#3b82f6",
+        borderUpColor: "#ef4444",
+        borderDownColor: "#3b82f6",
+        wickUpColor: "#ef4444",
+        wickDownColor: "#3b82f6",
+        priceLineVisible: true,
+        lastValueVisible: true,
+      });
+      candleSeries.setData(candleRows.map(function (row) {
+        return { time: row.time, open: row.open, high: row.high, low: row.low, close: row.close };
+      }));
+      const volumeSeries = chart.addHistogramSeries({
+        priceScaleId: "volume",
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceFormat: { type: "volume" },
+      });
+      volumeSeries.setData(candleRows.map(function (row) {
+        return {
+          time: row.time,
+          value: Number.isFinite(row.volume) ? row.volume : 0,
+          color: row.close >= row.open ? "rgba(239, 68, 68, 0.42)" : "rgba(59, 130, 246, 0.42)",
+        };
+      }));
+      chart.priceScale("volume").applyOptions({ visible: false, scaleMargins: { top: 0.8, bottom: 0 } });
+
+      const validTargets = targetSeries.map(function (row) {
+        const time = String(row.date || "").slice(0, 10);
+        const value = Number(row.avg_target_price);
+        return /^\d{4}-\d{2}-\d{2}$/.test(time) && Number.isFinite(value) ? { time: time, value: value } : null;
+      }).filter(Boolean).sort(function (left, right) { return left.time.localeCompare(right.time); });
+      if (validTargets.length) {
+        const targetLine = chart.addLineSeries({
+          color: "#16a34a",
+          lineWidth: 2,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: true,
+          title: "평균 목표가",
+        });
+        targetLine.setData(validTargets);
+      }
+
+      const markerRows = markers.map(function (marker) {
+        const time = String(marker.date || "").slice(0, 10);
+        const type = String(marker.type || marker.marker_type || "entry");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(time) || (type !== "entry" && type !== "exit")) {
+          return null;
+        }
+        return {
+          time: time,
+          position: type === "entry" ? "belowBar" : "aboveBar",
+          color: type === "entry" ? "#16a34a" : "#dc2626",
+          shape: type === "entry" ? "arrowUp" : "arrowDown",
+          text: type === "entry" ? "진입" : "편출",
+        };
+      }).filter(Boolean).sort(function (left, right) { return left.time.localeCompare(right.time); });
+      if (markerRows.length && typeof candleSeries.setMarkers === "function") {
+        candleSeries.setMarkers(markerRows);
+      }
+      chart.timeScale().fitContent();
+
+      const resize = function () {
+        chart.applyOptions({
+          width: Math.max(container.clientWidth || 0, 320),
+          height: Math.max(container.clientHeight || 0, 250),
+        });
+      };
+      let observer = null;
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(resize);
+        observer.observe(container);
+      }
+      window.addEventListener("resize", resize);
+      return function () {
+        window.removeEventListener("resize", resize);
+        if (observer) {
+          observer.disconnect();
+        }
+        chart.remove();
+      };
+    }, [rows, markers, targetSeries]);
+
+    return h("div", { className: "stock-overview-trading-chart", ref: containerRef });
   }
 
   function StockChartPreview(props) {
@@ -386,16 +895,130 @@
                 h("div", { className: "stock-chart-fallback-note" }, "서버 차트 대신 TradingView 미리보기")
               )
             : h("div", { className: "stock-chart-error" }, props.error)
-          : h(MiniCandlestickChart, { rows: rows, markers: data.entry_markers }),
+          : props.tradingView
+            ? h(StockOverviewTradingChart, {
+                rows: rows,
+                markers: data.entry_markers,
+                targetSeries: props.targetSeries,
+                targetReports: props.targetReports,
+              })
+            : h(MiniCandlestickChart, {
+                rows: rows,
+                markers: data.entry_markers,
+                targetSeries: props.targetSeries,
+                targetReports: props.targetReports,
+              }),
       !props.loading && !props.error
         ? h(
             "div",
             { className: "stock-chart-preview-foot" },
             h("span", null, (summary.start_date || "").slice(5) + " ~ " + (summary.end_date || "").slice(5)),
-            h("span", null, "종가 " + numberFormat(summary.last_close, 0)),
-            ensureArray(data.entry_markers).length
-              ? h("span", { className: "stock-chart-marker-note" }, "초록점 " + numberFormat(ensureArray(data.entry_markers).length, 0) + "회")
-              : null
+            h("span", null, "종가 " + numberFormat(summary.last_close, 0))
+          )
+        : null
+    );
+  }
+
+  function latestTargetReportRows(targetHistory) {
+    const latestDate = String((targetHistory && targetHistory.latest && targetHistory.latest.date) || "").slice(0, 10);
+    if (!latestDate) {
+      return [];
+    }
+    return ensureArray(targetHistory && targetHistory.recent_reports)
+      .filter(function (row) {
+        return String(row && row.report_date || "").slice(0, 10) === latestDate && Number.isFinite(Number(row && row.target_price));
+      })
+      .sort(function (left, right) {
+        return Number(right.target_price || 0) - Number(left.target_price || 0);
+      });
+  }
+
+  function TargetReportHoverBadge(props) {
+    const reports = ensureArray(props.reports);
+    const title = reports.map(function (report) {
+      const brokerName = report.broker_short_name || report.broker_name || "-";
+      const analystName = report.analyst_name || "";
+      return [
+        report.report_date || "",
+        brokerName,
+        analystName,
+        report.report_title || "",
+        "목표가 " + numberFormat(report.target_price, 0),
+      ].filter(Boolean).join(" · ");
+    }).join("\n");
+    return h(
+      "div",
+      { className: "target-report-hover" },
+      h("span", { className: props.className || "", title: title || props.label }, props.label),
+      reports.length
+        ? h(
+            "div",
+            { className: "target-report-hover-card" },
+            h("div", { className: "target-report-hover-head" }, props.heading || "리포트 상세"),
+            reports.map(function (report, index) {
+              const brokerName = report.broker_short_name || report.broker_name || "-";
+              const analystName = report.analyst_name || "";
+              return h(
+                "div",
+                { key: (report.report_uid || report.report_date || "target-report") + "-" + index, className: "target-report-hover-row" },
+                h("strong", null, brokerName),
+                h("span", null, (analystName ? analystName + " · " : "") + "목표가 " + numberFormat(report.target_price, 0)),
+                report.report_title ? h("span", { className: "target-report-hover-title" }, report.report_title) : null
+              );
+            })
+          )
+        : null
+    );
+  }
+
+  function DividendHistoryDetail(props) {
+    const history = props.history || {};
+    const annualRows = ensureArray(history.annual_rows);
+    const quarterlyRows = ensureArray(history.quarterly_rows);
+    if (!annualRows.length && !quarterlyRows.length) {
+      return null;
+    }
+    function renderDividendMetric(label, value, suffix, digits) {
+      if (!Number.isFinite(Number(value))) {
+        return label + " -";
+      }
+      return label + " " + numberFormat(value, digits || 0) + (suffix || "");
+    }
+    return h(
+      "div",
+      { className: "telegram-dividend-history" },
+      annualRows.length
+        ? h(
+            "div",
+            { className: "telegram-dividend-history-section" },
+            h("div", { className: "telegram-dividend-history-title" }, "최근 2개년"),
+            annualRows.map(function (row, index) {
+              return h(
+                "div",
+                { key: (row.period_label || "annual") + "-" + index, className: "telegram-dividend-history-row" },
+                h("strong", null, row.period_label || row.year || "-"),
+                h("span", null, renderDividendMetric("배당", row.dps, "원", 0)),
+                h("span", null, renderDividendMetric("수익률", row.dividend_yield, "%", 2)),
+                h("span", null, renderDividendMetric("성향", row.payout_ratio, "%", 1))
+              );
+            })
+          )
+        : null,
+      quarterlyRows.length
+        ? h(
+            "div",
+            { className: "telegram-dividend-history-section" },
+            h("div", { className: "telegram-dividend-history-title" }, "분기 배당"),
+            quarterlyRows.map(function (row, index) {
+              return h(
+                "div",
+                { key: (row.period_label || "quarter") + "-" + index, className: "telegram-dividend-history-row" },
+                h("strong", null, row.period_label || "-"),
+                h("span", null, renderDividendMetric("배당", row.dps, "원", 0)),
+                h("span", null, renderDividendMetric("수익률", row.dividend_yield, "%", 2)),
+                h("span", null, renderDividendMetric("성향", row.payout_ratio, "%", 1))
+              );
+            })
           )
         : null
     );
@@ -415,6 +1038,15 @@
 
   function TelegramStockOverviewPanel(props) {
     const payload = props.payload || null;
+    const consensus = (props.consensus && props.consensus.latest) ? props.consensus.latest : null;
+    const targetHistory = props.targetHistory || null;
+    const targetLatest = targetHistory && targetHistory.latest ? targetHistory.latest : null;
+    const dividendHistory = payload && payload.dividend_history ? payload.dividend_history : {};
+    const [dividendOpen, setDividendOpen] = useState(false);
+    const latestTargetReports = latestTargetReportRows(targetHistory);
+    useEffect(function () {
+      setDividendOpen(false);
+    }, [payload && payload.stock_code]);
     if (props.loading) {
       return h("div", { className: "business-segment-panel telegram-stock-overview-panel muted" },
         h("div", { className: "business-segment-title" },
@@ -441,10 +1073,166 @@
       { key: "market_cap", label: "시가총액", value: formatCompactMarketCap100m(payload.market_cap_100m) },
       { key: "per", label: "PER", value: Number.isFinite(Number(payload.per)) ? numberFormat(payload.per, 2) : "-" },
       { key: "pbr", label: "PBR", value: Number.isFinite(Number(payload.pbr)) ? numberFormat(payload.pbr, 2) : "-" },
+      { key: "forward_per", label: "Forward PER", value: Number.isFinite(Number((consensus && consensus.forward_per) || payload.forward_per)) ? numberFormat((consensus && consensus.forward_per) || payload.forward_per, 2) : "-" },
+      { key: "forward_pbr", label: "Forward PBR", value: Number.isFinite(Number((consensus && consensus.forward_pbr) || payload.forward_pbr)) ? numberFormat((consensus && consensus.forward_pbr) || payload.forward_pbr, 2) : "-" },
       { key: "foreign", label: "외국인 비율", value: Number.isFinite(Number(payload.foreign_ownership_pct)) ? numberFormat(payload.foreign_ownership_pct, 2) + "%" : "-" },
       { key: "dividend_yield", label: "배당수익률", value: Number(payload.dividend_yield) > 0 ? numberFormat(payload.dividend_yield, 2) + "%" : "무배당" },
       { key: "payout_ratio", label: "배당성향", value: Number(payload.payout_ratio) > 0 ? numberFormat(payload.payout_ratio, 1) + "%" : "무배당" },
     ];
+    const indexMembership = payload.index_membership || {};
+    const includedIndices = ensureArray(indexMembership.included || []);
+    const candidateIndices = ensureArray(indexMembership.candidates || []);
+    const warningProjection = payload.warning_projection || {};
+    const warningEstimates = ensureArray(warningProjection.estimates || []);
+    const warningCalculation = warningProjection.calculation || {};
+    const hasScheduledWarning = Boolean(warningProjection.scheduled_label);
+    const currentWarningLevel = String(warningProjection.current_level || "").trim();
+    const warningEstimateByKey = {};
+    warningEstimates.forEach(function (item) {
+      if (item && item.key) {
+        warningEstimateByKey[String(item.key)] = item;
+      }
+    });
+    const nextWarningKey = currentWarningLevel === "risk"
+      ? ""
+      : currentWarningLevel === "warning"
+        ? "risk"
+        : (currentWarningLevel === "warning_notice" || hasScheduledWarning)
+          ? "warning"
+          : "warning_notice";
+    const nearestWarningEstimate = nextWarningKey ? warningEstimateByKey[nextWarningKey] : null;
+    const visibleWarningEstimates = nearestWarningEstimate ? [nearestWarningEstimate] : [];
+    function renderDetailPanel() {
+      if (detailLoading) {
+        return h("div", { className: "panel subscription-detail-panel" }, h(LoadingBlock, { compact: true, title: "상세 데이터 로딩 중", label: "청약 상세와 실거래가 분석을 불러오고 있습니다." }));
+      }
+      if (!selectedItem) {
+        return h("div", { className: "panel subscription-detail-panel" }, h(EmptyState, { message: "왼쪽 목록에서 청약을 선택해 주세요." }));
+      }
+      if (detail && detail.error) {
+        return h("div", { className: "panel subscription-detail-panel" }, h("div", { className: "notice-box error" }, detail.error));
+      }
+
+      var currentTrade = (detail && detail.current_trade) || {};
+      var currentItem = (detail && detail.item) || selectedItem;
+      var modelSummary = (detail && detail.model_summary) || {};
+      var competition = (detail && detail.competition) || {};
+      var specialRequestStatus = (detail && detail.special_request_status) || {};
+      var winningScores = (detail && detail.winning_scores) || {};
+      var complexInfo = (detail && detail.complex_info) || null;
+      var complexHistory = ensureArray(detail && detail.complex_history);
+      var complexAliases = ensureArray(detail && detail.complex_aliases);
+      var specialEntries = specialBreakdownEntries(currentItem);
+      var tradeRows = ensureArray(currentTrade.sample_trades);
+      var competitionSummaryRows = ensureArray(competition.summary);
+      var specialRequestRows = ensureArray(specialRequestStatus.rows);
+      var scoreRows = ensureArray(winningScores.rows);
+
+      return h(
+        "div",
+        { className: "subscription-detail-stack" },
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h("div", { className: "subscription-detail-head" },
+            h("div", null,
+              h("h2", null, currentItem.name || "-"),
+              h("p", { className: "subscription-detail-subtitle" }, [currentItem.region, currentItem.district, currentItem.saleType, currentItem.announcementDate].filter(Boolean).join(" · "))
+            ),
+            currentItem.url ? h("a", { className: "secondary-button subscription-link-button", href: currentItem.url, target: "_blank", rel: "noreferrer" }, "청약홈 공고") : null
+          ),
+          h("div", { className: "subscription-detail-metrics" },
+            h(SummaryCard, { label: "84㎡ 분양가", value: currentItem.private84PriceEok ? numberFormat(currentItem.private84PriceEok, 2) + "억" : "-" }),
+            h(SummaryCard, { label: "추정 현재가", value: currentTrade.ok && currentTrade.latest_price_eok != null ? numberFormat(currentTrade.latest_price_eok, 2) + "억" : "-", help: currentTrade.ok ? (currentTrade.latest_trade_date || currentTrade.message || "") : (currentTrade.message || "매칭 실패") }),
+            h(SummaryCard, { label: "예상 차익", value: currentTrade.ok && currentTrade.estimated_gain_eok != null ? numberFormat(currentTrade.estimated_gain_eok, 2) + "억" : "-", className: currentTrade.ok ? metricDeltaClass(currentTrade.estimated_gain_eok) : "" }),
+            h(SummaryCard, { label: "차익률", value: currentTrade.ok && currentTrade.estimated_gain_pct != null ? numberFormat(currentTrade.estimated_gain_pct, 1) + "%" : "-" })
+          ),
+          h("div", { className: "subscription-detail-grid" },
+            h("div", null, h("span", null, "접수"), h("strong", null, (currentItem.applicationStart || "-") + " ~ " + (currentItem.applicationEnd || "-"))),
+            h("div", null, h("span", null, "총 세대수"), h("strong", null, numberFormat(currentItem.supplyHouseholds, 0) + "세대")),
+            h("div", null, h("span", null, "특공 비중"), h("strong", null, numberFormat(modelSummary.special_ratio || currentItem.specialSupplyRatio, 1) + "%")),
+            h("div", null, h("span", null, "입주 예정"), h("strong", null, currentItem.moveInMonth || "-")),
+            h("div", null, h("span", null, "위치"), h("strong", null, currentItem.address || "-")),
+            h("div", null, h("span", null, "상태"), h("strong", null, phaseLabel(currentItem)))
+          ),
+          currentTrade.ok ? h("div", { className: "subscription-inline-note subtle" }, (currentTrade.match_mode || "exact") + " 매칭 · 지역 평균 " + (currentTrade.district_average_price_eok != null ? numberFormat(currentTrade.district_average_price_eok, 2) + "억" : "-")) : null
+        ),
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h("div", { className: "section-toolbar compact" },
+            h(SectionTitle, null, "특별공급 구성"),
+            h("span", { className: "summary-help" }, currentItem.specialSupplyRatio ? "총 특별공급 " + numberFormat(currentItem.specialSupplyRatio, 1) + "%" : "")
+          ),
+          specialEntries.length
+            ? h("div", { className: "subscription-special-grid" }, specialEntries.map(function (entry) {
+                return h(
+                  "div",
+                  { key: entry.label, className: "subscription-special-card" },
+                  h("strong", null, entry.label),
+                  h("span", null, "전체 " + numberFormat(entry.ratioTotal, 1) + "%"),
+                  h("span", null, "특공 내 " + numberFormat(entry.ratioSpecial, 1) + "%"),
+                  h("em", null, numberFormat(entry.count, 0) + "세대")
+                );
+              }))
+            : h(EmptyState, { compact: true, message: "특별공급 비중 데이터가 없습니다." })
+        ),
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h("div", { className: "section-toolbar compact" },
+            h(SectionTitle, null, "생애최초 케이스 스터디"),
+            h("span", { className: "summary-help" }, briefLoading ? "Gemini 분석 중" : "선택 즉시 자동 분석")
+          ),
+          currentTrade.ok
+            ? h("div", { className: "subscription-case-grid" },
+                h("div", { className: "subscription-case-card" }, h("span", null, "분양가"), h("strong", null, numberFormat(currentTrade.subscription_price_eok, 2) + "억")),
+                h("div", { className: "subscription-case-card" }, h("span", null, "추정 현재가"), h("strong", { className: metricDeltaClass(currentTrade.estimated_gain_eok) }, numberFormat(currentTrade.latest_price_eok, 2) + "억")),
+                h("div", { className: "subscription-case-card" }, h("span", null, "예상 차익"), h("strong", { className: metricDeltaClass(currentTrade.estimated_gain_eok) }, numberFormat(currentTrade.estimated_gain_eok, 2) + "억")),
+                h("div", { className: "subscription-case-card" }, h("span", null, "실거래 샘플"), h("strong", null, numberFormat(currentTrade.matched_trade_count, 0) + "건")),
+                h("div", { className: "subscription-case-card" }, h("span", null, "지역 평균 시세"), h("strong", { className: metricDeltaClass(currentTrade.district_average_gain_eok) }, currentTrade.district_average_price_eok != null ? numberFormat(currentTrade.district_average_price_eok, 2) + "억" : "-")),
+                h("div", { className: "subscription-case-card" }, h("span", null, "지역 평균 차익"), h("strong", { className: metricDeltaClass(currentTrade.district_average_gain_eok) }, currentTrade.district_average_gain_eok != null ? numberFormat(currentTrade.district_average_gain_eok, 2) + "억" : "-")),
+                h("div", { className: "subscription-case-card" }, h("span", null, "지역 평균 차익률"), h("strong", { className: metricDeltaClass(currentTrade.district_average_gain_eok) }, currentTrade.district_average_gain_pct != null ? numberFormat(currentTrade.district_average_gain_pct, 1) + "%" : "-")),
+                h("div", { className: "subscription-case-card" }, h("span", null, "지역 거래건수"), h("strong", null, numberFormat(currentTrade.district_trade_count, 0) + "건"))
+              )
+            : h("div", { className: "notice-box compact" }, currentTrade.message || "현재 시세 추정값이 없습니다."),
+          brief && brief.error ? h("div", { className: "notice-box compact" }, brief.error) : null,
+          brief && brief.brief
+            ? h("div", { className: "subscription-ai-brief" },
+                h("p", { className: "subscription-ai-summary" }, brief.brief.summary || ""),
+                ensureArray(brief.brief.strengths).length ? h("div", null, h("strong", null, "강점"), h("ul", null, ensureArray(brief.brief.strengths).map(function (item, index) { return h("li", { key: "s-" + index }, item); }))) : null,
+                ensureArray(brief.brief.price_gap_view).length ? h("div", null, h("strong", null, "시세차익 포인트"), h("ul", null, ensureArray(brief.brief.price_gap_view).map(function (item, index) { return h("li", { key: "p-" + index }, item); }))) : null,
+                ensureArray(brief.brief.life_first_view).length ? h("div", null, h("strong", null, "생애최초 관점"), h("ul", null, ensureArray(brief.brief.life_first_view).map(function (item, index) { return h("li", { key: "l-" + index }, item); }))) : null,
+                ensureArray(brief.brief.risks).length ? h("div", null, h("strong", null, "리스크"), h("ul", null, ensureArray(brief.brief.risks).map(function (item, index) { return h("li", { key: "r-" + index }, item); }))) : null
+              )
+            : h("div", { className: "summary-help" }, "청약을 클릭하면 분양가, 최근 실거래, 경쟁률을 기준으로 Gemini가 특징을 바로 정리합니다.")
+        ),
+        h("section", { className: "panel subscription-detail-panel" }, h(SectionTitle, null, "주택형 상세"), h(DataTable, { rows: ensureArray(detail && detail.models), columns: modelColumns, compact: true, emptyMessage: "주택형 상세가 없습니다." })),
+        h("section", { className: "panel subscription-detail-panel" }, h(SectionTitle, null, "경쟁률 요약"), competitionSummaryRows.length ? h(DataTable, { rows: competitionSummaryRows, columns: competitionSummaryColumns, compact: true, emptyMessage: "경쟁률 데이터가 없습니다." }) : h(EmptyState, { compact: true, message: "경쟁률 데이터가 아직 공개되지 않았습니다." })),
+        h("section", { className: "panel subscription-detail-panel" }, h(SectionTitle, null, "특별공급 신청현황"), specialRequestRows.length ? h(DataTable, { rows: specialRequestRows, columns: specialRequestColumns, compact: true, emptyMessage: "특별공급 신청현황이 없습니다." }) : h(EmptyState, { compact: true, message: "특별공급 신청현황 데이터가 없습니다." })),
+        h("section", { className: "panel subscription-detail-panel" }, h(SectionTitle, null, "당첨 가점"), scoreRows.length ? h(DataTable, { rows: scoreRows, columns: scoreColumns, compact: true, emptyMessage: "당첨 가점 데이터가 없습니다." }) : h(EmptyState, { compact: true, message: "당첨 가점 데이터가 아직 공개되지 않았습니다." })),
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h(SectionTitle, null, "단지 식별정보"),
+          complexInfo
+            ? h("div", { className: "subscription-detail-grid" },
+                h("div", null, h("span", null, "단지 PK"), h("strong", null, complexInfo.complexPk || "-")),
+                h("div", null, h("span", null, "공시가격명"), h("strong", null, complexInfo.namePrice || "-")),
+                h("div", null, h("span", null, "건축물대장명"), h("strong", null, complexInfo.nameLedger || "-")),
+                h("div", null, h("span", null, "도로명주소명"), h("strong", null, complexInfo.nameRoad || "-")),
+                h("div", null, h("span", null, "동 수"), h("strong", null, complexInfo.dongCount != null ? numberFormat(complexInfo.dongCount, 0) : "-")),
+                h("div", null, h("span", null, "세대수"), h("strong", null, complexInfo.unitCount != null ? numberFormat(complexInfo.unitCount, 0) : "-")),
+                h("div", null, h("span", null, "사용승인일"), h("strong", null, complexInfo.useApprovalDate || "-"))
+              )
+            : h("div", { className: "notice-box compact" }, "실거래가 매칭용 단지 식별정보를 찾지 못했습니다."),
+          complexAliases.length ? h("div", { className: "subscription-inline-note subtle" }, "매칭에 사용한 단지명: " + complexAliases.join(", ")) : null,
+          complexHistory.length ? h(DataTable, { rows: complexHistory, columns: complexHistoryColumns, compact: true, emptyMessage: "단지명 이력이 없습니다." }) : null
+        ),
+        h("section", { className: "panel subscription-detail-panel" }, h(SectionTitle, null, "최근 실거래 샘플"), h(DataTable, { rows: tradeRows, columns: tradeColumns, compact: true, emptyMessage: "실거래 샘플이 없습니다." }))
+      );
+    }
+
     return h(
       "div",
       { className: "business-segment-panel telegram-stock-overview-panel" },
@@ -460,24 +1248,818 @@
         h(
           "div",
           { className: "telegram-stock-overview-chart" },
+          targetLatest
+            ? h(
+                "div",
+                { className: "telegram-stock-overview-target-meta" },
+                Number.isFinite(Number(targetHistory && targetHistory.report_count))
+                  ? h("span", { className: "telegram-stock-overview-target-pill" }, "리포트 " + numberFormat(targetHistory.report_count, 0) + "건")
+                  : null,
+                Number.isFinite(Number(targetLatest.gap_pct))
+                  ? h("span", { className: "telegram-stock-overview-target-pill" }, "괴리율 " + formatPercent(targetLatest.gap_pct, 1))
+                  : null,
+                Number.isFinite(Number(targetLatest.avg_target_price))
+                  ? h(TargetReportHoverBadge, {
+                      className: "telegram-stock-overview-target-pill subtle",
+                      label: "평균 목표가 " + numberFormat(targetLatest.avg_target_price, 0),
+                      heading: (targetLatest.date || "최근") + " 리포트 상세",
+                      reports: latestTargetReports,
+                    })
+                  : null
+              )
+            : null,
           h(StockChartPreview, {
             label: payload.stock_name || "종목",
             loading: false,
             error: "",
             data: payload.chart,
+            tradingView: true,
+            targetSeries: targetHistory ? targetHistory.series : null,
+            targetReports: targetHistory ? targetHistory.recent_reports : null,
           })
         ),
         h(
           "div",
           { className: "telegram-stock-overview-table" },
-          metricRows.map(function (row) {
+          metricRows.reduce(function (nodes, row) {
+            const isForwardMetric = row.key === "forward_per" || row.key === "forward_pbr";
+            const isDividendMetric = row.key === "dividend_yield" && (ensureArray(dividendHistory.annual_rows).length || ensureArray(dividendHistory.quarterly_rows).length);
+            const rowClickable = (isForwardMetric && typeof props.onOpenForwardConsensus === "function") || isDividendMetric;
+            nodes.push(h(
+              "div",
+              {
+                key: row.key,
+                className: "telegram-stock-overview-row" + (rowClickable ? " clickable" : ""),
+                onClick: rowClickable ? function () {
+                  if (isDividendMetric) {
+                    setDividendOpen(function (current) { return !current; });
+                    return;
+                  }
+                  props.onOpenForwardConsensus();
+                } : null,
+                role: rowClickable ? "button" : null,
+                tabIndex: rowClickable ? 0 : null,
+                onKeyDown: rowClickable ? function (event) {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    if (isDividendMetric) {
+                      setDividendOpen(function (current) { return !current; });
+                      return;
+                    }
+                    props.onOpenForwardConsensus();
+                  }
+                } : null,
+              },
+              h("div", { className: "telegram-stock-overview-key" }, row.label),
+              h("div", { className: "telegram-stock-overview-value" + (row.className ? " " + row.className : "") }, row.value + (isDividendMetric ? (dividendOpen ? "  ▲" : "  ▼") : ""))
+            ));
+            if (isDividendMetric && dividendOpen) {
+              nodes.push(
+                h(
+                  "div",
+                  { key: row.key + "-detail", className: "telegram-stock-overview-row-detail" },
+                  h(DividendHistoryDetail, { history: dividendHistory })
+                )
+              );
+            }
+            return nodes;
+          }, []),
+          h(
+            "div",
+            { className: "telegram-stock-overview-subsection" },
+            h("div", { className: "telegram-stock-overview-subtitle" }, "편입 지수"),
+            includedIndices.length
+              ? h(
+                  "div",
+                  { className: "telegram-stock-overview-chip-list" },
+                  includedIndices.map(function (item) {
+                    return h("span", { key: item.key || item.label, className: "telegram-stock-overview-chip active" }, item.label || "-");
+                  })
+                )
+              : h("div", { className: "telegram-stock-overview-empty" }, "현재 확인된 대표 지수 편입 없음")
+          ),
+          h(
+            "div",
+            { className: "telegram-stock-overview-subsection" },
+            h("div", { className: "telegram-stock-overview-subtitle" }, "편입 가능성"),
+            candidateIndices.length
+              ? h(
+                  "div",
+                  { className: "telegram-stock-overview-mini-list" },
+                  candidateIndices.slice(0, 3).map(function (item) {
+                    return h(
+                      "div",
+                      { key: item.key || item.label, className: "telegram-stock-overview-mini-row" },
+                      h("span", { className: "telegram-stock-overview-mini-label" }, item.label || "-"),
+                      h(
+                        "span",
+                        { className: "telegram-stock-overview-mini-value" },
+                        item.rise_needed_pct == null
+                          ? "-"
+                          : item.rise_needed_pct <= 0
+                            ? "시총 기준 충족"
+                            : "+" + numberFormat(item.rise_needed_pct, 1) + "%"
+                      )
+                    );
+                  })
+                )
+              : h("div", { className: "telegram-stock-overview-empty" }, "추정 가능한 편입 후보 지수 없음"),
+            indexMembership.note ? h("div", { className: "telegram-stock-overview-note" }, indexMembership.note) : null
+          ),
+            h(
+              "div",
+              { className: "telegram-stock-overview-subsection" },
+              h("div", { className: "telegram-stock-overview-subtitle" }, "시장경고 추정"),
+              warningProjection.scheduled_label
+                ? h(
+                    "div",
+                    { className: "telegram-stock-overview-current-warning scheduled" },
+                    warningProjection.scheduled_label
+                  )
+                : null,
+              (warningProjection.current_label || ensureArray(warningProjection.current_items || []).length)
+                ? h(
+                    "div",
+                    { className: "telegram-stock-overview-current-warning" },
+                    warningProjection.current_label || ensureArray(warningProjection.current_items || []).join(", ")
+                )
+              : h("div", { className: "telegram-stock-overview-empty" }, "현재 확인된 투자경고/위험 지정 없음"),
+            Number.isFinite(Number(warningCalculation.current_price))
+              ? h(
+                  "div",
+                  { className: "telegram-stock-warning-current" },
+                  "현재가 " + numberFormat(warningCalculation.current_price, 0)
+                    + " · 최근 15일 최고가 " + (Number.isFinite(Number(warningCalculation.recent_15_high)) ? numberFormat(warningCalculation.recent_15_high, 0) : "-")
+                    + " · 최고가 요건 " + (warningCalculation.is_recent_15_high ? "충족" : "미충족")
+                )
+              : null,
+            visibleWarningEstimates.length
+              ? h(
+                  "div",
+                  { className: "telegram-stock-warning-list" },
+                  visibleWarningEstimates.map(function (item) {
+                    const paths = ensureArray(item && item.paths)
+                      .slice()
+                      .sort(function (left, right) {
+                        const leftValue = Number(left && left.remaining_pct);
+                        const rightValue = Number(right && right.remaining_pct);
+                        if (!Number.isFinite(leftValue)) {
+                          return 1;
+                        }
+                        if (!Number.isFinite(rightValue)) {
+                          return -1;
+                        }
+                        return leftValue - rightValue;
+                      })
+                      .slice(0, 1);
+                    const unavailable = item && item.eligible === false;
+                    return h(
+                      "div",
+                      { key: item.key || item.label, className: "telegram-stock-warning-item" },
+                      h(
+                        "div",
+                        { className: "telegram-stock-warning-head" },
+                        h("strong", null, item.label || "-"),
+                        h(
+                          "span",
+                          { className: "telegram-stock-overview-mini-value" + (item.triggered && !unavailable ? " danger" : "") },
+                          unavailable
+                            ? "선행단계 미충족"
+                            : item.triggered
+                              ? "가격요건 충족"
+                              : item.remaining_pct == null
+                                ? "-"
+                                : "가까운 경로 +" + numberFormat(item.remaining_pct, 1) + "%"
+                        )
+                      ),
+                      h("div", { className: "telegram-stock-warning-basis" }, item.basis || ""),
+                      paths.map(function (path) {
+                        const pathValue = path.remaining_pct == null
+                          ? "가격 데이터 부족"
+                          : path.price_triggered
+                            ? "가격요건 충족"
+                            : "+" + numberFormat(path.remaining_pct, 1) + "% 필요";
+                        return h(
+                          "div",
+                          { key: (item.key || "warning") + "-" + (path.key || path.label), className: "telegram-stock-warning-path" },
+                          h("span", null, (path.label || "가격경로") + " · " + numberFormat(path.anchor_days, 0) + "일 전 대비 +" + numberFormat(path.required_rise_pct, 0) + "%"),
+                          h("strong", { className: path.price_triggered ? "danger" : "" }, pathValue),
+                          h(
+                            "small",
+                            null,
+                            "기준 " + (Number.isFinite(Number(path.anchor_price)) ? numberFormat(path.anchor_price, 0) : "-")
+                              + " → 목표 " + (Number.isFinite(Number(path.target_price)) ? numberFormat(path.target_price, 0) : "-")
+                              + " · 현재 상승률 " + (Number.isFinite(Number(path.current_rise_pct)) ? formatPercent(path.current_rise_pct, 1) : "-")
+                          )
+                        );
+                      }),
+                      null
+                    );
+                  })
+                )
+              : null,
+            warningProjection.note ? h("div", { className: "telegram-stock-overview-note" }, warningProjection.note) : null
+          )
+        )
+      )
+    );
+  }
+
+  function StockNewsBriefPanel(props) {
+    const payload = props.payload || null;
+    const brief = (payload && payload.brief) || {};
+    const articles = ensureArray(payload && payload.key_articles);
+    const panelTitle = props.title || "최근 뉴스 요약";
+    const panelDescription = props.description || "중복 기사를 정리하고 핵심 이슈를 요약합니다.";
+    const positiveLabel = props.positiveLabel || "긍정 요인";
+    const riskLabel = props.riskLabel || "주의 요인";
+    const eventsLabel = props.eventsLabel || "예정 일정";
+    if (!props.loading && !props.message && !payload) {
+      return null;
+    }
+    const sentiment = String(brief.sentiment || "neutral").toLowerCase();
+    const sentimentLabels = {
+      positive: "긍정",
+      neutral: "중립",
+      negative: "부정",
+      mixed: "혼조",
+    };
+    return h(
+      "section",
+      { className: "stock-news-brief-panel" },
+      h(
+        "div",
+        { className: "stock-news-brief-head" },
+        h(
+          "div",
+          null,
+          h("strong", null, panelTitle),
+          payload
+            ? h("span", null, "최근 " + numberFormat(payload.days || 7, 0) + "일 · 중요 기사 " + numberFormat(articles.length, 0) + "건")
+            : h("span", null, panelDescription)
+        ),
+        h(
+          "div",
+          { className: "stock-news-brief-actions" },
+          payload && brief.sentiment
+            ? h("span", { className: "stock-news-sentiment " + sentiment }, sentimentLabels[sentiment] || "중립")
+            : null,
+          typeof props.onRefresh === "function"
+            ? h("button", {
+                type: "button",
+                className: "mini-button",
+                onClick: props.onRefresh,
+                disabled: !!props.loading,
+              }, props.loading ? "요약 중..." : "새로고침")
+            : null
+        )
+      ),
+      props.loading && !payload
+        ? h(LoadingBlock, { compact: true, title: "최근 뉴스 정리 중", label: "중복 기사를 제거하고 중요 이슈를 요약하고 있습니다." })
+        : props.message && !payload
+          ? h("div", { className: "notice-box compact" }, props.message)
+          : payload && !articles.length
+            ? h("div", { className: "summary-help" }, "최근 기간에 중요 뉴스로 분류된 기사가 없습니다.")
+            : h(
+                React.Fragment,
+                null,
+                h(
+                  "div",
+                  { className: "stock-news-brief-summary" },
+                  brief.headline ? h("h3", null, brief.headline) : null,
+                  brief.summary ? h("p", null, brief.summary) : null
+                ),
+                h(
+                  "div",
+                  { className: "stock-news-brief-body" },
+                  h(
+                    "div",
+                    { className: "stock-news-factor-grid" },
+                    ensureArray(brief.positive_factors).length
+                      ? h("div", { className: "stock-news-factor positive" },
+                          h("strong", null, positiveLabel),
+                          h("ul", null, ensureArray(brief.positive_factors).map(function (item, index) {
+                            return h("li", { key: "news-positive-" + index }, item);
+                          }))
+                        )
+                      : null,
+                    ensureArray(brief.risk_factors).length
+                      ? h("div", { className: "stock-news-factor negative" },
+                          h("strong", null, riskLabel),
+                          h("ul", null, ensureArray(brief.risk_factors).map(function (item, index) {
+                            return h("li", { key: "news-risk-" + index }, item);
+                          }))
+                        )
+                      : null,
+                    ensureArray(brief.upcoming_events).length
+                      ? h("div", { className: "stock-news-factor event" },
+                          h("strong", null, eventsLabel),
+                          h("ul", null, ensureArray(brief.upcoming_events).map(function (item, index) {
+                            return h("li", { key: "news-event-" + index }, item);
+                          }))
+                        )
+                      : null
+                  ),
+                  h(
+                    "div",
+                    { className: "stock-news-key-list" },
+                    articles.map(function (item) {
+                      return h(
+                        "button",
+                        {
+                          key: item.article_id || item.url || item.title,
+                          type: "button",
+                          className: "stock-news-key-item",
+                          onClick: function () { openUrlInDefaultBrowser(item.url); },
+                          disabled: !item.url,
+                          title: item.importance_reason || item.title || "",
+                        },
+                        h("span", { className: "stock-news-key-meta" }, [item.published_date, item.source].filter(Boolean).join(" · ")),
+                        h("strong", null, item.title || "-"),
+                        item.summary ? h("span", { className: "stock-news-key-summary" }, item.summary) : null
+                      );
+                    })
+                  )
+                ),
+                props.message ? h("div", { className: "summary-help stock-news-brief-warning" }, props.message) : null
+              )
+    );
+  }
+
+  function WiseConsensusPerChart(props) {
+    const rows = ensureArray(props.rows).filter(function (row) {
+      return Number.isFinite(Number(row.trailing_per)) || Number.isFinite(Number(row.forward_per));
+    });
+    if (!rows.length) {
+      return h("div", { className: "stock-chart-empty" }, "컨센서스 이력 없음");
+    }
+    const width = 560;
+    const height = 180;
+    const pad = { top: 12, right: 44, bottom: 24, left: 10 };
+    const chartWidth = width - pad.left - pad.right;
+    const chartHeight = height - pad.top - pad.bottom;
+    const values = [];
+    rows.forEach(function (row) {
+      if (Number.isFinite(Number(row.trailing_per))) {
+        values.push(Number(row.trailing_per));
+      }
+      if (Number.isFinite(Number(row.forward_per))) {
+        values.push(Number(row.forward_per));
+      }
+    });
+    if (!values.length) {
+      return h("div", { className: "stock-chart-empty" }, "컨센서스 이력 없음");
+    }
+    let minValue = Math.min.apply(null, values);
+    let maxValue = Math.max.apply(null, values);
+    if (minValue === maxValue) {
+      minValue *= 0.96;
+      maxValue *= 1.04;
+    }
+    const range = maxValue - minValue;
+    function x(index) {
+      return pad.left + (rows.length <= 1 ? chartWidth / 2 : (chartWidth * index) / (rows.length - 1));
+    }
+    function y(value) {
+      return pad.top + ((maxValue - Number(value)) / range) * chartHeight;
+    }
+    function buildLine(key) {
+      return rows
+        .map(function (row, index) {
+          const value = Number(row[key]);
+          if (!Number.isFinite(value)) {
+            return null;
+          }
+          return { x: x(index), y: y(value) };
+        })
+        .filter(Boolean);
+    }
+    function toPolyline(points) {
+      return points.map(function (point) { return point.x.toFixed(1) + "," + point.y.toFixed(1); }).join(" ");
+    }
+    const trailingPoints = buildLine("trailing_per");
+    const forwardPoints = buildLine("forward_per");
+    const gridValues = [maxValue, minValue + range * 0.5, minValue];
+    const labelIndexes = Array.from(new Set([0, Math.max(0, Math.floor((rows.length - 1) / 2)), rows.length - 1]));
+    return h(
+      "svg",
+      { className: "wise-target-history-chart", viewBox: "0 0 " + width + " " + height, role: "img" },
+      gridValues.map(function (value, index) {
+        const lineY = y(value);
+        return h(
+          React.Fragment,
+          { key: "per-grid-" + index },
+          h("line", { x1: pad.left, x2: width - pad.right, y1: lineY, y2: lineY, className: "stock-chart-grid" }),
+          h("text", { x: width - 4, y: lineY + 4, className: "stock-chart-axis", textAnchor: "end" }, numberFormat(value, 1))
+        );
+      }),
+      labelIndexes.map(function (index) {
+        const row = rows[index];
+        const lineX = x(index);
+        return h(
+          React.Fragment,
+          { key: "per-label-" + index },
+          h("line", { x1: lineX, x2: lineX, y1: pad.top, y2: height - pad.bottom, className: "stock-chart-grid vertical" }),
+          h("text", { x: lineX, y: height - 6, className: "stock-chart-axis", textAnchor: "middle" }, String(row.captured_date || "").slice(5))
+        );
+      }),
+      trailingPoints.length ? h("polyline", { points: toPolyline(trailingPoints), className: "wise-target-line close" }) : null,
+      forwardPoints.length ? h("polyline", { points: toPolyline(forwardPoints), className: "wise-target-line target" }) : null
+    );
+  }
+
+  function WiseReportConsensusPanel(props) {
+    const payload = props.payload || null;
+    if (props.loading) {
+      return h("div", { className: "business-segment-panel wise-target-panel muted" },
+        h("div", { className: "business-segment-title" },
+          h("strong", null, "WiseReport 추정실적 컨센서스"),
+          h("span", null, "연간 컨센서스 스냅샷을 불러오는 중입니다.")
+        ),
+        h("div", { className: "business-segment-skeleton" })
+      );
+    }
+    if (props.message) {
+      return h("div", { className: "business-segment-panel wise-target-panel muted" },
+        h("div", { className: "business-segment-title" },
+          h("strong", null, "WiseReport 추정실적 컨센서스"),
+          h("span", null, props.message)
+        )
+      );
+    }
+    if (!payload) {
+      return null;
+    }
+    const latest = payload.latest || null;
+    const valuationHistory = ensureArray(payload.valuation_history);
+    const latestAnnualRows = ensureArray(payload.latest_annual_rows);
+    const estimateHistory = ensureArray(payload.estimate_history).slice(-10).reverse();
+    if (!latest && !latestAnnualRows.length) {
+      return null;
+    }
+    const summaryPills = [
+      { label: "Trailing PER", value: latest && Number.isFinite(Number(latest.trailing_per)) ? numberFormat(latest.trailing_per, 2) : "-" },
+      { label: "Forward PER", value: latest && Number.isFinite(Number(latest.forward_per)) ? numberFormat(latest.forward_per, 2) : "-" },
+      { label: "Trailing PBR", value: latest && Number.isFinite(Number(latest.trailing_pbr)) ? numberFormat(latest.trailing_pbr, 2) : "-" },
+      { label: "Forward PBR", value: latest && Number.isFinite(Number(latest.forward_pbr)) ? numberFormat(latest.forward_pbr, 2) : "-" },
+    ];
+    return h(
+      "div",
+      { className: "business-segment-panel wise-target-panel" },
+      h(
+        "div",
+        { className: "business-segment-title" },
+        h("strong", null, "WiseReport 추정실적 컨센서스"),
+        h("span", null, [
+          payload.stock_name || "",
+          latest && latest.estimate_period_label ? "기준 " + latest.estimate_period_label : "",
+          payload.fetched_at ? "저장 " + String(payload.fetched_at).slice(0, 10) : "",
+        ].filter(Boolean).join(" · "))
+      ),
+      h(
+        "div",
+        { className: "wise-target-summary-row" },
+        summaryPills.map(function (item) {
+          return h("span", { key: item.label, className: "wise-target-summary-pill" }, item.label + " " + item.value);
+        })
+      ),
+      h(
+        "div",
+        { className: "wise-target-grid" },
+        h(
+          "div",
+          { className: "wise-target-chart-wrap" },
+          h("div", { className: "wise-target-mini-head" },
+            h("strong", null, "PER 추이"),
+            h("span", null, "회색: trailing · 파랑: forward")
+          ),
+          h(WiseConsensusPerChart, { rows: valuationHistory })
+        ),
+        h(
+          "div",
+          { className: "wise-consensus-latest-table" },
+          latestAnnualRows.map(function (row, index) {
             return h(
               "div",
-              { key: row.key, className: "telegram-stock-overview-row" },
-              h("div", { className: "telegram-stock-overview-key" }, row.label),
-              h("div", { className: "telegram-stock-overview-value" + (row.className ? " " + row.className : "") }, row.value)
+              { key: (row.period_label || "") + index, className: "wise-consensus-row" },
+              h("strong", null, row.period_label || "-"),
+              h("span", null, "매출 " + (Number.isFinite(Number(row.sales_100m)) ? numberFormat(row.sales_100m, 0) : "-") + "억"),
+              h("span", null, "영업익 " + (Number.isFinite(Number(row.operating_profit_100m)) ? numberFormat(row.operating_profit_100m, 0) : "-") + "억"),
+              h("span", null, "EPS " + (Number.isFinite(Number(row.eps)) ? numberFormat(row.eps, 0) : "-")),
+              h("span", null, "PER " + (Number.isFinite(Number(row.per)) ? numberFormat(row.per, 2) : "-")),
+              h("span", null, "PBR " + (Number.isFinite(Number(row.pbr)) ? numberFormat(row.pbr, 2) : "-"))
             );
           })
+        )
+      ),
+      estimateHistory.length
+        ? h(
+            "div",
+            { className: "wise-consensus-history-box" },
+            h("div", { className: "wise-target-mini-head" },
+              h("strong", null, "최근 저장 이력"),
+              h("span", null, "가장 최근 10개 스냅샷")
+            ),
+            h(
+              "div",
+              { className: "wise-consensus-history-table" },
+              estimateHistory.map(function (row, index) {
+                return h(
+                  "div",
+                  { key: String(row.captured_date || "") + "-" + index, className: "wise-consensus-history-row" },
+                  h("span", null, row.captured_date || "-"),
+                  h("span", null, row.period_label || "-"),
+                  h("span", null, "EPS " + (Number.isFinite(Number(row.eps)) ? numberFormat(row.eps, 0) : "-")),
+                  h("span", null, "영업익 " + (Number.isFinite(Number(row.operating_profit_100m)) ? numberFormat(row.operating_profit_100m, 0) : "-") + "억"),
+                  h("span", null, "PER " + (Number.isFinite(Number(row.per)) ? numberFormat(row.per, 2) : "-")),
+                  h("span", null, "PBR " + (Number.isFinite(Number(row.pbr)) ? numberFormat(row.pbr, 2) : "-"))
+                );
+              })
+            )
+          )
+        : null
+    );
+  }
+
+  function WiseReportTargetHistoryChart(props) {
+    const rows = ensureArray(props.rows).filter(function (row) {
+      return Number.isFinite(Number(row.avg_target_price)) || Number.isFinite(Number(row.close_price));
+    });
+    const reportRows = ensureArray(props.reportRows).filter(function (row) {
+      return row && row.report_date && Number.isFinite(Number(row.target_price));
+    });
+    if (!rows.length) {
+      return h("div", { className: "stock-chart-empty" }, "목표가 데이터 없음");
+    }
+    const width = 520;
+    const height = 138;
+    const pad = { top: 10, right: 44, bottom: 22, left: 10 };
+    const chartWidth = width - pad.left - pad.right;
+    const chartHeight = height - pad.top - pad.bottom;
+    const values = [];
+    rows.forEach(function (row) {
+      if (Number.isFinite(Number(row.avg_target_price))) {
+        values.push(Number(row.avg_target_price));
+      }
+      if (Number.isFinite(Number(row.close_price))) {
+        values.push(Number(row.close_price));
+      }
+    });
+    if (!values.length) {
+      return h("div", { className: "stock-chart-empty" }, "목표가 데이터 없음");
+    }
+    let minValue = Math.min.apply(null, values);
+    let maxValue = Math.max.apply(null, values);
+    if (minValue === maxValue) {
+      minValue *= 0.96;
+      maxValue *= 1.04;
+    }
+    const range = maxValue - minValue;
+    function x(index) {
+      return pad.left + (rows.length <= 1 ? chartWidth / 2 : (chartWidth * index) / (rows.length - 1));
+    }
+    function y(value) {
+      return pad.top + ((maxValue - Number(value)) / range) * chartHeight;
+    }
+    function buildLine(key) {
+      return rows
+        .map(function (row, index) {
+          if (!Number.isFinite(Number(row[key]))) {
+            return null;
+          }
+          return {
+            x: x(index),
+            y: y(Number(row[key])),
+            row: row,
+          };
+        })
+        .filter(Boolean);
+    }
+    const targetPoints = buildLine("avg_target_price");
+    const closePoints = buildLine("close_price");
+    function toPolyline(points) {
+      return points.map(function (point) {
+        return point.x.toFixed(1) + "," + point.y.toFixed(1);
+      }).join(" ");
+    }
+    const gridValues = [maxValue, minValue + range * 0.5, minValue];
+    const labelIndexes = Array.from(new Set([0, Math.max(0, Math.floor((rows.length - 1) / 2)), rows.length - 1]));
+    const reportPoints = reportRows.map(function (row) {
+      const rowDate = String(row.report_date || "").slice(0, 10);
+      const rowIndex = rows.findIndex(function (item) {
+        return String(item.date || "").slice(0, 10) === rowDate;
+      });
+      if (rowIndex < 0) {
+        return null;
+      }
+      return {
+        x: x(rowIndex),
+        y: y(Number(row.target_price)),
+        row: row,
+      };
+    }).filter(Boolean);
+    return h(
+      "svg",
+      { className: "wise-target-history-chart", viewBox: "0 0 " + width + " " + height, role: "img" },
+      gridValues.map(function (value, index) {
+        const lineY = y(value);
+        return h(
+          React.Fragment,
+          { key: "grid-" + index },
+          h("line", { x1: pad.left, x2: width - pad.right, y1: lineY, y2: lineY, className: "stock-chart-grid" }),
+          h("text", { x: width - 4, y: lineY + 4, className: "stock-chart-axis", textAnchor: "end" }, numberFormat(value, 0))
+        );
+      }),
+      labelIndexes.map(function (index) {
+        const row = rows[index];
+        const lineX = x(index);
+        return h(
+          React.Fragment,
+          { key: "label-" + index },
+          h("line", { x1: lineX, x2: lineX, y1: pad.top, y2: height - pad.bottom, className: "stock-chart-grid vertical" }),
+          h("text", { x: lineX, y: height - 6, className: "stock-chart-axis", textAnchor: "middle" }, String(row.date || "").slice(5))
+        );
+      }),
+      closePoints.length ? h("polyline", { points: toPolyline(closePoints), className: "wise-target-line close" }) : null,
+      targetPoints.length ? h("polyline", { points: toPolyline(targetPoints), className: "wise-target-line target" }) : null,
+      reportPoints.map(function (point, index) {
+        const row = point.row || {};
+        const brokerName = row.broker_short_name || row.broker_name || "-";
+        const title = [
+          row.report_date || "",
+          brokerName,
+          row.report_title || "",
+          "목표가 " + numberFormat(row.target_price, 0),
+          row.recommendation || row.price_action_label || "",
+        ].filter(Boolean).join(" · ");
+        return h(
+          "g",
+          { key: "target-report-point-" + index, className: "wise-target-point" },
+          h("circle", { cx: point.x, cy: point.y, r: 2.8, className: "wise-target-point-dot" }),
+          h("circle", { cx: point.x, cy: point.y, r: 10, className: "wise-target-point-hit" }),
+          h("title", null, title)
+        );
+      })
+    );
+  }
+
+  function WiseReportRevisionChart(props) {
+    const rows = ensureArray(props.rows).filter(function (row) {
+      return Number.isFinite(Number(row.target_price)) && row.report_date;
+    });
+    if (!rows.length) {
+      return h("div", { className: "stock-chart-empty" }, "리포트별 목표가 데이터 없음");
+    }
+    const sortedRows = rows.slice().sort(function (a, b) {
+      return String(a.report_date || "").localeCompare(String(b.report_date || ""));
+    });
+    const width = 560;
+    const height = 190;
+    const pad = { top: 12, right: 50, bottom: 28, left: 10 };
+    const chartWidth = width - pad.left - pad.right;
+    const chartHeight = height - pad.top - pad.bottom;
+    const targetValues = sortedRows.map(function (row) { return Number(row.target_price); });
+    const closeValues = sortedRows
+      .map(function (row) { return Number(row.close_price); })
+      .filter(Number.isFinite);
+    const values = targetValues.concat(closeValues);
+    let minValue = Math.min.apply(null, values);
+    let maxValue = Math.max.apply(null, values);
+    if (minValue === maxValue) {
+      minValue *= 0.96;
+      maxValue *= 1.04;
+    }
+    const range = maxValue - minValue;
+    function x(index) {
+      return pad.left + (sortedRows.length <= 1 ? chartWidth / 2 : (chartWidth * index) / (sortedRows.length - 1));
+    }
+    function y(value) {
+      return pad.top + ((maxValue - Number(value)) / range) * chartHeight;
+    }
+    const targetPoints = sortedRows.map(function (row, index) {
+      return { x: x(index), y: y(row.target_price), row: row };
+    });
+    const closePoints = sortedRows
+      .map(function (row, index) {
+        const closePrice = Number(row.close_price);
+        if (!Number.isFinite(closePrice)) {
+          return null;
+        }
+        return { x: x(index), y: y(closePrice), row: row };
+      })
+      .filter(Boolean);
+    function toPolyline(points) {
+      return points.map(function (point) {
+        return point.x.toFixed(1) + "," + point.y.toFixed(1);
+      }).join(" ");
+    }
+    const gridValues = [maxValue, minValue + range * 0.5, minValue];
+    const labelIndexes = Array.from(new Set([0, Math.max(0, Math.floor((sortedRows.length - 1) / 2)), sortedRows.length - 1]));
+    return h(
+      "svg",
+      { className: "wise-target-history-chart", viewBox: "0 0 " + width + " " + height, role: "img" },
+      gridValues.map(function (value, index) {
+        const lineY = y(value);
+        return h(
+          React.Fragment,
+          { key: "revision-grid-" + index },
+          h("line", { x1: pad.left, x2: width - pad.right, y1: lineY, y2: lineY, className: "stock-chart-grid" }),
+          h("text", { x: width - 4, y: lineY + 4, className: "stock-chart-axis", textAnchor: "end" }, numberFormat(value, 0))
+        );
+      }),
+      labelIndexes.map(function (index) {
+        const row = sortedRows[index];
+        const lineX = x(index);
+        return h(
+          React.Fragment,
+          { key: "revision-label-" + index },
+          h("line", { x1: lineX, x2: lineX, y1: pad.top, y2: height - pad.bottom, className: "stock-chart-grid vertical" }),
+          h("text", { x: lineX, y: height - 6, className: "stock-chart-axis", textAnchor: "middle" }, String(row.report_date || "").slice(5))
+        );
+      }),
+      closePoints.length ? h("polyline", { points: toPolyline(closePoints), className: "wise-target-line close" }) : null,
+      targetPoints.length ? h("polyline", { points: toPolyline(targetPoints), className: "wise-target-line target" }) : null,
+      targetPoints.map(function (point, index) {
+        const row = point.row || {};
+        const brokerName = row.broker_short_name || row.broker_name || "-";
+        const title = [
+          row.report_date,
+          brokerName,
+          row.report_title || "",
+          "목표가 " + numberFormat(row.target_price, 0),
+          Number.isFinite(Number(row.close_price)) ? "주가 " + numberFormat(row.close_price, 0) : "",
+          row.price_action_label || "",
+        ].filter(Boolean).join(" · ");
+        return h(
+          "g",
+          { key: "revision-point-" + index, className: "wise-target-point" },
+          h("circle", { cx: point.x, cy: point.y, r: 3.2, className: "wise-target-point-dot" }),
+          h("title", null, title)
+        );
+      })
+    );
+  }
+
+  function WiseReportTargetHistoryPanel(props) {
+    const payload = props.payload || null;
+    if (props.loading) {
+      return h("div", { className: "business-segment-panel wise-target-panel muted" },
+        h("div", { className: "business-segment-title" },
+          h("strong", null, "WiseReport 목표가 추이"),
+          h("span", null, "최근 리포트 목표가를 불러오는 중입니다.")
+        ),
+        h("div", { className: "business-segment-skeleton" })
+      );
+    }
+    if (props.message) {
+      return h("div", { className: "business-segment-panel wise-target-panel muted" },
+        h("div", { className: "business-segment-title" },
+          h("strong", null, "WiseReport 목표가 추이"),
+          h("span", null, props.message)
+        )
+      );
+    }
+    if (!payload) {
+      return null;
+    }
+    const series = ensureArray(payload.series);
+    const revisionRows = ensureArray(payload.recent_reports).filter(function (row) {
+      return Number.isFinite(Number(row.target_price));
+    });
+    const latest = payload.latest || null;
+    if (!series.length && !revisionRows.length) {
+      return null;
+    }
+    return h(
+      "div",
+      { className: "business-segment-panel wise-target-panel compact" },
+      h(
+        "div",
+        { className: "business-segment-title" },
+        h("strong", null, "WiseReport 목표가 추이"),
+        h("span", null, [
+          payload.stock_name || "",
+          payload.report_count ? "리포트 " + numberFormat(payload.report_count, 0) + "건" : "",
+          latest && Number.isFinite(Number(latest.gap_pct)) ? "괴리율 " + formatPercent(latest.gap_pct, 1) : "",
+        ].filter(Boolean).join(" · "))
+      ),
+      h(
+        "div",
+        { className: "wise-target-summary-row" },
+        h("span", { className: "wise-target-legend" }, h("i", { className: "target" }), "평균 목표가"),
+        h("span", { className: "wise-target-legend" }, h("i", { className: "close" }), "주가"),
+        h("span", { className: "wise-target-legend subtle" }, "점 hover: 증권사 리포트"),
+        latest && Number.isFinite(Number(latest.avg_target_price))
+          ? h("span", { className: "wise-target-summary-pill" }, "최근 평균 목표가 " + numberFormat(latest.avg_target_price, 0))
+          : null
+      ),
+      h(
+        "div",
+        { className: "wise-target-grid compact" },
+        h(
+          "div",
+          { className: "wise-target-chart-wrap compact" },
+          h(WiseReportTargetHistoryChart, { rows: series, reportRows: revisionRows })
         )
       )
     );
@@ -755,6 +2337,8 @@
   }
 
   const API_GET_CACHE = {};
+  const ACTIVE_BACKGROUND_TASKS = {};
+  const BACKGROUND_TASK_CLEAR_TIMERS = {};
 
   function isCacheableJsonRequest(url, options) {
     const method = String((options && options.method) || "GET").toUpperCase();
@@ -788,6 +2372,7 @@
     const requestOptions = Object.assign({}, options || {});
     delete requestOptions.noCache;
     delete requestOptions.forceRefresh;
+    delete requestOptions.silent;
     const useCache = isCacheableJsonRequest(url, options);
     if (useCache) {
       const entry = API_GET_CACHE[url];
@@ -798,9 +2383,20 @@
         return entry.promise;
       }
     }
-    const requestId = startApiRequest(url, options);
+    const requestId = options && options.silent ? "" : startApiRequest(url, options);
     const requestPromise = fetch(url, requestOptions).then(async function (response) {
-      const payload = await response.json();
+      const rawText = await response.text();
+      let payload = {};
+      if (rawText && rawText.trim()) {
+        try {
+          payload = JSON.parse(rawText);
+        } catch (parseError) {
+          const error = new Error("서버 응답을 JSON으로 읽지 못했습니다.");
+          error.status = response.status;
+          error.rawText = rawText;
+          throw error;
+        }
+      }
       if (!response.ok) {
         const error = new Error(payload.error || payload.detail || "Request failed.");
         error.payload = payload;
@@ -828,6 +2424,9 @@
   function apiRequestLabel(url, options) {
     const method = String((options && options.method) || "GET").toUpperCase();
     const text = String(url || "");
+    if (text.indexOf("/api/themes/today") === 0) return "오늘의 주도주 SQL 캐시 요약";
+    if (text.indexOf("/api/us-themes/today") === 0) return "미국 주도주 SQL 캐시 요약";
+    if (text.indexOf("/api/asia-themes/today") === 0) return "아시아 주도주 SQL 캐시 요약";
     if (text.indexOf("/api/portfolio/performance") === 0) return "포트폴리오 수익 데이터";
     if (text.indexOf("/api/app-config") === 0) return "앱 실행 모드";
     if (text.indexOf("/api/portfolio/export") === 0) return "포트폴리오 수익 엑셀";
@@ -835,11 +2434,17 @@
     if (text.indexOf("/api/strategy/sector-rotation") === 0) return "섹터 로테이션 백테스트";
     if (text.indexOf("/api/strategy/advanced-sector") === 0) return "고급 섹터 신호 백테스트";
     if (text.indexOf("/api/strategy/portfolio-diagnostic") === 0) return "현재 방식 진단";
+    if (text.indexOf("/api/institutional-rebalance") === 0) return "기관 리밸런싱 추정";
+    if (text.indexOf("/api/institutional-rebalance/ai-brief") === 0) return "Gemini 기관 리밸런싱 해설";
     if (text.indexOf("/api/market-calendar") === 0) return "증시 일정";
-    if (text.indexOf("/api/themes/today") === 0) return "오늘의 주도주 엑셀 데이터";
+    if (text.indexOf("/api/disclosure/upcoming-earnings") === 0) return "예정 실적 일정";
+    if (text.indexOf("/api/disclosure/recent-foreign-earnings") === 0) return "최근 해외 발표 실적";
+    if (text.indexOf("/api/themes/today") === 0) return "오늘의 주도주 SQL 캐시 데이터";
     if (text.indexOf("/api/us-themes/today") === 0) return "\ubbf8\uad6d \uc8fc\ub3c4\uc8fc SQL \ub370\uc774\ud130";
     if (text.indexOf("/api/asia-themes/today") === 0) return "\uc544\uc2dc\uc544 \uc8fc\ub3c4\uc8fc SQL \ub370\uc774\ud130";
     if (text.indexOf("/api/themes/reload") === 0) return "주도주 엑셀 직접 로드";
+    if (text.indexOf("/api/themes/recalculate-scores/background") === 0) return "점수 백그라운드 재계산 시작";
+    if (text.indexOf("/api/themes/recalculate-scores/status") === 0) return "점수 백그라운드 재계산 상태";
     if (text.indexOf("/api/us-themes/reload") === 0) return "\ubbf8\uad6d \uc8fc\ub3c4\uc8fc SQL \ub370\uc774\ud130 \uc0c8\ub85c\uace0\uce68";
     if (text.indexOf("/api/asia-themes/reload") === 0) return "\uc544\uc2dc\uc544 \uc8fc\ub3c4\uc8fc SQL \ub370\uc774\ud130 \uc0c8\ub85c\uace0\uce68";
     if (text.indexOf("/api/themes/build-today-data") === 0) return "\uc624\ub298\uc758 \uc8fc\ub3c4\uc8fc \uc624\ub298\uc790 \ub370\uc774\ud130 \uc0dd\uc131";
@@ -862,7 +2467,13 @@
     if (text.indexOf("/api/sector-snapshot/signal-radar") === 0) return "\ud3b8\uc785/\ud3b8\ucd9c \uc2dc\uadf8\ub110 \ub808\uc774\ub354";
     if (text.indexOf("/api/sector-snapshot/export") === 0) return "섹터 비교 엑셀";
     if (text.indexOf("/api/global-stocks/search") === 0) return "해외기업 자동완성";
+    if (text.indexOf("/api/etf-flow/assets/search") === 0) return "ETF 자금 추정 종목 자동완성";
+    if (text.indexOf("/api/etf-flow/estimate") === 0) return "ETF 자금 추정 데이터";
+    if (text.indexOf("/api/kr-etf/detail") === 0) return "국내 ETF 상세";
+    if (text.indexOf("/api/correlation/assets/search") === 0) return "상관관계 자산 검색";
+    if (text.indexOf("/api/correlation/pair") === 0) return "주가 상관관계 계산";
     if (text.indexOf("/api/global-stocks/detail") === 0) return "해외기업 실적 데이터";
+    if (text.indexOf("/api/global-stocks/earnings-call") === 0) return "해외기업 최근 실적/컨콜";
     if (text.indexOf("/api/global-stocks/ai-brief") === 0) return "AI \uae30\uc5c5 \ube0c\ub9ac\ud504 \uc0dd\uc131";
     if (text.indexOf("/api/global-indices") === 0) return "지수/가격동향 데이터";
     if (text.indexOf("/api/sector-watch-board") === 0) return "관심종목 보드";
@@ -882,6 +2493,7 @@
     if (text.indexOf("/api/economy/cycle-clock") === 0) return "경기순환시계 데이터";
     if (text.indexOf("/api/real-estate/prices") === 0) return "부동산 가격 지수";
     if (text.indexOf("/api/real-estate/building") === 0) return "건물 관리";
+    if (text.indexOf("/api/real-estate/bank/export") === 0) return "건물 관리 월별 입출금 엑셀";
     if (text.indexOf("/api/tradingview/open") === 0) return "TradingView 실행";
     return method === "GET" ? "데이터 요청" : "작업 요청";
   }
@@ -915,11 +2527,58 @@
       .sort(function (a, b) { return a.startedAt - b.startedAt; });
   }
 
+  function upsertBackgroundTask(task) {
+    if (!task || !task.id) {
+      return;
+    }
+    const id = String(task.id);
+    if (BACKGROUND_TASK_CLEAR_TIMERS[id]) {
+      window.clearTimeout(BACKGROUND_TASK_CLEAR_TIMERS[id]);
+      delete BACKGROUND_TASK_CLEAR_TIMERS[id];
+    }
+    ACTIVE_BACKGROUND_TASKS[id] = Object.assign({}, ACTIVE_BACKGROUND_TASKS[id] || {}, task, {
+      id: id,
+      updatedAt: Date.now(),
+    });
+    const status = String(task.status || "").toLowerCase();
+    if (status === "completed" || status === "failed") {
+      BACKGROUND_TASK_CLEAR_TIMERS[id] = window.setTimeout(function () {
+        delete ACTIVE_BACKGROUND_TASKS[id];
+        delete BACKGROUND_TASK_CLEAR_TIMERS[id];
+        window.dispatchEvent(new CustomEvent("stock-background-task-change"));
+      }, 15000);
+    }
+    window.dispatchEvent(new CustomEvent("stock-background-task-change"));
+  }
+
+  function removeBackgroundTask(id) {
+    const key = String(id || "");
+    if (!key) {
+      return;
+    }
+    if (BACKGROUND_TASK_CLEAR_TIMERS[key]) {
+      window.clearTimeout(BACKGROUND_TASK_CLEAR_TIMERS[key]);
+      delete BACKGROUND_TASK_CLEAR_TIMERS[key];
+    }
+    if (ACTIVE_BACKGROUND_TASKS[key]) {
+      delete ACTIVE_BACKGROUND_TASKS[key];
+      window.dispatchEvent(new CustomEvent("stock-background-task-change"));
+    }
+  }
+
+  function getActiveBackgroundTasks() {
+    return Object.keys(ACTIVE_BACKGROUND_TASKS)
+      .map(function (key) { return ACTIVE_BACKGROUND_TASKS[key]; })
+      .sort(function (a, b) {
+        return Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+      });
+  }
+
   function prefetchJson(url) {
     if (getCachedJson(url) || (API_GET_CACHE[url] && API_GET_CACHE[url].promise)) {
       return;
     }
-    fetchJson(url).catch(function () {});
+    fetchJson(url, { silent: true }).catch(function () {});
   }
 
   function invalidateApiCache(match) {
@@ -930,12 +2589,32 @@
     });
   }
 
-  async function postJson(url, body) {
-    const payload = await fetchJson(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body || {}),
+  function sleep(ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, Math.max(0, Number(ms) || 0));
     });
+  }
+
+  async function postJson(url, body) {
+    async function executePost() {
+      return fetchJson(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+    }
+    let payload;
+    try {
+      payload = await executePost();
+    } catch (error) {
+      const isThemeRecalc = typeof url === "string" && url.indexOf("/api/themes/recalculate-scores") === 0;
+      const isNetworkError = !error || !error.status;
+      if (!isThemeRecalc || !isNetworkError) {
+        throw error;
+      }
+      await sleep(1200);
+      payload = await executePost();
+    }
     if (url.indexOf("/api/sector-db") === 0) {
       invalidateApiCache(function (key) {
         return key.indexOf("/api/sector-db") === 0 || key.indexOf("/api/theme-sector-calendar") === 0 || key.indexOf("/api/sector-watch-board") === 0;
@@ -947,6 +2626,10 @@
     } else if (url.indexOf("/api/themes/reload") === 0 || url.indexOf("/api/themes/build-today-data") === 0) {
       invalidateApiCache(function (key) {
         return key.indexOf("/api/themes/") === 0 || key.indexOf("/api/dart/") === 0 || key.indexOf("/api/theme-sector-calendar") === 0;
+      });
+    } else if (url.indexOf("/api/themes/score-formula-config") === 0 || url.indexOf("/api/themes/recalculate-scores") === 0) {
+      invalidateApiCache(function (key) {
+        return key.indexOf("/api/themes/") === 0 || key.indexOf("/api/theme-sector-calendar") === 0;
       });
     } else if (url.indexOf("/api/us-themes/") === 0) {
       invalidateApiCache(function (key) {
@@ -964,12 +2647,388 @@
       invalidateApiCache(function (key) {
         return key.indexOf("/api/telegram/status") === 0;
       });
+    } else if (url.indexOf("/api/strategy/snapshots") === 0) {
+      invalidateApiCache(function (key) {
+        return key.indexOf("/api/strategy/snapshots") === 0;
+      });
+    }
+    return payload;
+  }
+
+  async function deleteJson(url) {
+    const payload = await fetchJson(url, { method: "DELETE" });
+    if (url.indexOf("/api/strategy/snapshots") === 0) {
+      invalidateApiCache(function (key) {
+        return key.indexOf("/api/strategy/snapshots") === 0;
+      });
     }
     return payload;
   }
 
   function makeId(prefix) {
     return (prefix || "id") + "-" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function todayIsoDate() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return year + "-" + month + "-" + day;
+  }
+
+  function shiftIsoDate(isoDate, deltaDays) {
+    const parsed = new Date(String(isoDate || todayIsoDate()) + "T00:00:00");
+    if (Number.isNaN(parsed.getTime())) {
+      return todayIsoDate();
+    }
+    parsed.setDate(parsed.getDate() + Number(deltaDays || 0));
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, "0");
+    const day = String(parsed.getDate()).padStart(2, "0");
+    return year + "-" + month + "-" + day;
+  }
+
+  function readAutoDailyThemeBuildState() {
+    try {
+      const raw = localStorage.getItem(AUTO_DAILY_THEME_BUILD_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (!parsed || typeof parsed !== "object") {
+        return { date: "", kr: false, us: false };
+      }
+      return {
+        date: String(parsed.date || ""),
+        kr: !!parsed.kr,
+        us: !!parsed.us,
+      };
+    } catch (error) {
+      return { date: "", kr: false, us: false };
+    }
+  }
+
+  function writeAutoDailyThemeBuildState(nextState) {
+    try {
+      localStorage.setItem(AUTO_DAILY_THEME_BUILD_KEY, JSON.stringify({
+        date: String((nextState && nextState.date) || ""),
+        kr: !!(nextState && nextState.kr),
+        us: !!(nextState && nextState.us),
+      }));
+    } catch (error) {
+    }
+  }
+
+  function emitAutoDailyThemeBuildEvent(market, payload) {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent(AUTO_DAILY_THEME_BUILD_EVENT, {
+      detail: Object.assign({ market: market }, payload || {}),
+    }));
+  }
+
+  function getZonedDateParts(timeZone) {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    const parts = {};
+    formatter.formatToParts(new Date()).forEach(function (part) {
+      if (part && part.type) {
+        parts[part.type] = part.value;
+      }
+    });
+    return {
+      weekday: String(parts.weekday || ""),
+      hour: Number(parts.hour || 0),
+      minute: Number(parts.minute || 0),
+      second: Number(parts.second || 0),
+    };
+  }
+
+  function isWeekdayName(value) {
+    return ["Mon", "Tue", "Wed", "Thu", "Fri"].indexOf(String(value || "")) >= 0;
+  }
+
+  function getAutoBuildDelayMs(market) {
+    const config = market === "us"
+      ? { timeZone: "America/New_York", closeHour: 16, closeMinute: 10 }
+      : { timeZone: "Asia/Seoul", closeHour: 15, closeMinute: 35 };
+    const parts = getZonedDateParts(config.timeZone);
+    if (!isWeekdayName(parts.weekday)) {
+      return null;
+    }
+    const currentSeconds = ((parts.hour * 60) + parts.minute) * 60 + parts.second;
+    const closeSeconds = ((config.closeHour * 60) + config.closeMinute) * 60;
+    if (currentSeconds >= closeSeconds) {
+      return 0;
+    }
+    return Math.max(1000, (closeSeconds - currentSeconds) * 1000);
+  }
+
+  function diffDaysFromToday(value) {
+    if (!value) {
+      return null;
+    }
+    const target = new Date(value + "T00:00:00");
+    if (Number.isNaN(target.getTime())) {
+      return null;
+    }
+    const today = new Date(todayIsoDate() + "T00:00:00");
+    return Math.round((target.getTime() - today.getTime()) / 86400000);
+  }
+
+  function normalizeSubscriptionItem(item, index) {
+    const source = item || {};
+    return {
+      id: source.id || makeId("subscription"),
+      sourceId: String(source.sourceId || "").trim(),
+      name: String(source.name || "").trim(),
+      region: String(source.region || "서울").trim(),
+      district: String(source.district || "").trim(),
+      saleType: String(source.saleType || "민간분양").trim(),
+      applicationStart: String(source.applicationStart || "").trim(),
+      applicationEnd: String(source.applicationEnd || "").trim(),
+      moveInMonth: String(source.moveInMonth || "").trim(),
+      supplyHouseholds: Number(source.supplyHouseholds) || 0,
+      generalSupplyHouseholds: Number(source.generalSupplyHouseholds) || 0,
+      specialSupplyRatio: Number(source.specialSupplyRatio) || 0,
+      specialSupplySummary: String(source.specialSupplySummary || "").trim(),
+      specialSupplyBreakdown: source.specialSupplyBreakdown || {},
+      minPriceEok: Number(source.minPriceEok) || 0,
+      maxPriceEok: Number(source.maxPriceEok) || 0,
+      private84PriceEok: Number(source.private84PriceEok) || 0,
+      monthlyIncomeLimitPct: Number(source.monthlyIncomeLimitPct) || 0,
+      assetLimitEok: Number(source.assetLimitEok) || 0,
+      minResidenceYears: Number(source.minResidenceYears) || 0,
+      commuting: String(source.commuting || "").trim(),
+      status: String(source.status || "공고예정").trim(),
+      suitableType: String(source.suitableType || "특공+일반").trim(),
+      source: String(source.source || "청약홈").trim(),
+      url: String(source.url || "").trim(),
+      note: String(source.note || "").trim(),
+      memo: String(source.memo || "").trim(),
+      address: String(source.address || "").trim(),
+      announcementDate: String(source.announcementDate || "").trim(),
+      houseManageNo: String(source.houseManageNo || "").trim(),
+      pblancNo: String(source.pblancNo || "").trim(),
+      tags: ensureArray(source.tags).map(function (tag) { return String(tag || "").trim(); }).filter(Boolean),
+      interest: source.interest === false ? false : true,
+      hidden: !!source.hidden,
+      scoreOverride: source.scoreOverride == null ? null : Number(source.scoreOverride),
+      order: Number(source.order) || index || 0,
+    };
+  }
+
+  function buildDefaultSubscriptionPageState() {
+    return {
+      profile: {
+        preferredRegions: ["서울", "경기", "인천"],
+        maxBudgetEok: 11,
+        minSupplyHouseholds: 250,
+        minSpecialSupplyRatio: 25,
+        maxMonthlyIncomeLimitPct: 180,
+        maxAssetLimitEok: 6,
+        minDaysLeft: -3,
+        requireCommute: false,
+        preferredSuitableType: "특공+일반",
+      },
+      items: [
+        {
+          id: "seed-seoul-gangdong",
+          name: "고덕 강동 리버파크",
+          region: "서울",
+          district: "강동구",
+          saleType: "민간분양",
+          applicationStart: "2026-07-29",
+          applicationEnd: "2026-07-31",
+          moveInMonth: "2029-02",
+          supplyHouseholds: 612,
+          generalSupplyHouseholds: 224,
+          specialSupplyRatio: 36,
+          minPriceEok: 8.9,
+          maxPriceEok: 11.4,
+          private84PriceEok: 10.8,
+          monthlyIncomeLimitPct: 180,
+          assetLimitEok: 6.9,
+          minResidenceYears: 2,
+          commuting: "5호선 상일동권 / 강남권 45분",
+          status: "접수예정",
+          suitableType: "특공+일반",
+          source: "청약홈",
+          url: "",
+          note: "수도권 거주, 생애최초/신혼부부 특공 비중 확인 필요",
+          memo: "",
+          tags: ["서울", "84타입", "대단지"],
+          interest: true,
+          hidden: false,
+        },
+        {
+          id: "seed-gyeonggi-gwacheon",
+          name: "과천 지식정보타운 센트럴",
+          region: "경기",
+          district: "과천시",
+          saleType: "공공분양",
+          applicationStart: "2026-08-05",
+          applicationEnd: "2026-08-07",
+          moveInMonth: "2028-11",
+          supplyHouseholds: 428,
+          generalSupplyHouseholds: 112,
+          specialSupplyRatio: 48,
+          minPriceEok: 7.1,
+          maxPriceEok: 9.4,
+          private84PriceEok: 8.8,
+          monthlyIncomeLimitPct: 130,
+          assetLimitEok: 5.1,
+          minResidenceYears: 1,
+          commuting: "4호선 과천청사권 / 강남권 30분",
+          status: "공고예정",
+          suitableType: "특공중심",
+          source: "LH",
+          url: "",
+          note: "가점보다 특별공급 자격 검토 우선",
+          memo: "",
+          tags: ["과천", "공공분양", "입지강함"],
+          interest: true,
+          hidden: false,
+        },
+        {
+          id: "seed-incheon-songdo",
+          name: "송도 워터프론트 에코시티",
+          region: "인천",
+          district: "연수구",
+          saleType: "민간분양",
+          applicationStart: "2026-07-24",
+          applicationEnd: "2026-07-28",
+          moveInMonth: "2028-06",
+          supplyHouseholds: 980,
+          generalSupplyHouseholds: 414,
+          specialSupplyRatio: 30,
+          minPriceEok: 6.2,
+          maxPriceEok: 8.1,
+          private84PriceEok: 7.6,
+          monthlyIncomeLimitPct: 200,
+          assetLimitEok: 0,
+          minResidenceYears: 0,
+          commuting: "인천1호선 / 여의도권 60분+",
+          status: "접수중",
+          suitableType: "일반공급중심",
+          source: "청약홈",
+          url: "",
+          note: "가격 메리트는 있으나 실거주 동선 검토 필요",
+          memo: "",
+          tags: ["송도", "가격메리트", "접수중"],
+          interest: false,
+          hidden: false,
+        },
+      ],
+      draft: {
+        name: "",
+        region: "서울",
+        district: "",
+        saleType: "민간분양",
+        applicationStart: "",
+        applicationEnd: "",
+        moveInMonth: "",
+        supplyHouseholds: "",
+        generalSupplyHouseholds: "",
+        specialSupplyRatio: "",
+        minPriceEok: "",
+        maxPriceEok: "",
+        private84PriceEok: "",
+        monthlyIncomeLimitPct: "",
+        assetLimitEok: "",
+        minResidenceYears: "",
+        commuting: "",
+        status: "공고예정",
+        suitableType: "특공+일반",
+        source: "청약홈",
+        url: "",
+        note: "",
+        memo: "",
+        tagsText: "",
+      },
+    };
+  }
+
+  function loadSubscriptionPageState() {
+    try {
+      const raw = localStorage.getItem(SUBSCRIPTION_LIST_KEY);
+      if (!raw) {
+        return buildDefaultSubscriptionPageState();
+      }
+      const parsed = JSON.parse(raw);
+      const base = buildDefaultSubscriptionPageState();
+      return {
+        profile: Object.assign({}, base.profile, parsed.profile || {}),
+        items: ensureArray(parsed.items).map(normalizeSubscriptionItem),
+        draft: Object.assign({}, base.draft, parsed.draft || {}),
+      };
+    } catch (error) {
+      return buildDefaultSubscriptionPageState();
+    }
+  }
+
+  function persistSubscriptionPageState(state) {
+    try {
+      localStorage.setItem(SUBSCRIPTION_LIST_KEY, JSON.stringify({
+        profile: state.profile || {},
+        items: ensureArray(state.items).map(normalizeSubscriptionItem),
+        draft: state.draft || {},
+      }));
+    } catch (error) {
+    }
+  }
+
+  function loadSubscriptionRuntimeCache() {
+    try {
+      const raw = localStorage.getItem(SUBSCRIPTION_RUNTIME_CACHE_KEY);
+      if (!raw) {
+        return {};
+      }
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function persistSubscriptionRuntimeCache(payload) {
+    try {
+      localStorage.setItem(SUBSCRIPTION_RUNTIME_CACHE_KEY, JSON.stringify(payload || {}));
+    } catch (error) {
+    }
+  }
+
+  function loadNaverBlogPageState() {
+    try {
+      const raw = localStorage.getItem(NAVER_BLOG_PAGE_KEY);
+      if (!raw) {
+        return { query: "", category: "all", selectedId: 0 };
+      }
+      const parsed = JSON.parse(raw);
+      return {
+        query: String((parsed && parsed.query) || ""),
+        category: String((parsed && parsed.category) || "all"),
+        selectedId: Number((parsed && parsed.selectedId) || 0) || 0,
+      };
+    } catch (error) {
+      return { query: "", category: "all", selectedId: 0 };
+    }
+  }
+
+  function persistNaverBlogPageState(payload) {
+    try {
+      localStorage.setItem(NAVER_BLOG_PAGE_KEY, JSON.stringify({
+        query: String((payload && payload.query) || ""),
+        category: String((payload && payload.category) || "all"),
+        selectedId: Number((payload && payload.selectedId) || 0) || 0,
+      }));
+    } catch (error) {
+    }
   }
 
   async function postDownload(url, body, fallbackName) {
@@ -981,7 +3040,15 @@
         body: JSON.stringify(body || {}),
       });
       if (!response.ok) {
-        const payload = await response.json();
+        const rawText = await response.text();
+        let payload = {};
+        if (rawText && rawText.trim()) {
+          try {
+            payload = JSON.parse(rawText);
+          } catch (parseError) {
+            throw new Error("다운로드 오류 응답을 읽지 못했습니다.");
+          }
+        }
         throw new Error(payload.error || payload.detail || "Download failed.");
       }
       const blob = await response.blob();
@@ -1015,7 +3082,7 @@
         setError("");
         return null;
       }
-      const shouldForceRefresh = forceRefresh !== false;
+      const shouldForceRefresh = forceRefresh === true;
       const requestSeq = requestSeqRef.current + 1;
       requestSeqRef.current = requestSeq;
       const cached = shouldForceRefresh ? null : getCachedJson(url);
@@ -1060,7 +3127,7 @@
   function SummaryCard(props) {
     return h(
       "div",
-      { className: "summary-card" },
+      { className: "summary-card" + (props.className ? " " + props.className : "") },
       h("div", { className: "summary-label" }, props.label),
       h("div", { className: "summary-value" }, props.value),
       props.help ? h("div", { className: "summary-help" }, props.help) : null
@@ -1483,7 +3550,7 @@
     try {
       const raw = localStorage.getItem(THEME_SECTOR_KEY);
       if (!raw) {
-        return { stockMap: {}, sectors: [], lastFileDate: "" };
+        return { stockMap: {}, sectors: [], lastFileDate: "", universeMode: "stock" };
       }
       const parsed = JSON.parse(raw);
       const stockMap = {};
@@ -1501,9 +3568,10 @@
         stockMap: stockMap,
         sectors: Array.from(new Set(sectors.concat(Object.keys(stockMap).map(function (name) { return stockMap[name]; })))),
         lastFileDate: String(parsed.lastFileDate || ""),
+        universeMode: String(parsed.universeMode || "stock") === "etf" ? "etf" : "stock",
       };
     } catch (err) {
-      return { stockMap: {}, sectors: [], lastFileDate: "" };
+      return { stockMap: {}, sectors: [], lastFileDate: "", universeMode: "stock" };
     }
   }
 
@@ -1525,6 +3593,7 @@
         stockMap: stockMap,
         sectors: sectors,
         lastFileDate: state.lastFileDate || "",
+        universeMode: state.universeMode === "etf" ? "etf" : "stock",
       }));
     } catch (err) {
     }
@@ -1550,17 +3619,11 @@
     if (Number.isNaN(anchor.getTime())) {
       return rows.slice(-22);
     }
-    if (mode === "week") {
-      const anchorKey = anchor.toISOString().slice(0, 10);
-      const beforeAnchor = rows.filter(function (item) {
-        return String(item.date || "") <= anchorKey;
-      });
-      return beforeAnchor.slice(-5);
-    }
-    return rows.filter(function (item) {
-      const current = new Date(item.date);
-      return current.getFullYear() === anchor.getFullYear() && current.getMonth() === anchor.getMonth();
+    const anchorKey = anchor.toISOString().slice(0, 10);
+    const beforeAnchor = rows.filter(function (item) {
+      return String(item.date || "") <= anchorKey;
     });
+    return beforeAnchor.slice(mode === "month" ? -22 : -5);
   }
 
   function getCalendarTopSectors(days, limit) {
@@ -2146,8 +4209,12 @@
   }
 
   function PerformanceChart(props) {
+    if (window.LightweightCharts && ensureArray(props.series).length) {
+      return h(LightweightPerformanceChart, props);
+    }
     const labels = props.series.map(function (item) { return item.date; });
     const portfolioInvestedFlags = props.series.map(function (item) { return item && item.invested !== false; });
+    const benchmarkSets = ensureArray(props.benchmarks);
     const resetSignal = props.resetSignal;
     const { canvasRef, chartRef } = useChartLifecycle(function (canvas) {
       return new Chart(canvas, {
@@ -2172,17 +4239,18 @@
                 },
               },
             },
-            {
-              label: "KOSPI",
-              data: props.benchmark.map(function (item) { return portfolioChartPoint(item.return_pct); }),
-              borderColor: "#4c8bf5",
-              backgroundColor: "rgba(76, 139, 245, 0.12)",
-              pointRadius: 1.8,
-              pointHoverRadius: 4,
+          ].concat(benchmarkSets.map(function (benchmark) {
+            return {
+              label: benchmark.label || benchmark.key || "Benchmark",
+              data: ensureArray(benchmark.rows).map(function (item) { return portfolioChartPoint(item.return_pct); }),
+              borderColor: benchmark.color,
+              backgroundColor: benchmark.color,
+              pointRadius: 1.2,
+              pointHoverRadius: 3,
               tension: 0.12,
               borderWidth: 2,
-            },
-          ],
+            };
+          })),
         },
         options: {
           responsive: true,
@@ -2245,7 +4313,7 @@
           },
         },
       });
-    }, [props.series, props.benchmark, props.xRange]);
+    }, [props.series, props.benchmarks, props.xRange]);
 
     useEffect(function () {
       if (!chartRef.current) {
@@ -2265,7 +4333,7 @@
         });
       };
       chart.update("none");
-    }, [props.onRangeChange, props.series, props.benchmark]);
+    }, [props.onRangeChange, props.series, props.benchmarks]);
 
     useEffect(function () {
       if (!chartRef.current) {
@@ -2283,6 +4351,176 @@
     }, [resetSignal, props.xRange]);
 
     return h("div", { className: "chart-shell" }, h("canvas", { ref: canvasRef }));
+  }
+
+  function LightweightPerformanceChart(props) {
+    const containerRef = useRef(null);
+    const chartRef = useRef(null);
+    const portfolioSeriesRef = useRef(null);
+    const benchmarkSeriesRefs = useRef({});
+    const suppressRangeEventRef = useRef(false);
+
+    const labels = ensureArray(props.series).map(function (item) { return String(item.date || ""); });
+
+    useEffect(function () {
+      const container = containerRef.current;
+      const lib = window.LightweightCharts;
+      if (!container || !lib || chartRef.current) {
+        return undefined;
+      }
+
+      container.innerHTML = "";
+      const chart = lib.createChart(container, {
+        width: Math.max(container.clientWidth || 0, 320),
+        height: Math.max(container.clientHeight || 0, 280),
+        layout: {
+          background: { color: "#ffffff" },
+          textColor: "#64748b",
+          fontFamily: "Arial, sans-serif",
+        },
+        grid: {
+          vertLines: { color: "#eef2f7" },
+          horzLines: { color: "#eef2f7" },
+        },
+        crosshair: {
+          mode: lib.CrosshairMode ? lib.CrosshairMode.Normal : 0,
+          vertLine: { color: "rgba(37, 99, 235, 0.18)", width: 1, style: 0 },
+          horzLine: { color: "rgba(37, 99, 235, 0.18)", width: 1, style: 0 },
+        },
+        rightPriceScale: {
+          visible: true,
+          borderColor: "#e2e8f0",
+          scaleMargins: { top: 0.12, bottom: 0.12 },
+        },
+        leftPriceScale: {
+          visible: false,
+        },
+        timeScale: {
+          borderColor: "#e2e8f0",
+          timeVisible: false,
+          secondsVisible: false,
+          rightOffset: 0,
+          fixLeftEdge: true,
+          lockVisibleTimeRangeOnResize: true,
+          allowShiftVisibleRangeOnWhitespaceReplacement: false,
+          barSpacing: labels.length > 365 ? 4 : labels.length > 180 ? 5 : 7,
+        },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+        localization: { locale: "ko-KR" },
+      });
+
+      const portfolioSeries = chart.addAreaSeries({
+        lineColor: "#f6c445",
+        topColor: "rgba(246, 196, 69, 0.22)",
+        bottomColor: "rgba(246, 196, 69, 0.02)",
+        lineWidth: 2,
+        priceLineVisible: true,
+        lastValueVisible: true,
+      });
+
+      chart.timeScale().subscribeVisibleLogicalRangeChange(function (range) {
+        if (!range || suppressRangeEventRef.current || typeof props.onRangeChange !== "function") {
+          return;
+        }
+        props.onRangeChange({
+          min: Math.max(0, Math.floor(Number(range.from || 0))),
+          max: Math.max(0, Math.ceil(Number(range.to || 0))),
+        });
+      });
+
+      const resizeObserver = new ResizeObserver(function (entries) {
+        const entry = entries && entries[0];
+        if (!entry || !chartRef.current) {
+          return;
+        }
+        const width = Math.max(Math.round(entry.contentRect.width || 0), 320);
+        const height = Math.max(Math.round(entry.contentRect.height || 0), 280);
+        chartRef.current.applyOptions({ width: width, height: height });
+      });
+      resizeObserver.observe(container);
+
+      chartRef.current = chart;
+      portfolioSeriesRef.current = portfolioSeries;
+      benchmarkSeriesRefs.current = {};
+
+      return function () {
+        resizeObserver.disconnect();
+        chart.remove();
+        chartRef.current = null;
+        portfolioSeriesRef.current = null;
+        benchmarkSeriesRefs.current = {};
+      };
+    }, []);
+
+    useEffect(function () {
+      if (!portfolioSeriesRef.current || !chartRef.current) {
+        return;
+      }
+      const lib = window.LightweightCharts;
+      ensureArray(props.benchmarks).forEach(function (benchmark) {
+        if (!benchmark || !benchmark.key || benchmarkSeriesRefs.current[benchmark.key]) {
+          return;
+        }
+        benchmarkSeriesRefs.current[benchmark.key] = chartRef.current.addLineSeries({
+          color: benchmark.color,
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        });
+      });
+      const portfolioRows = ensureArray(props.series).map(function (item) {
+        return {
+          time: String(item.date || ""),
+          value: Number(item.return_pct || 0),
+        };
+      }).filter(function (item) {
+        return item.time && Number.isFinite(item.value);
+      });
+      portfolioSeriesRef.current.setData(portfolioRows);
+      ensureArray(props.benchmarks).forEach(function (benchmark) {
+        const series = benchmarkSeriesRefs.current[benchmark.key];
+        if (!series) {
+          return;
+        }
+        const benchmarkRows = ensureArray(benchmark.rows).map(function (item) {
+          return {
+            time: String(item.date || ""),
+            value: Number(item.return_pct || 0),
+          };
+        }).filter(function (item) {
+          return item.time && Number.isFinite(item.value);
+        });
+        series.setData(benchmarkRows);
+      });
+      if (chartRef.current && !props.xRange) {
+        chartRef.current.timeScale().fitContent();
+      }
+    }, [props.series, props.benchmarks]);
+
+    useEffect(function () {
+      if (!chartRef.current) {
+        return;
+      }
+      if (!props.xRange || props.xRange.min == null || props.xRange.max == null) {
+        suppressRangeEventRef.current = true;
+        chartRef.current.timeScale().fitContent();
+        window.setTimeout(function () {
+          suppressRangeEventRef.current = false;
+        }, 0);
+        return;
+      }
+      suppressRangeEventRef.current = true;
+      chartRef.current.timeScale().setVisibleLogicalRange({
+        from: Number(props.xRange.min || 0),
+        to: Number(props.xRange.max || 0),
+      });
+      window.setTimeout(function () {
+        suppressRangeEventRef.current = false;
+      }, 0);
+    }, [props.xRange, props.resetSignal]);
+
+    return h("div", { className: "chart-shell" }, h("div", { ref: containerRef, className: "tv-performance-chart-shell" }));
   }
 
   function buildDrawdownSeries(rows) {
@@ -2592,172 +4830,328 @@
 
   function StrategyBacktestChart(props) {
     const rows = ensureArray(props.rows);
-    const labels = rows.map(function (item) { return item.date; });
-    const pricePoint = function (value) {
-      return value == null || !Number.isFinite(Number(value)) ? null : Number(value);
-    };
-    const hasPriceSeries = rows.some(function (item) {
-      return Number.isFinite(Number(item && item.ma20)) || Number.isFinite(Number(item && item.ma60)) || Number.isFinite(Number(item && item.ma200));
-    });
-    const { canvasRef } = useChartLifecycle(function (canvas) {
-      var datasets = [
-        {
-          label: props.indexName || "Index",
-          data: rows.map(function (item) { return portfolioChartPoint(item.benchmark_return_pct); }),
-          borderColor: "#111827",
-          backgroundColor: "rgba(17, 24, 39, 0.08)",
-          yAxisID: "yReturn",
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          tension: 0.16,
-          borderWidth: 2,
-        },
-        {
-          label: props.strategyName || "Strategy",
-          data: rows.map(function (item) { return portfolioChartPoint(item.strategy_return_pct); }),
-          borderColor: "#f59e0b",
-          backgroundColor: "rgba(245, 158, 11, 0.14)",
-          yAxisID: "yReturn",
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          tension: 0.16,
-          borderWidth: 2.4,
-        },
-      ];
-      if (hasPriceSeries) {
-        datasets = datasets.concat([
-          {
-            label: "20일선",
-            data: rows.map(function (item) { return pricePoint(item.ma20); }),
-            borderColor: "#ef4444",
-            backgroundColor: "rgba(239, 68, 68, 0.05)",
-            yAxisID: "yPrice",
-            pointRadius: 0,
-            pointHoverRadius: 3,
-            tension: 0.12,
-            borderWidth: 1.1,
-          },
-          {
-            label: "60일선",
-            data: rows.map(function (item) { return pricePoint(item.ma60); }),
-            borderColor: "#2563eb",
-            backgroundColor: "rgba(37, 99, 235, 0.05)",
-            yAxisID: "yPrice",
-            pointRadius: 0,
-            pointHoverRadius: 3,
-            tension: 0.12,
-            borderWidth: 1.1,
-          },
-          {
-            label: "200일선",
-            data: rows.map(function (item) { return pricePoint(item.ma200); }),
-            borderColor: "#16a34a",
-            backgroundColor: "rgba(22, 163, 74, 0.05)",
-            yAxisID: "yPrice",
-            pointRadius: 0,
-            pointHoverRadius: 3,
-            tension: 0.12,
-            borderWidth: 1.1,
-          },
-        ]);
+    const containerRef = useRef(null);
+    const chartRef = useRef(null);
+    const seriesRef = useRef(null);
+    const rowsRef = useRef(rows);
+    const visibleBaseIndexRef = useRef(0);
+    const [hoverData, setHoverData] = useState(null);
+
+    useEffect(function () {
+      rowsRef.current = rows;
+    }, [rows]);
+
+    const buildNormalizedSeriesData = function (sourceRows, baseIndex) {
+      const safeRows = ensureArray(sourceRows);
+      if (!safeRows.length) {
+        return { benchmarkData: [], strategyData: [] };
       }
-      return new Chart(canvas, {
-        type: "line",
-        data: {
-          labels: labels,
-          datasets: datasets,
+      const clampedBaseIndex = Math.max(0, Math.min(safeRows.length - 1, Number.isFinite(baseIndex) ? baseIndex : 0));
+      const baseRow = safeRows[clampedBaseIndex] || {};
+      const baseBenchmarkNavRaw = Number(baseRow.benchmark_nav);
+      const baseStrategyNavRaw = Number(baseRow.nav);
+      const fallbackBaseBenchmark = 100 + Number(baseRow.benchmark_return_pct || 0);
+      const fallbackBaseStrategy = 100 + Number(baseRow.strategy_return_pct || 0);
+      const safeBaseBenchmarkNav = Number.isFinite(baseBenchmarkNavRaw) && baseBenchmarkNavRaw > 0
+        ? baseBenchmarkNavRaw
+        : (Number.isFinite(fallbackBaseBenchmark) && fallbackBaseBenchmark > 0 ? fallbackBaseBenchmark : 100);
+      const safeBaseStrategyNav = Number.isFinite(baseStrategyNavRaw) && baseStrategyNavRaw > 0
+        ? baseStrategyNavRaw
+        : (Number.isFinite(fallbackBaseStrategy) && fallbackBaseStrategy > 0 ? fallbackBaseStrategy : 100);
+      const benchmarkData = [];
+      const strategyData = [];
+      safeRows.forEach(function (item) {
+        const time = String(item.date || "").slice(0, 10);
+        const benchmarkNavRaw = Number(item && item.benchmark_nav);
+        const strategyNavRaw = Number(item && item.nav);
+        const fallbackBenchmarkNav = 100 + Number(item && item.benchmark_return_pct || 0);
+        const fallbackStrategyNav = 100 + Number(item && item.strategy_return_pct || 0);
+        const benchmarkNav = Number.isFinite(benchmarkNavRaw) && benchmarkNavRaw >= 0
+          ? benchmarkNavRaw
+          : (Number.isFinite(fallbackBenchmarkNav) && fallbackBenchmarkNav >= 0 ? fallbackBenchmarkNav : null);
+        const strategyNav = Number.isFinite(strategyNavRaw) && strategyNavRaw >= 0
+          ? strategyNavRaw
+          : (Number.isFinite(fallbackStrategyNav) && fallbackStrategyNav >= 0 ? fallbackStrategyNav : null);
+        if (time && benchmarkNav != null) {
+          benchmarkData.push({ time: time, value: ((benchmarkNav / safeBaseBenchmarkNav) - 1.0) * 100.0 });
+        }
+        if (time && strategyNav != null) {
+          strategyData.push({ time: time, value: ((strategyNav / safeBaseStrategyNav) - 1.0) * 100.0 });
+        }
+      });
+      return {
+        benchmarkData: benchmarkData,
+        strategyData: strategyData,
+      };
+    };
+
+    const chartTimeToIso = function (time) {
+      if (!time) {
+        return "";
+      }
+      if (typeof time === "string") {
+        return String(time).slice(0, 10);
+      }
+      if (time && typeof time.year === "number") {
+        return String(time.year) + "-" + String(time.month || 1).padStart(2, "0") + "-" + String(time.day || 1).padStart(2, "0");
+      }
+      return "";
+    };
+
+    const applyNormalizedSeries = function (baseIndex, preserveRange) {
+      const chart = chartRef.current;
+      const series = seriesRef.current;
+      const sourceRows = rowsRef.current;
+      if (!chart || !series) {
+        return;
+      }
+      const range = preserveRange && chart.timeScale() && typeof chart.timeScale().getVisibleLogicalRange === "function"
+        ? chart.timeScale().getVisibleLogicalRange()
+        : null;
+      const normalized = buildNormalizedSeriesData(sourceRows, baseIndex);
+      series.benchmarkSeries.setData(normalized.benchmarkData);
+      series.strategySeries.setData(normalized.strategyData);
+      if (range && chart.timeScale() && typeof chart.timeScale().setVisibleLogicalRange === "function") {
+        chart.timeScale().setVisibleLogicalRange(range);
+      }
+    };
+
+    useEffect(function () {
+      const container = containerRef.current;
+      const lib = window.LightweightCharts;
+      if (!container || !lib || chartRef.current) {
+        return undefined;
+      }
+
+      container.innerHTML = "";
+      const chart = lib.createChart(container, {
+        width: Math.max(container.clientWidth || 0, 320),
+        height: Math.max(container.clientHeight || 0, 320),
+        layout: {
+          background: { color: "#ffffff" },
+          textColor: "#64748b",
+          fontFamily: "Arial, sans-serif",
         },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: false,
-          interaction: { mode: "index", intersect: false },
-          scales: {
-            x: {
-              ticks: {
-                color: "#111827",
-                maxTicksLimit: 12,
-                callback: function (value, index) {
-                  return formatDateLabel(labels[index]);
-                },
-              },
-              grid: { color: "#e5e7eb" },
-            },
-            yReturn: {
-              position: "left",
-              ticks: {
-                color: "#111827",
-                callback: function (value) { return numberFormat(value, 1) + "%"; },
-              },
-              grid: { color: "#e5e7eb" },
-            },
-            yPrice: {
-              position: "right",
-              display: hasPriceSeries,
-              ticks: {
-                color: "#111827",
-                callback: function (value) { return numberFormat(value, 0); },
-              },
-              grid: { drawOnChartArea: false },
-            },
+        grid: {
+          vertLines: { color: "#eef2f7" },
+          horzLines: { color: "#eef2f7" },
+        },
+        crosshair: {
+          mode: lib.CrosshairMode ? lib.CrosshairMode.Normal : 0,
+          vertLine: { color: "rgba(37, 99, 235, 0.16)", width: 1, style: 0 },
+          horzLine: { color: "rgba(37, 99, 235, 0.16)", width: 1, style: 0 },
+        },
+        rightPriceScale: {
+          visible: true,
+          borderColor: "#e2e8f0",
+          scaleMargins: { top: 0.08, bottom: 0.08 },
+        },
+        timeScale: {
+          borderColor: "#e2e8f0",
+          timeVisible: false,
+          secondsVisible: false,
+          rightOffset: 2,
+          barSpacing: rows.length > 1200 ? 2 : rows.length > 700 ? 2.8 : rows.length > 365 ? 3.8 : 5.4,
+          tickMarkFormatter: function (time) {
+            const iso = typeof time === "string"
+              ? time
+              : time && typeof time.year === "number"
+                ? String(time.year) + "-" + String(time.month || 1).padStart(2, "0") + "-" + String(time.day || 1).padStart(2, "0")
+                : "";
+            return formatYearMonthLabel(iso);
           },
-          plugins: {
-            legend: { labels: { color: "#111827", font: { weight: "800" } } },
-            tooltip: {
-              callbacks: {
-                title: function (items) {
-                  return items.length ? labels[items[0].dataIndex] : "";
-                },
-                label: function (context) {
-                  const isReturn = context.dataset.yAxisID === "yReturn";
-                  if (isReturn) {
-                    return context.dataset.label + ": " + formatPercent(context.raw, 2);
-                  }
-                  return context.dataset.label + ": " + numberFormat(context.raw, 2);
-                },
-                afterBody: function (items) {
-                  if (!items.length) {
-                    return "";
-                  }
-                  const row = rows[items[0].dataIndex] || {};
-                  const lines = [];
-                  const holdings = ensureArray(row.holdings);
-                  if (holdings.length) {
-                    const sorted = holdings.slice().sort(function (a, b) {
-                      return Number(b && b.weight_pct || 0) - Number(a && a.weight_pct || 0);
-                    });
-                    lines.push("\ubcf4\uc720 \uc885\ubaa9 (" + numberFormat(holdings.length, 0) + "\uac1c)");
-                    sorted.slice(0, 12).forEach(function (item) {
-                      const stockName = String((item && (item.stock_name || item.stock_code)) || "-");
-                      const weightPct = Number(item && item.weight_pct);
-                      lines.push("? " + stockName + " " + (Number.isFinite(weightPct) ? numberFormat(weightPct, 2) + "%" : "-"));
-                    });
-                    if (sorted.length > 12) {
-                      lines.push("? " + numberFormat(sorted.length - 12, 0) + "?");
-                    }
-                  }
-                  if (!hasPriceSeries) {
-                    return lines;
-                  }
-                  lines.push("\uc885\uac00: " + numberFormat(row.close, 2));
-                  lines.push("20\uc77c\uc120: " + (row.ma20 == null ? "-" : numberFormat(row.ma20, 2)));
-                  lines.push("60\uc77c\uc120: " + (row.ma60 == null ? "-" : numberFormat(row.ma60, 2)));
-                  lines.push("200\uc77c\uc120: " + (row.ma200 == null ? "-" : numberFormat(row.ma200, 2)));
-                  lines.push("RSI(14): " + (row.rsi14 == null ? "-" : numberFormat(row.rsi14, 1)));
-                  return lines;
-                },
-              },
-            },
-            zoom: {
-              pan: { enabled: true, mode: "x", modifierKey: null },
-              zoom: { wheel: { enabled: true }, pinch: { enabled: true }, drag: { enabled: true }, mode: "x" },
-            },
-          },
+        },
+        localization: {
+          locale: "ko-KR",
+          priceFormatter: function (value) { return numberFormat(value, 1) + "%"; },
+        },
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: false,
+        },
+        handleScale: {
+          axisPressedMouseMove: true,
+          mouseWheel: true,
+          pinch: true,
         },
       });
-    }, [props.rows, props.indexName, props.strategyName]);
+      chartRef.current = chart;
 
-    return h("div", { className: "chart-shell strategy-chart-shell" }, h("canvas", { ref: canvasRef }));
+      const benchmarkSeries = chart.addLineSeries({
+        color: "#111827",
+        lineWidth: 2.2,
+        crosshairMarkerRadius: 4,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
+      const strategySeries = chart.addLineSeries({
+        color: "#f59e0b",
+        lineWidth: 2.6,
+        crosshairMarkerRadius: 4,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
+      seriesRef.current = {
+        benchmarkSeries: benchmarkSeries,
+        strategySeries: strategySeries,
+      };
+
+      const handleCrosshairMove = function (param) {
+        if (!param || !param.point || !param.time || !container) {
+          setHoverData(null);
+          return;
+        }
+        const point = param.point;
+        const width = container.clientWidth || 0;
+        const height = container.clientHeight || 0;
+        if (point.x < 0 || point.x > width || point.y < 0 || point.y > height) {
+          setHoverData(null);
+          return;
+        }
+        const iso = chartTimeToIso(param.time);
+        if (!iso) {
+          setHoverData(null);
+          return;
+        }
+        const sourceRows = rowsRef.current;
+        const row = sourceRows.find(function (item) {
+          return String(item && item.date || "").slice(0, 10) === iso;
+        }) || null;
+        if (!row) {
+          setHoverData(null);
+          return;
+        }
+        const holdings = ensureArray(row.holdings)
+          .filter(function (item) { return Number(item && item.weight_pct) > 0; })
+          .slice()
+          .sort(function (a, b) { return Number(b && b.weight_pct || 0) - Number(a && a.weight_pct || 0); });
+        setHoverData({
+          date: iso,
+          benchmark: Number(row.benchmark_return_pct),
+          strategy: Number(row.strategy_return_pct),
+          holdings: holdings.slice(0, 12),
+          holdingsCount: holdings.length,
+        });
+      };
+      if (typeof chart.subscribeCrosshairMove === "function") {
+        chart.subscribeCrosshairMove(handleCrosshairMove);
+      }
+
+      const handleVisibleRangeChange = function (range) {
+        if (!range || !Number.isFinite(range.from)) {
+          return;
+        }
+        const nextBaseIndex = Math.max(0, Math.min(rowsRef.current.length - 1, Math.floor(range.from)));
+        if (nextBaseIndex === visibleBaseIndexRef.current) {
+          return;
+        }
+        visibleBaseIndexRef.current = nextBaseIndex;
+        applyNormalizedSeries(nextBaseIndex, true);
+      };
+      if (chart.timeScale() && typeof chart.timeScale().subscribeVisibleLogicalRangeChange === "function") {
+        chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+      }
+
+      const resize = function () {
+        if (!container || !chartRef.current) {
+          return;
+        }
+        chartRef.current.applyOptions({
+          width: Math.max(container.clientWidth || 0, 320),
+          height: Math.max(container.clientHeight || 0, 320),
+        });
+      };
+
+      let observer = null;
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(resize);
+        observer.observe(container);
+      } else {
+        window.addEventListener("resize", resize);
+      }
+
+      return function () {
+        if (loadMoreTimerRef.current) {
+          clearTimeout(loadMoreTimerRef.current);
+          loadMoreTimerRef.current = null;
+        }
+        if (observer) {
+          observer.disconnect();
+        } else {
+          window.removeEventListener("resize", resize);
+        }
+        setHoverData(null);
+        if (chart && typeof chart.unsubscribeCrosshairMove === "function") {
+          chart.unsubscribeCrosshairMove(handleCrosshairMove);
+        }
+        if (chart && chart.timeScale() && typeof chart.timeScale().unsubscribeVisibleLogicalRangeChange === "function") {
+          chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+        }
+        seriesRef.current = null;
+        if (chartRef.current) {
+          chartRef.current.remove();
+          chartRef.current = null;
+        }
+        if (container) {
+          container.innerHTML = "";
+        }
+      };
+    }, []);
+
+    useEffect(function () {
+      const chart = chartRef.current;
+      if (!chart || !rows.length) {
+        return;
+      }
+      visibleBaseIndexRef.current = 0;
+      applyNormalizedSeries(0, false);
+      if (chart.timeScale()) {
+        chart.timeScale().fitContent();
+      }
+    }, [rows]);
+
+    return h(
+      "div",
+      { className: "chart-shell strategy-chart-shell strategy-lightweight-shell" },
+      h("div", { ref: containerRef, className: "strategy-lightweight-host" }),
+      h(
+        "div",
+        { className: "score-history-lightweight-legend strategy-lightweight-legend" },
+        h("span", null, h("i", { className: "benchmark" }), props.indexName || "Index"),
+        h("span", null, h("i", { className: "strategy" }), props.strategyName || "Strategy")
+      ),
+      hoverData
+        ? h(
+            "div",
+            { className: "strategy-lightweight-hover-card" },
+            h(
+              "div",
+              { className: "strategy-lightweight-hover-head" },
+              h("strong", null, hoverData.date),
+              h("span", null, (props.indexName || "Index") + " " + formatPercent(hoverData.benchmark, 2)),
+              h("span", null, (props.strategyName || "Strategy") + " " + formatPercent(hoverData.strategy, 2))
+            ),
+            hoverData.holdingsCount
+              ? h(
+                  "div",
+                  { className: "strategy-lightweight-hover-body" },
+                  h("div", { className: "strategy-lightweight-hover-title" }, "보유 종목 " + numberFormat(hoverData.holdingsCount, 0) + "개"),
+                  hoverData.holdings.map(function (item, index) {
+                    const stockName = String((item && (item.stock_name || item.stock_code)) || "-");
+                    return h(
+                      "div",
+                      { key: stockName + "-" + index, className: "strategy-lightweight-hover-row" },
+                      h("span", null, stockName),
+                      h("strong", null, formatPercent(item.weight_pct, 2))
+                    );
+                  })
+                )
+              : h("div", { className: "strategy-lightweight-hover-empty" }, "보유 종목 없음")
+          )
+        : null
+    );
   }
 
   function StrategyRsiChart(props) {
@@ -3221,6 +5615,15 @@
 
   function ScoreHistoryChart(props) {
     const rows = ensureArray(props.rows);
+    if (!props.forceClassic && window.LightweightCharts && rows.length) {
+      return h(LightweightScoreHistoryChart, {
+        rows: rows,
+        markers: props.markers,
+        hasMore: !!props.hasMore,
+        loadingMore: !!props.loadingMore,
+        onNeedMore: props.onNeedMore,
+      });
+    }
     const labels = rows.map(function (item) { return item.date; });
     const scoreData = rows.map(function (item) { return portfolioChartPoint(item.score); });
     const markerMap = {};
@@ -3395,6 +5798,726 @@
     return h("div", { className: "score-history-chart-shell" }, h("canvas", { ref: canvasRef }));
   }
 
+  function LightweightScoreHistoryChart(props) {
+    const rows = ensureArray(props.rows);
+    const markers = ensureArray(props.markers);
+    const INITIAL_VISIBLE_BARS = 120;
+    const LOAD_MORE_THRESHOLD = 14;
+    const containerRef = useRef(null);
+    const chartRef = useRef(null);
+    const seriesRef = useRef(null);
+    const didFitContentRef = useRef(false);
+    const didSetInitialRangeRef = useRef(false);
+    const onNeedMoreRef = useRef(props.onNeedMore);
+    const loadingMoreRef = useRef(!!props.loadingMore);
+    const hasMoreRef = useRef(props.hasMore !== false);
+    const earliestDateRef = useRef("");
+    const visibleRangeRef = useRef(null);
+    const previousRowsLengthRef = useRef(rows.length);
+    const previousEarliestDateRef = useRef(rows.length ? String(rows[0].date || "") : "");
+    const lastRequestedEarliestDateRef = useRef("");
+    const requestMoreForRangeRef = useRef(function () {});
+    const loadMoreTimerRef = useRef(null);
+
+    useEffect(function () {
+      onNeedMoreRef.current = props.onNeedMore;
+      loadingMoreRef.current = !!props.loadingMore;
+      hasMoreRef.current = props.hasMore !== false;
+      earliestDateRef.current = rows.length ? String(rows[0].date || "") : "";
+    }, [props.onNeedMore, props.loadingMore, props.hasMore, props.rows]);
+
+    useEffect(function () {
+      const container = containerRef.current;
+      const lib = window.LightweightCharts;
+      if (!container || !lib || chartRef.current) {
+        return undefined;
+      }
+
+      container.innerHTML = "";
+
+      const chart = lib.createChart(container, {
+        width: Math.max(container.clientWidth || 0, 320),
+        height: Math.max(container.clientHeight || 0, 260),
+        layout: {
+          background: { color: "#ffffff" },
+          textColor: "#64748b",
+          fontFamily: "Arial, sans-serif",
+        },
+        grid: {
+          vertLines: { color: "#eef2f7" },
+          horzLines: { color: "#eef2f7" },
+        },
+        crosshair: {
+          mode: lib.CrosshairMode ? lib.CrosshairMode.Normal : 0,
+          vertLine: { color: "rgba(37, 99, 235, 0.18)", width: 1, style: 0 },
+          horzLine: { color: "rgba(37, 99, 235, 0.18)", width: 1, style: 0 },
+        },
+        rightPriceScale: {
+          visible: true,
+          borderColor: "#e2e8f0",
+          scaleMargins: { top: 0.08, bottom: 0.32 },
+        },
+        leftPriceScale: {
+          visible: true,
+          borderColor: "#e2e8f0",
+          scaleMargins: { top: 0.08, bottom: 0.32 },
+        },
+        timeScale: {
+          borderColor: "#e2e8f0",
+          timeVisible: false,
+          secondsVisible: false,
+          rightOffset: 0,
+          fixLeftEdge: true,
+          lockVisibleTimeRangeOnResize: true,
+          allowShiftVisibleRangeOnWhitespaceReplacement: false,
+          barSpacing: rows.length > 800 ? 2.5 : rows.length > 365 ? 3.5 : rows.length > 180 ? 5 : 8,
+        },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+        localization: {
+          locale: "ko-KR",
+        },
+      });
+      chartRef.current = chart;
+      const buildScoreAutoscale = function (scoreRows) {
+        const numericScores = ensureArray(scoreRows)
+          .map(function (item) { return Number(item && item.value); })
+          .filter(function (value) { return Number.isFinite(value); });
+        if (!numericScores.length) {
+          return undefined;
+        }
+        var minScore = Math.min.apply(null, numericScores);
+        var maxScore = Math.max.apply(null, numericScores);
+        if (!Number.isFinite(minScore) || !Number.isFinite(maxScore)) {
+          return undefined;
+        }
+        if (minScore === maxScore) {
+          minScore -= 5;
+          maxScore += 5;
+        } else {
+          var pad = Math.max((maxScore - minScore) * 0.12, 6);
+          minScore -= pad;
+          maxScore += pad;
+        }
+        return {
+          priceRange: {
+            minValue: minScore,
+            maxValue: maxScore,
+          },
+        };
+      };
+
+      const priceSeries = chart.addCandlestickSeries({
+        priceScaleId: "left",
+        upColor: "#ef4444",
+        downColor: "#2563eb",
+        borderUpColor: "#ef4444",
+        borderDownColor: "#2563eb",
+        wickUpColor: "#ef4444",
+        wickDownColor: "#2563eb",
+        priceLineVisible: false,
+      });
+      const scoreSeries = chart.addAreaSeries({
+        priceScaleId: "right",
+        lineColor: "#2563eb",
+        topColor: "rgba(37, 99, 235, 0.22)",
+        bottomColor: "rgba(37, 99, 235, 0.05)",
+        lineWidth: 2.5,
+        priceLineVisible: false,
+        autoscaleInfoProvider: function () {
+          return buildScoreAutoscale(scoreSeries._codexScoreData || []);
+        },
+      });
+      const tradingValueSeries = chart.addHistogramSeries({
+        priceScaleId: "volume",
+        base: 0,
+        color: "rgba(148, 163, 184, 0.72)",
+        priceFormat: { type: "volume" },
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
+      chart.priceScale("volume").applyOptions({
+        visible: false,
+        scaleMargins: { top: 0.76, bottom: 0.02 },
+      });
+      seriesRef.current = {
+        priceSeries: priceSeries,
+        scoreSeries: scoreSeries,
+        tradingValueSeries: tradingValueSeries,
+      };
+
+      const scheduleLoadMore = function (earliestDate) {
+        if (!earliestDate || lastRequestedEarliestDateRef.current === earliestDate) {
+          return;
+        }
+        if (loadMoreTimerRef.current) {
+          clearTimeout(loadMoreTimerRef.current);
+        }
+        loadMoreTimerRef.current = setTimeout(function () {
+          loadMoreTimerRef.current = null;
+          if (!hasMoreRef.current || loadingMoreRef.current || typeof onNeedMoreRef.current !== "function") {
+            return;
+          }
+          if (lastRequestedEarliestDateRef.current === earliestDate) {
+            return;
+          }
+          lastRequestedEarliestDateRef.current = earliestDate;
+          loadingMoreRef.current = true;
+          onNeedMoreRef.current(earliestDate);
+        }, 120);
+      };
+
+      const requestMoreForRange = function (range) {
+        if (!range || !Number.isFinite(range.from) || !Number.isFinite(range.to)) {
+          return;
+        }
+        if (!hasMoreRef.current || loadingMoreRef.current || typeof onNeedMoreRef.current !== "function") {
+          return;
+        }
+        var barsBefore = null;
+        var barsCount = null;
+        if (seriesRef.current && seriesRef.current.priceSeries && typeof seriesRef.current.priceSeries.barsInLogicalRange === "function") {
+          var barsInfo = seriesRef.current.priceSeries.barsInLogicalRange(range);
+          if (barsInfo) {
+            barsBefore = Number.isFinite(barsInfo.barsBefore) ? barsInfo.barsBefore : null;
+            barsCount = Number.isFinite(barsInfo.barsCount) ? barsInfo.barsCount : null;
+          }
+        }
+        if (barsBefore == null && Number.isFinite(range.from)) {
+          barsBefore = range.from;
+        }
+        const visibleSpan = Number.isFinite(range.to - range.from) ? (range.to - range.from) : 0;
+        const nearLeftEdge = barsBefore != null && barsBefore <= LOAD_MORE_THRESHOLD;
+        const zoomedOutGap = barsBefore != null && barsCount != null && visibleSpan > 0 && barsBefore <= (LOAD_MORE_THRESHOLD * 2) && barsCount < (visibleSpan - 6);
+        if (!nearLeftEdge && !zoomedOutGap) {
+          return;
+        }
+        scheduleLoadMore(earliestDateRef.current);
+      };
+      requestMoreForRangeRef.current = requestMoreForRange;
+      const rangeHandler = function (range) {
+        visibleRangeRef.current = range || null;
+        requestMoreForRange(range);
+      };
+      if (chart.timeScale() && typeof chart.timeScale().subscribeVisibleLogicalRangeChange === "function") {
+        chart.timeScale().subscribeVisibleLogicalRangeChange(rangeHandler);
+      }
+
+      const resize = function () {
+        if (!container || !chartRef.current) {
+          return;
+        }
+        chartRef.current.applyOptions({
+          width: Math.max(container.clientWidth || 0, 320),
+          height: Math.max(container.clientHeight || 0, 260),
+        });
+      };
+
+      let observer = null;
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(resize);
+        observer.observe(container);
+      } else {
+        window.addEventListener("resize", resize);
+      }
+
+      return function () {
+        if (observer) {
+          observer.disconnect();
+        } else {
+          window.removeEventListener("resize", resize);
+        }
+        if (chart && chart.timeScale() && typeof chart.timeScale().unsubscribeVisibleLogicalRangeChange === "function") {
+          chart.timeScale().unsubscribeVisibleLogicalRangeChange(rangeHandler);
+        }
+        seriesRef.current = null;
+        if (chartRef.current) {
+          chartRef.current.remove();
+          chartRef.current = null;
+        }
+        if (container) {
+          container.innerHTML = "";
+        }
+      };
+    }, []);
+
+    useEffect(function () {
+      const chart = chartRef.current;
+      const series = seriesRef.current;
+      if (!chart || !series || !rows.length) {
+        return;
+      }
+
+      const priceData = [];
+      const scoreData = [];
+      const tradingValueData = [];
+      const markerMap = {};
+      markers.forEach(function (marker) {
+        if (!marker || !marker.date) {
+          return;
+        }
+        const dateKey = String(marker.date || "").slice(0, 10);
+        const list = markerMap[dateKey] || [];
+        list.push(String(marker.type || "").toLowerCase());
+        markerMap[dateKey] = list;
+      });
+      const scoreMarkers = [];
+      rows.forEach(function (item) {
+        const time = String(item.date || "").slice(0, 10);
+        const score = Number(item.score);
+        const plotScore = Number.isFinite(score) && Math.abs(score) <= 1000 ? score : null;
+        const open = Number(item.open);
+        const high = Number(item.high);
+        const low = Number(item.low);
+        const close = Number(item.close);
+        const tradingValue = Number(item.trading_value_100m);
+        if (
+          time
+          && Number.isFinite(open) && open > 0
+          && Number.isFinite(high) && high > 0
+          && Number.isFinite(low) && low > 0
+          && Number.isFinite(close) && close > 0
+        ) {
+          priceData.push({
+            time: time,
+            open: open,
+            high: Math.max(high, open, close),
+            low: Math.min(low, open, close),
+            close: close,
+          });
+        }
+        if (time && plotScore != null) {
+          scoreData.push({ time: time, value: plotScore });
+          const dayMarkers = markerMap[time] || [];
+          if (dayMarkers.indexOf("buy") >= 0) {
+            scoreMarkers.push({
+              time: time,
+              position: "belowBar",
+              color: "#16a34a",
+              shape: "arrowUp",
+              text: "매수",
+            });
+          }
+          if (dayMarkers.indexOf("sell") >= 0) {
+            scoreMarkers.push({
+              time: time,
+              position: "aboveBar",
+              color: "#dc2626",
+              shape: "arrowDown",
+              text: "매도",
+            });
+          }
+        }
+        if (time && Number.isFinite(tradingValue) && tradingValue >= 0) {
+          tradingValueData.push({
+            time: time,
+            value: tradingValue,
+            color: Number(item.change_pct || 0) >= 0 ? "rgba(37, 99, 235, 0.42)" : "rgba(239, 68, 68, 0.36)",
+          });
+        }
+      });
+
+      series.priceSeries.setData(priceData);
+      series.scoreSeries.setData(scoreData);
+      series.tradingValueSeries.setData(tradingValueData);
+      series.scoreSeries._codexScoreData = scoreData;
+      if (typeof series.scoreSeries.setMarkers === "function") {
+        series.scoreSeries.setMarkers(scoreMarkers);
+      }
+      if (!didFitContentRef.current) {
+        chart.timeScale().fitContent();
+        didFitContentRef.current = true;
+      }
+      if (!didSetInitialRangeRef.current && priceData.length) {
+        const initialBars = Math.min(INITIAL_VISIBLE_BARS, priceData.length);
+        const fromIndex = Math.max(0, priceData.length - initialBars);
+        const fromTime = priceData[fromIndex] && priceData[fromIndex].time;
+        const toTime = priceData[priceData.length - 1] && priceData[priceData.length - 1].time;
+        if (fromTime && toTime && chart.timeScale() && typeof chart.timeScale().setVisibleRange === "function") {
+          chart.timeScale().setVisibleRange({ from: fromTime, to: toTime });
+        } else if (chart.timeScale() && typeof chart.timeScale().setVisibleLogicalRange === "function") {
+          const to = priceData.length + 2;
+          chart.timeScale().setVisibleLogicalRange({ from: fromIndex, to: to });
+        }
+        didSetInitialRangeRef.current = true;
+      } else if (didSetInitialRangeRef.current && rows.length) {
+        const previousRowsLength = Number(previousRowsLengthRef.current) || 0;
+        const previousEarliestDate = previousEarliestDateRef.current;
+        const currentEarliestDate = String(rows[0].date || "");
+        const prependedBars = rows.length > previousRowsLength && previousEarliestDate && currentEarliestDate && currentEarliestDate < previousEarliestDate
+          ? rows.length - previousRowsLength
+          : 0;
+        const currentVisibleRange = visibleRangeRef.current;
+        if (prependedBars > 0 && currentVisibleRange && chart.timeScale() && typeof chart.timeScale().setVisibleLogicalRange === "function") {
+          chart.timeScale().setVisibleLogicalRange({
+            from: currentVisibleRange.from + prependedBars,
+            to: currentVisibleRange.to + prependedBars,
+          });
+        }
+      }
+      previousRowsLengthRef.current = rows.length;
+      previousEarliestDateRef.current = rows.length ? String(rows[0].date || "") : "";
+      if (!loadingMoreRef.current) {
+        lastRequestedEarliestDateRef.current = "";
+      }
+      if (chart.timeScale() && typeof chart.timeScale().getVisibleLogicalRange === "function") {
+        const nextRange = chart.timeScale().getVisibleLogicalRange();
+        visibleRangeRef.current = nextRange || visibleRangeRef.current;
+        if (visibleRangeRef.current && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(function () {
+            if (visibleRangeRef.current) {
+              requestMoreForRangeRef.current(visibleRangeRef.current);
+            }
+          });
+        }
+      }
+    }, [rows, markers]);
+
+    return h(
+      "div",
+      { className: "score-history-chart-shell score-history-lightweight-shell" },
+      h("div", { ref: containerRef, className: "score-history-lightweight-host" }),
+      props.loadingMore
+        ? h(
+            "div",
+            { className: "score-history-chart-loading" },
+            h("div", { className: "loading-bar indeterminate" }, h("span", null)),
+            h("span", null, "이전 구간 로드 중")
+          )
+        : null,
+      h(
+        "div",
+        { className: "score-history-lightweight-legend" },
+        h("span", null, h("i", { className: "price" }), "주가(캔들)"),
+        h("span", null, h("i", { className: "score" }), "종합점수"),
+        h("span", null, h("i", { className: "volume" }), "거래대금(억)")
+      )
+    );
+  }
+
+  function TradingValueHistoryChart(props) {
+    const rows = ensureArray(props.rows);
+    const compact = !!props.compact;
+    const hidePrice = !!props.hidePrice;
+    const labels = rows.map(function (item) { return item.date; });
+    const tradingValues = rows.map(function (item) {
+      const value = Number(item && item.trading_value_100m);
+      return Number.isFinite(value) ? value : null;
+    });
+    const closeRaw = rows.map(function (item) {
+      const value = Number(item && item.close);
+      return Number.isFinite(value) && value > 0 ? value : null;
+    });
+    var firstClose = null;
+    for (var i = 0; i < closeRaw.length; i += 1) {
+      if (closeRaw[i] != null) {
+        firstClose = closeRaw[i];
+        break;
+      }
+    }
+    const closeNormalized = firstClose
+      ? closeRaw.map(function (value) { return value == null ? null : (value / firstClose) * 100; })
+      : [];
+    const tradingOnly = tradingValues.filter(function (value) { return Number.isFinite(Number(value)); }).map(function (value) { return Number(value); });
+    var tradingAxisMin = 0;
+    var tradingAxisMax = 100;
+    if (tradingOnly.length) {
+      var localMin = Math.min.apply(null, tradingOnly);
+      var localMax = Math.max.apply(null, tradingOnly);
+      var span = Math.max(localMax - localMin, 20);
+      var pad = Math.max(span * 0.2, 10);
+      tradingAxisMin = Math.max(0, Math.floor(localMin - pad));
+      tradingAxisMax = Math.ceil(localMax + pad);
+      if (tradingAxisMax <= tradingAxisMin) {
+        tradingAxisMax = tradingAxisMin + 10;
+      }
+    }
+    const { canvasRef } = useChartLifecycle(function (canvas) {
+      return new Chart(canvas, {
+        type: compact ? "bar" : "line",
+        data: {
+          labels: labels,
+          datasets: (hidePrice ? [] : [
+            {
+              label: "주가(정규화)",
+              data: closeNormalized,
+              yAxisID: "yPrice",
+              borderColor: "rgba(71, 85, 105, 0.35)",
+              backgroundColor: "rgba(71, 85, 105, 0.06)",
+              pointRadius: 0,
+              pointHoverRadius: 0,
+              tension: 0.15,
+              borderWidth: 1.5,
+              fill: false,
+              type: "line",
+              order: 1,
+            },
+          ]).concat([
+            {
+              label: "거래대금(억)",
+              data: tradingValues,
+              borderColor: compact ? "rgba(37, 99, 235, 0.9)" : "#2563eb",
+              backgroundColor: compact ? "rgba(37, 99, 235, 0.72)" : "rgba(37, 99, 235, 0.12)",
+              pointBackgroundColor: "#2563eb",
+              pointBorderColor: "#ffffff",
+              pointRadius: compact ? 0 : 4,
+              pointHoverRadius: compact ? 0 : 6,
+              tension: 0.2,
+              borderWidth: compact ? 0 : 2.4,
+              fill: !compact,
+              type: compact ? "bar" : "line",
+              order: 2,
+              barPercentage: compact ? 0.78 : undefined,
+              categoryPercentage: compact ? 0.86 : undefined,
+            },
+          ]),
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            x: {
+              ticks: {
+                color: "#64748b",
+                maxTicksLimit: compact ? 8 : 8,
+                callback: function (value, index) {
+                  return formatDateLabel(labels[index]);
+                },
+                display: !compact,
+              },
+              grid: { color: "#eef2f7" },
+            },
+            y: {
+              min: tradingAxisMin,
+              max: tradingAxisMax,
+              ticks: {
+                color: "#64748b",
+                callback: function (value) { return numberFormat(value, 0); },
+                display: !compact,
+              },
+              grid: { color: "#eef2f7", display: !compact },
+              border: { display: !compact },
+            },
+            yPrice: {
+              display: !hidePrice && !compact,
+              position: "right",
+              grid: { display: false, drawBorder: false },
+              ticks: { display: false },
+            },
+          },
+          plugins: {
+            legend: { display: !compact },
+            tooltip: {
+              callbacks: {
+                title: function (items) {
+                  return items.length ? labels[items[0].dataIndex] : "";
+                },
+                label: function (context) {
+                  const row = rows[context.dataIndex] || {};
+                  if (context.dataset && context.dataset.label === "주가(정규화)") {
+                    return "종가: " + (row.close != null ? numberFormat(row.close, 0) : "-");
+                  }
+                  return [
+                    "거래대금: " + numberFormat(context.raw, 1) + "억",
+                    "종가: " + (row.close != null ? numberFormat(row.close, 0) : "-"),
+                    "등락률: " + formatPercent(row.change_pct, 2),
+                    "순위: " + numberFormat(row.rank, 0) + "위",
+                  ];
+                },
+              },
+            },
+          },
+        },
+      });
+    }, [props.rows]);
+
+    return h("div", { className: "score-history-chart-shell" + (compact ? " compact trading-bars-compact" : "") }, h("canvas", { ref: canvasRef }));
+  }
+
+  function LeaderCalendarScoreChart(props) {
+    const rows = ensureArray(props.rows).filter(function (item) {
+      return item && item.date && Number.isFinite(Number(item.score));
+    });
+    const scoreBasis = props.scoreBasis === "score_o" ? "score_o" : "score";
+    const buildKospiMddRows = function (sourceRows) {
+      var peak = null;
+      return ensureArray(sourceRows).map(function (item) {
+        var closeValue = Number(item && (item.kospi_close != null ? item.kospi_close : item.kospi_normalized));
+        if (!Number.isFinite(closeValue) || closeValue <= 0) {
+          return { date: item && item.date, value: null };
+        }
+        if (peak == null || closeValue > peak) {
+          peak = closeValue;
+        }
+        var drawdown = peak ? ((closeValue / peak) - 1) * 100 : 0;
+        return {
+          date: item.date,
+          value: roundNumber(drawdown, 2),
+        };
+      });
+    };
+    const containerRef = useRef(null);
+    const chartRef = useRef(null);
+    const seriesRef = useRef(null);
+
+    useEffect(function () {
+      const container = containerRef.current;
+      if (!container || !window.LightweightCharts || typeof window.LightweightCharts.createChart !== "function") {
+        return undefined;
+      }
+      const chart = window.LightweightCharts.createChart(container, {
+        width: Math.max(container.clientWidth || 0, 320),
+        height: Math.max(container.clientHeight || 0, 280),
+        layout: {
+          background: { color: "#ffffff" },
+          textColor: "#475467",
+          fontFamily: "'Pretendard', 'Segoe UI', sans-serif",
+        },
+        grid: {
+          vertLines: { color: "#eef2f7" },
+          horzLines: { color: "#eef2f7" },
+        },
+        rightPriceScale: {
+          borderColor: "#e2e8f0",
+          scaleMargins: { top: 0.12, bottom: 0.12 },
+        },
+        leftPriceScale: {
+          visible: true,
+          borderColor: "#e2e8f0",
+          scaleMargins: { top: 0.12, bottom: 0.12 },
+        },
+        timeScale: {
+          borderColor: "#e2e8f0",
+          rightOffset: 2,
+          barSpacing: 10,
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: function (time) {
+            var text = "";
+            if (typeof time === "string") {
+              text = time;
+            } else if (time && typeof time === "object") {
+              var year = Number(time.year || 0);
+              var month = Number(time.month || 0);
+              if (year > 0 && month > 0) {
+                text = String(year) + "/" + String(month).padStart(2, "0");
+              }
+            }
+            if (!text) {
+              return "";
+            }
+            return String(text).slice(0, 7).replace(/-/g, "/");
+          },
+        },
+        crosshair: {
+          vertLine: { color: "rgba(37, 99, 235, 0.18)", width: 1, labelBackgroundColor: "#1d4ed8" },
+          horzLine: { color: "rgba(15, 23, 42, 0.18)", width: 1, labelBackgroundColor: "#0f172a" },
+        },
+        localization: {
+          locale: "ko-KR",
+        },
+      });
+      const scoreSeries = chart.addAreaSeries({
+        lineColor: "#2563eb",
+        topColor: "rgba(37, 99, 235, 0.22)",
+        bottomColor: "rgba(37, 99, 235, 0.05)",
+        lineWidth: 2.5,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        priceScaleId: "right",
+      });
+      const kospiMddSeries = chart.addLineSeries({
+        color: "rgba(107, 114, 128, 0.95)",
+        lineWidth: 1.8,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerRadius: 3,
+        priceScaleId: "left",
+      });
+      chartRef.current = chart;
+      seriesRef.current = {
+        scoreSeries: scoreSeries,
+        kospiMddSeries: kospiMddSeries,
+      };
+
+      const resize = function () {
+        if (!container || !chartRef.current) {
+          return;
+        }
+        chartRef.current.applyOptions({
+          width: Math.max(container.clientWidth || 0, 320),
+          height: Math.max(container.clientHeight || 0, 280),
+        });
+      };
+
+      let observer = null;
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(resize);
+        observer.observe(container);
+      } else {
+        window.addEventListener("resize", resize);
+      }
+
+      return function () {
+        if (observer) {
+          observer.disconnect();
+        } else {
+          window.removeEventListener("resize", resize);
+        }
+        if (chartRef.current) {
+          chartRef.current.remove();
+          chartRef.current = null;
+        }
+        seriesRef.current = null;
+        if (container) {
+          container.innerHTML = "";
+        }
+      };
+    }, []);
+
+    useEffect(function () {
+      const chart = chartRef.current;
+      const series = seriesRef.current;
+      if (!chart || !series || !rows.length) {
+        return;
+      }
+      const scoreData = rows.map(function (item) {
+        return {
+          time: String(item.date || "").slice(0, 10),
+          value: Number(item.score),
+        };
+      });
+      const kospiMddData = buildKospiMddRows(rows).map(function (item) {
+        return {
+          time: String(item.date || "").slice(0, 10),
+          value: Number(item.value),
+        };
+      }).filter(function (item) {
+        return item.time && Number.isFinite(item.value);
+      });
+      series.scoreSeries.setData(scoreData);
+      series.kospiMddSeries.setData(kospiMddData);
+      if (chart.timeScale() && typeof chart.timeScale().fitContent === "function") {
+        chart.timeScale().fitContent();
+      }
+    }, [rows]);
+
+    return h(
+      "div",
+      { className: "score-history-chart-shell score-history-lightweight-shell leader-calendar-score-chart" },
+      h("div", { ref: containerRef, className: "score-history-lightweight-host" }),
+      h(
+        "div",
+        { className: "score-history-lightweight-legend" },
+        h("span", null, h("i", { className: "score" }), scoreBasis === "score_o" ? "상위 10개 평균 당일점수" : "상위 10개 평균 종합점수"),
+        h("span", null, h("i", { className: "benchmark" }), "코스피 MDD")
+      )
+    );
+  }
+
   function GlobalIndicesChart(props) {
     const items = ensureArray(props.items).filter(function (item) { return ensureArray(item.series).length > 0; });
     const dateSet = {};
@@ -3504,6 +6627,905 @@
           sandbox: "allow-scripts allow-same-origin allow-popups allow-downloads",
         })
       )
+    );
+  }
+
+  function ChartGameChart(props) {
+    const rows = ensureArray(props.rows);
+    const tradeMarkers = ensureArray(props.tradeMarkers);
+    const averagePrice = Number(props.averagePrice);
+    const containerRef = useRef(null);
+    const chartRef = useRef(null);
+    const seriesRef = useRef(null);
+
+    useEffect(function () {
+      const container = containerRef.current;
+      const lib = window.LightweightCharts;
+      if (!container || !lib || chartRef.current) {
+        return undefined;
+      }
+      container.innerHTML = "";
+      const chart = lib.createChart(container, {
+        width: Math.max(container.clientWidth || 0, 320),
+        height: Math.max(container.clientHeight || 0, 420),
+        layout: {
+          background: { color: "#ffffff" },
+          textColor: "#64748b",
+          fontFamily: "\"Segoe UI\", \"Apple SD Gothic Neo\", sans-serif",
+        },
+        grid: {
+          vertLines: { color: "#e9edf5" },
+          horzLines: { color: "#e9edf5" },
+        },
+        crosshair: {
+          mode: lib.CrosshairMode ? lib.CrosshairMode.Normal : 0,
+          vertLine: { color: "rgba(37, 99, 235, 0.14)", width: 1, style: 0 },
+          horzLine: { color: "rgba(37, 99, 235, 0.14)", width: 1, style: 0 },
+        },
+        rightPriceScale: {
+          visible: true,
+          borderColor: "#d7dee8",
+          scaleMargins: { top: 0.06, bottom: 0.2 },
+        },
+        timeScale: {
+          borderColor: "#d7dee8",
+          timeVisible: false,
+          secondsVisible: false,
+          rightOffset: 3,
+          barSpacing: 10,
+        },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+        localization: {
+          locale: "ko-KR",
+          priceFormatter: function (value) { return numberFormat(value, 0); },
+        },
+      });
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: "#ef4444",
+        downColor: "#3b82f6",
+        borderUpColor: "#ef4444",
+        borderDownColor: "#3b82f6",
+        wickUpColor: "#ef4444",
+        wickDownColor: "#3b82f6",
+        priceLineVisible: true,
+        priceLineColor: "#f43f5e",
+        priceLineStyle: 2,
+        lastValueVisible: true,
+      });
+      const ma20Series = chart.addLineSeries({
+        color: "#f59e0b",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      const ma60Series = chart.addLineSeries({
+        color: "#8b5cf6",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      const ma120Series = chart.addLineSeries({
+        color: "#0ea5e9",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      const avgPriceSeries = chart.addLineSeries({
+        color: "#111827",
+        lineWidth: 2,
+        lineStyle: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      const volumeSeries = chart.addHistogramSeries({
+        priceScaleId: "volume",
+        base: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceFormat: { type: "volume" },
+      });
+      chart.priceScale("volume").applyOptions({
+        visible: false,
+        scaleMargins: { top: 0.82, bottom: 0.0 },
+      });
+      chartRef.current = chart;
+      seriesRef.current = {
+        candleSeries: candleSeries,
+        ma20Series: ma20Series,
+        ma60Series: ma60Series,
+        ma120Series: ma120Series,
+        avgPriceSeries: avgPriceSeries,
+        volumeSeries: volumeSeries,
+      };
+
+      const resize = function () {
+        if (!container || !chartRef.current) {
+          return;
+        }
+        chartRef.current.applyOptions({
+          width: Math.max(container.clientWidth || 0, 320),
+          height: Math.max(container.clientHeight || 0, 420),
+        });
+      };
+      let observer = null;
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(resize);
+        observer.observe(container);
+      } else {
+        window.addEventListener("resize", resize);
+      }
+      return function () {
+        if (loadMoreTimerRef.current) {
+          clearTimeout(loadMoreTimerRef.current);
+          loadMoreTimerRef.current = null;
+        }
+        if (observer) {
+          observer.disconnect();
+        } else {
+          window.removeEventListener("resize", resize);
+        }
+        if (chartRef.current) {
+          chartRef.current.remove();
+          chartRef.current = null;
+        }
+        seriesRef.current = null;
+        if (container) {
+          container.innerHTML = "";
+        }
+      };
+    }, []);
+
+    useEffect(function () {
+      const chart = chartRef.current;
+      const series = seriesRef.current;
+      if (!chart || !series) {
+        return;
+      }
+      if (!rows.length) {
+        series.candleSeries.setData([]);
+        series.ma20Series.setData([]);
+        series.ma60Series.setData([]);
+        series.ma120Series.setData([]);
+        series.avgPriceSeries.setData([]);
+        series.volumeSeries.setData([]);
+        return;
+      }
+      const closes = [];
+      const ma20Data = [];
+      const ma60Data = [];
+      const ma120Data = [];
+      const avgPriceData = [];
+      const candleData = [];
+      const volumeData = [];
+      const markerData = [];
+      const markerMap = {};
+      tradeMarkers.forEach(function (item, markerIndex) {
+        const key = String((item && item.date) || "").slice(0, 10);
+        if (!key) {
+          return;
+        }
+        if (!markerMap[key]) {
+          markerMap[key] = [];
+        }
+        markerMap[key].push(Object.assign({ __markerIndex: markerIndex }, item));
+      });
+      rows.forEach(function (row, index) {
+        const time = String(row.date || "").slice(0, 10);
+        const open = Number(row.open);
+        const high = Number(row.high);
+        const low = Number(row.low);
+        const close = Number(row.close);
+        const turnover = Number(row.trading_value_100m);
+        if (!time || !Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+          return;
+        }
+        candleData.push({
+          time: time,
+          open: open,
+          high: Math.max(high, open, close),
+          low: Math.min(low, open, close),
+          close: close,
+        });
+        closes.push(close);
+        function movingAverage(period) {
+          if (closes.length < period) {
+            return null;
+          }
+          var sum = 0;
+          for (var pointer = closes.length - period; pointer < closes.length; pointer += 1) {
+            sum += closes[pointer];
+          }
+          return sum / period;
+        }
+        var ma20 = movingAverage(20);
+        var ma60 = movingAverage(60);
+        var ma120 = movingAverage(120);
+        if (ma20 != null) {
+          ma20Data.push({ time: time, value: ma20 });
+        }
+        if (ma60 != null) {
+          ma60Data.push({ time: time, value: ma60 });
+        }
+        if (ma120 != null) {
+          ma120Data.push({ time: time, value: ma120 });
+        }
+        if (Number.isFinite(averagePrice) && averagePrice > 0) {
+          avgPriceData.push({ time: time, value: averagePrice });
+        }
+        if (Number.isFinite(turnover) && turnover >= 0) {
+          volumeData.push({
+            time: time,
+            value: turnover,
+            color: close >= open ? "rgba(239, 68, 68, 0.5)" : "rgba(59, 130, 246, 0.5)",
+          });
+        }
+        ensureArray(markerMap[time]).forEach(function (marker) {
+          const type = String(marker.type || "").toLowerCase();
+          markerData.push({
+            time: time,
+            position: type === "sell" ? "aboveBar" : "belowBar",
+            color: type === "sell" ? "#dc2626" : "#16a34a",
+            shape: type === "sell" ? "arrowDown" : "arrowUp",
+            text: type === "sell"
+              ? "매도 " + (Number.isFinite(Number(marker.shares)) ? numberFormat(marker.shares, 0) + "주" : "")
+              : "매수 " + (Number.isFinite(Number(marker.shares)) ? numberFormat(marker.shares, 0) + "주" : ""),
+          });
+        });
+      });
+      series.candleSeries.setData(candleData);
+      series.ma20Series.setData(ma20Data);
+      series.ma60Series.setData(ma60Data);
+      series.ma120Series.setData(ma120Data);
+      series.avgPriceSeries.setData(avgPriceData);
+      series.volumeSeries.setData(volumeData);
+      if (typeof series.candleSeries.setMarkers === "function") {
+        series.candleSeries.setMarkers(markerData);
+      }
+      if (chart.timeScale() && typeof chart.timeScale().setVisibleLogicalRange === "function") {
+        chart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, candleData.length - Math.min(121, candleData.length) - 1),
+          to: candleData.length + 1,
+        });
+      }
+    }, [rows, tradeMarkers, averagePrice]);
+
+    return h("div", { className: "chart-game-chart-host", ref: containerRef });
+  }
+
+  function ChartGamePage() {
+    const INITIAL_CASH = 100000000;
+    const savedChartGameState = loadChartGameState() || {};
+    const [session, setSession] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
+    const [cash, setCash] = useState(function () {
+      const value = Number(savedChartGameState.cash);
+      return Number.isFinite(value) && value >= 0 ? value : INITIAL_CASH;
+    });
+    const [position, setPosition] = useState(function () {
+      const value = savedChartGameState.position;
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+      const shares = Number(value.shares);
+      const avgPrice = Number(value.avg_price);
+      if (!Number.isFinite(shares) || shares <= 0 || !Number.isFinite(avgPrice) || avgPrice <= 0) {
+        return null;
+      }
+      return {
+        stock_code: String(value.stock_code || ""),
+        stock_name: String(value.stock_name || ""),
+        shares: shares,
+        avg_price: avgPrice,
+      };
+    });
+    const [turnIndex, setTurnIndex] = useState(function () {
+      const value = Number(savedChartGameState.turnIndex);
+      return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+    });
+    const [weightPct, setWeightPct] = useState(function () {
+      const value = Number(savedChartGameState.weightPct);
+      return Number.isFinite(value) && value >= 1 && value <= 100 ? value : 100;
+    });
+    const [customInputMode, setCustomInputMode] = useState(function () {
+      const value = String(savedChartGameState.customInputMode || "pct").toLowerCase();
+      return value === "shares" ? "shares" : "pct";
+    });
+    const [customWeightText, setCustomWeightText] = useState(function () {
+      return String(savedChartGameState.customWeightText || "100");
+    });
+    const [notice, setNotice] = useState(function () {
+      return String(savedChartGameState.notice || "");
+    });
+    const [sessionStartAsset, setSessionStartAsset] = useState(function () {
+      const value = Number(savedChartGameState.sessionStartAsset);
+      if (Number.isFinite(value) && value >= 0) {
+        return value;
+      }
+      const savedCash = Number(savedChartGameState.cash);
+      return Number.isFinite(savedCash) && savedCash >= 0 ? savedCash : INITIAL_CASH;
+    });
+    const [seenCodes, setSeenCodes] = useState(function () {
+      return ensureArray(savedChartGameState.seenCodes).filter(Boolean).slice(-24);
+    });
+    const [tradeHistory, setTradeHistory] = useState(function () {
+      return ensureArray(savedChartGameState.tradeHistory).filter(function (item) {
+        return item && item.date && item.type;
+      });
+    });
+    const [pendingSessionSummary, setPendingSessionSummary] = useState(function () {
+      const value = savedChartGameState.pendingSessionSummary;
+      return value && typeof value === "object" ? value : null;
+    });
+    const [restoredOnce, setRestoredOnce] = useState(false);
+
+    function normalizedWeightPct() {
+      const parsed = Number(weightPct);
+      if (!Number.isFinite(parsed)) {
+        return 100;
+      }
+      return Math.max(1, Math.min(parsed, 100));
+    }
+
+    function normalizedCustomShares() {
+      const parsed = Math.floor(Number(customWeightText));
+      if (!Number.isFinite(parsed)) {
+        return 0;
+      }
+      return Math.max(0, parsed);
+    }
+
+    async function requestSession(options) {
+      const opts = options || {};
+      const excludeList = ensureArray(opts.excludeCodes).filter(Boolean);
+      const query = "/api/chart-game/session?top_n=30&turns=150&exclude_codes=" + encodeURIComponent(excludeList.join(","));
+      setLoading(true);
+      setError("");
+      setNotice(opts.notice || "");
+      setPendingSessionSummary(null);
+      try {
+        const payload = await fetchJson(query, { forceRefresh: true });
+        setSession(payload || null);
+        setTurnIndex(0);
+        setTradeHistory([]);
+        setSessionStartAsset(Number.isFinite(Number(opts.startAsset)) ? Math.max(0, Number(opts.startAsset)) : Math.max(0, cash));
+        if (payload && payload.stock_code) {
+          setSeenCodes(function (current) {
+            const next = current.concat([payload.stock_code]).slice(-12);
+            return next;
+          });
+        }
+      } catch (err) {
+        setError(err.message || String(err));
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    useEffect(function () {
+      const savedSession = savedChartGameState.session;
+      if (savedSession && typeof savedSession === "object" && ensureArray(savedSession.rows).length) {
+        setSession(savedSession);
+        setLoading(false);
+        setError("");
+        setRestoredOnce(true);
+        return;
+      }
+      requestSession({ excludeCodes: ensureArray(savedChartGameState.seenCodes).filter(Boolean) });
+    }, []);
+
+    useEffect(function () {
+      if (!restoredOnce && session) {
+        setRestoredOnce(true);
+      }
+    }, [restoredOnce, session]);
+
+    useEffect(function () {
+      if (session) {
+        emitWindowTitleDetail("chart-game", "랜덤 세션");
+      }
+    }, [session]);
+
+    useEffect(function () {
+      function handleHotkey(event) {
+        if (!session || loading || pendingSessionSummary || !event || event.defaultPrevented || isEditableHotkeyTarget(event.target)) {
+          return;
+        }
+        const key = String(event.key || "").toLowerCase();
+        if (key === "b") {
+          event.preventDefault();
+          handleTrade("buy");
+        } else if (key === "h") {
+          event.preventDefault();
+          handleTrade("hold");
+        } else if (key === "s") {
+          event.preventDefault();
+          handleTrade("sell");
+        } else if (key === "n") {
+          event.preventDefault();
+          handleNextStock();
+        }
+      }
+      window.addEventListener("keydown", handleHotkey);
+      return function () {
+        window.removeEventListener("keydown", handleHotkey);
+      };
+    }, [session, loading, cash, position, turnIndex, seenCodes, weightPct, pendingSessionSummary]);
+
+    useEffect(function () {
+      if (!restoredOnce || !session) {
+        return;
+      }
+      persistChartGameState({
+        session: session,
+        cash: cash,
+        position: position,
+        turnIndex: turnIndex,
+        weightPct: weightPct,
+        customInputMode: customInputMode,
+        customWeightText: customWeightText,
+        notice: notice,
+        sessionStartAsset: sessionStartAsset,
+        seenCodes: seenCodes,
+        tradeHistory: tradeHistory,
+        pendingSessionSummary: pendingSessionSummary,
+        savedAt: new Date().toISOString(),
+      });
+    }, [restoredOnce, session, cash, position, turnIndex, weightPct, customInputMode, customWeightText, notice, sessionStartAsset, seenCodes, tradeHistory, pendingSessionSummary]);
+
+    if (loading && !session) {
+      return h(LoadingPanel, { title: "차트 게임을 준비하는 중입니다.", label: "오늘의 주도주 상위 30개에서 실제 과거 차트 구간을 찾고 있습니다." });
+    }
+    if (error && !session) {
+      return h(ErrorPanel, { message: error });
+    }
+    if (!session) {
+      return h(EmptyState, { message: "차트 게임 세션을 만들지 못했습니다." });
+    }
+
+    const sessionRows = ensureArray(session.rows);
+    const warmupBars = Math.max(0, Number(session.warmup_bars || 0));
+    const visibleAbsoluteIndex = Math.min(sessionRows.length - 1, warmupBars + turnIndex);
+    const viewportBars = Math.max(121, Number(session.viewport_bars || 121));
+    const visibleStartIndex = Math.max(0, visibleAbsoluteIndex - viewportBars + 1);
+    const visibleRows = sessionRows.slice(visibleStartIndex, visibleAbsoluteIndex + 1);
+    const currentRow = sessionRows[visibleAbsoluteIndex] || null;
+    const currentPrice = currentRow ? Number(currentRow.close) : NaN;
+    const currentHoldingShares = position && position.stock_code === session.stock_code ? Number(position.shares || 0) : 0;
+    const currentHoldingValue = currentHoldingShares > 0 && Number.isFinite(currentPrice) ? currentHoldingShares * currentPrice : 0;
+    const currentAvgPrice = position && currentHoldingShares > 0 ? Number(position.avg_price || 0) : NaN;
+    const holdingCostBasis = currentHoldingShares > 0 && Number.isFinite(currentAvgPrice) ? currentHoldingShares * currentAvgPrice : 0;
+    const holdingPnl = currentHoldingShares > 0 ? (currentHoldingValue - holdingCostBasis) : 0;
+    const holdingReturnPct = currentHoldingShares > 0 && holdingCostBasis > 0 ? ((currentHoldingValue / holdingCostBasis) - 1) * 100 : null;
+    const totalAsset = cash + currentHoldingValue;
+    const returnPct = INITIAL_CASH > 0 ? ((totalAsset / INITIAL_CASH) - 1) * 100 : 0;
+    const sessionReturnPct = sessionStartAsset > 0 ? ((totalAsset / sessionStartAsset) - 1) * 100 : 0;
+    const holdingWeightPct = totalAsset > 0 ? (currentHoldingValue / totalAsset) * 100 : 0;
+    const currentTurnText = String(turnIndex + 1) + "/" + String(session.turn_count || 150);
+
+    function buildVisibleMa(period) {
+      const output = [];
+      for (var index = visibleStartIndex; index <= visibleAbsoluteIndex; index += 1) {
+        if (index + 1 < period) {
+          continue;
+        }
+        var sum = 0;
+        var valid = true;
+        for (var pointer = index - period + 1; pointer <= index; pointer += 1) {
+          const close = Number(sessionRows[pointer] && sessionRows[pointer].close);
+          if (!Number.isFinite(close)) {
+            valid = false;
+            break;
+          }
+          sum += close;
+        }
+        if (valid) {
+          output.push(sum / period);
+        }
+      }
+      return output.length ? output[output.length - 1] : null;
+    }
+
+    const ma20 = buildVisibleMa(20);
+    const ma60 = buildVisibleMa(60);
+    const ma120 = buildVisibleMa(120);
+    const buyableShares = Number.isFinite(currentPrice) && currentPrice > 0 ? Math.floor(cash / currentPrice) : 0;
+    const customShares = normalizedCustomShares();
+    const directBuyShares = customInputMode === "shares"
+      ? Math.min(buyableShares, customShares)
+      : (Number.isFinite(currentPrice) && currentPrice > 0 ? Math.floor((cash * (normalizedWeightPct() / 100)) / currentPrice) : 0);
+    const visibleTradeMarkers = tradeHistory.filter(function (item) {
+      const date = String(item.date || "").slice(0, 10);
+      return visibleRows.some(function (row) { return String(row.date || "").slice(0, 10) === date; });
+    });
+    const recentTradeHistory = tradeHistory.slice().reverse().slice(0, 12);
+
+    function commitState(nextCash, nextPosition, nextTurnIndex, nextNotice, nextTradeHistory) {
+      setCash(nextCash);
+      setPosition(nextPosition && nextPosition.shares > 0 ? nextPosition : null);
+      setTurnIndex(nextTurnIndex);
+      setNotice(nextNotice || "");
+      if (Array.isArray(nextTradeHistory)) {
+        setTradeHistory(nextTradeHistory);
+      }
+    }
+
+    function buildSessionSummary(nextCash, nextTradeHistory, closingShares) {
+      const normalizedStartAsset = Number.isFinite(sessionStartAsset) && sessionStartAsset >= 0 ? sessionStartAsset : INITIAL_CASH;
+      const endAsset = Number.isFinite(nextCash) ? nextCash : normalizedStartAsset;
+      const pnl = endAsset - normalizedStartAsset;
+      const tradeItems = ensureArray(nextTradeHistory);
+      const buyCount = tradeItems.filter(function (item) {
+        return String(item.type || "").toLowerCase() === "buy";
+      }).length;
+      const sellCount = tradeItems.filter(function (item) {
+        return String(item.type || "").toLowerCase() === "sell";
+      }).length;
+      return {
+        turnCount: Number(session && session.turn_count || 150),
+        startAsset: normalizedStartAsset,
+        endAsset: endAsset,
+        pnl: pnl,
+        returnPct: normalizedStartAsset > 0 ? ((endAsset / normalizedStartAsset) - 1) * 100 : 0,
+        tradeCount: tradeItems.length,
+        buyCount: buyCount,
+        sellCount: sellCount,
+        autoClosedShares: Number.isFinite(closingShares) && closingShares > 0 ? closingShares : 0,
+      };
+    }
+
+    function handleTrade(action) {
+      if (!currentRow || !Number.isFinite(currentPrice) || currentPrice <= 0 || loading) {
+        return;
+      }
+      var nextCash = cash;
+      var nextPosition = position && position.stock_code === session.stock_code
+        ? { stock_code: position.stock_code, stock_name: position.stock_name, shares: Number(position.shares || 0), avg_price: Number(position.avg_price || 0) }
+        : null;
+      var nextNotice = "";
+      var nextTradeHistory = tradeHistory.slice();
+      const weightRatio = normalizedWeightPct() / 100;
+
+      if (action === "buy") {
+        const shares = customInputMode === "shares"
+          ? Math.min(Math.floor(nextCash / currentPrice), normalizedCustomShares())
+          : Math.floor((nextCash * weightRatio) / currentPrice);
+        if (shares <= 0) {
+          setNotice("매수 가능한 수량이 없습니다.");
+          return;
+        }
+        if (nextPosition) {
+          const totalShares = nextPosition.shares + shares;
+          nextPosition.avg_price = ((nextPosition.avg_price * nextPosition.shares) + (currentPrice * shares)) / totalShares;
+          nextPosition.shares = totalShares;
+        } else {
+          nextPosition = {
+            stock_code: session.stock_code,
+            stock_name: session.stock_name,
+            shares: shares,
+            avg_price: currentPrice,
+          };
+        }
+        nextCash -= shares * currentPrice;
+        nextNotice = numberFormat(shares, 0) + "주 매수";
+        nextTradeHistory.push({
+          date: String(currentRow.date || ""),
+          type: "buy",
+          price: currentPrice,
+          avg_price: nextPosition.avg_price,
+          shares: shares,
+        });
+      } else if (action === "sell") {
+        if (!nextPosition || nextPosition.shares <= 0) {
+          setNotice("매도할 보유 수량이 없습니다.");
+          return;
+        }
+        var sellShares = customInputMode === "shares"
+          ? Math.max(1, Math.min(nextPosition.shares, normalizedCustomShares()))
+          : (weightRatio >= 0.999 ? nextPosition.shares : Math.max(1, Math.floor(nextPosition.shares * weightRatio)));
+        sellShares = Math.min(sellShares, nextPosition.shares);
+        nextCash += sellShares * currentPrice;
+        nextPosition.shares -= sellShares;
+        nextNotice = numberFormat(sellShares, 0) + "주 매도";
+        nextTradeHistory.push({
+          date: String(currentRow.date || ""),
+          type: "sell",
+          price: currentPrice,
+          avg_price: Number(position && position.avg_price || 0),
+          shares: sellShares,
+        });
+        if (nextPosition.shares <= 0) {
+          nextPosition = null;
+        }
+      } else {
+        nextNotice = "관망";
+      }
+
+      const isLastTurn = turnIndex >= Number(session.turn_count || 150) - 1;
+      if (isLastTurn) {
+        var closingShares = 0;
+        if (nextPosition && nextPosition.stock_code === session.stock_code && nextPosition.shares > 0) {
+          closingShares = nextPosition.shares;
+          nextCash += nextPosition.shares * currentPrice;
+          nextNotice += " · 세션 종료 정산";
+          nextPosition = null;
+        }
+        setCash(nextCash);
+        setPosition(nextPosition);
+        setTradeHistory(nextTradeHistory);
+        setNotice(nextNotice + " · 종목 결과를 확인해 주세요.");
+        setPendingSessionSummary(buildSessionSummary(nextCash, nextTradeHistory, closingShares));
+        return;
+      }
+      commitState(nextCash, nextPosition, turnIndex + 1, nextNotice, nextTradeHistory);
+    }
+
+    function handleNextStock() {
+      if (loading || pendingSessionSummary) {
+        return;
+      }
+      if (currentHoldingShares > 0) {
+        setNotice("보유 수량이 있으면 다음 종목으로 넘어갈 수 없습니다. 먼저 매도해 주세요.");
+        return;
+      }
+      requestSession({
+        excludeCodes: seenCodes.concat([session.stock_code]),
+        notice: "다음 종목으로 변경",
+        startAsset: cash,
+      });
+    }
+
+    function handleContinueAfterSummary() {
+      if (loading || !pendingSessionSummary) {
+        return;
+      }
+      requestSession({
+        excludeCodes: seenCodes.concat([session.stock_code]),
+        notice: "이번 종목 정리 완료 · 다음 종목으로 이동",
+        startAsset: cash,
+      });
+    }
+
+    function handleResetGame() {
+      clearChartGameState();
+      setCash(INITIAL_CASH);
+      setPosition(null);
+      setSessionStartAsset(INITIAL_CASH);
+      setPendingSessionSummary(null);
+      setSeenCodes([]);
+      setTurnIndex(0);
+      setNotice("");
+      setTradeHistory([]);
+      requestSession({ excludeCodes: [], notice: "게임을 초기화했습니다.", startAsset: INITIAL_CASH });
+    }
+
+    return h(
+      "div",
+      { className: "chart-game-page" },
+      h(
+        "section",
+        { className: "panel chart-game-hero" },
+        h("div", { className: "eyebrow" }, "Leader Chart Challenge"),
+        h("div", { className: "chart-game-hero-head" },
+          h("div", null,
+            h("h2", null, "차트 게임"),
+            h("p", { className: "page-copy compact-copy" }, "오늘의 주도주 상위 30개 안에서 종목만 랜덤으로 고르고, 실제 기업의 과거 구간 차트만 보고 매매를 진행합니다.")
+          ),
+          h("div", { className: "chart-game-hero-actions" },
+            h("button", { type: "button", className: "secondary-button", onClick: handleResetGame, disabled: loading }, "게임 초기화"),
+            h("button", { type: "button", className: "secondary-button", onClick: handleNextStock, disabled: loading || currentHoldingShares > 0 || !!pendingSessionSummary }, "다음 종목")
+          )
+        ),
+        h("div", { className: "summary-grid chart-game-summary-grid" },
+          h(SummaryCard, { label: "수익률", value: formatPercent(returnPct, 2), className: returnPct >= 0 ? "metric-up" : "metric-down", help: "시작자산 1억원 기준" }),
+          h(SummaryCard, { label: "평가자산", value: formatCurrency(totalAsset), help: "현금 + 보유 평가액" }),
+          h(SummaryCard, { label: "현재 세션", value: formatPercent(sessionReturnPct, 2), className: sessionReturnPct >= 0 ? "metric-up" : "metric-down", help: "이번 종목 시작 자산 기준" }),
+          h(SummaryCard, { label: "턴", value: currentTurnText, help: "최대 150턴 진행" })
+        ),
+        notice ? h("div", { className: "chart-game-notice" }, notice) : null,
+        error ? h("div", { className: "chart-game-notice error" }, error) : null
+      ),
+      h(
+        "section",
+        { className: "chart-game-layout" },
+        h(
+          "div",
+          { className: "panel chart-game-chart-panel" },
+          h("div", { className: "section-toolbar compact" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "TradingView Style"),
+              h("div", { className: "section-title chart-game-chart-title" }, "랜덤 차트")
+            )
+          ),
+          currentRow
+            ? h("div", { className: "chart-game-chart-meta" },
+                h("span", null, "시 " + numberFormat(currentRow.open, 0)),
+                h("span", null, "고 " + numberFormat(currentRow.high, 0)),
+                h("span", null, "저 " + numberFormat(currentRow.low, 0)),
+                h("span", null, "종 " + numberFormat(currentRow.close, 0)),
+                h("span", { className: Number(currentRow.change_pct || 0) >= 0 ? "metric-up" : "metric-down" }, "등락 " + formatPercent(currentRow.change_pct, 2)),
+                h("span", null, "거래대금 " + numberFormat(currentRow.trading_value_100m, 0) + "억")
+              )
+            : null,
+          h("div", { className: "chart-game-ma-row" },
+            h("span", { className: "ma20" }, "MA20 " + (ma20 != null ? numberFormat(ma20, 0) : "-")),
+            h("span", { className: "ma60" }, "MA60 " + (ma60 != null ? numberFormat(ma60, 0) : "-")),
+            h("span", { className: "ma120" }, "MA120 " + (ma120 != null ? numberFormat(ma120, 0) : "-"))
+          ),
+          h("div", { className: "global-tradingview-frame chart-game-tv-frame" },
+            h(ChartGameChart, {
+              rows: visibleRows,
+              tradeMarkers: visibleTradeMarkers,
+              averagePrice: currentHoldingShares > 0 ? currentAvgPrice : null,
+            })
+          )
+        ),
+        h(
+          "div",
+          { className: "chart-game-side" },
+          h(
+            "section",
+            { className: "panel chart-game-account-panel" },
+            h("div", { className: "chart-game-account-head" },
+              h("div", null,
+                h("span", { className: "summary-label" }, "현금"),
+                h("strong", null, formatCurrency(cash))
+              ),
+              h("div", null,
+                h("span", { className: "summary-label" }, "보유 평가"),
+                h("strong", null, formatCurrency(currentHoldingValue)),
+                h("em", { className: Number(returnPct || 0) >= 0 ? "metric-up" : "metric-down" }, "총자산 수익률 " + formatPercent(returnPct, 2))
+              )
+            ),
+            h("div", { className: "chart-game-holding-box" },
+              h("div", null, h("span", null, "보유주식"), h("strong", null, currentHoldingShares > 0 ? numberFormat(currentHoldingShares, 0) + "주" : "없음")),
+              h("div", null, h("span", null, "평균단가"), h("strong", null, position && currentHoldingShares > 0 ? formatCurrency(position.avg_price) : "-")),
+              h("div", null, h("span", null, "종목 수익률"), h("strong", { className: currentHoldingShares > 0 && Number(holdingReturnPct || 0) >= 0 ? "metric-up" : "metric-down" }, currentHoldingShares > 0 && holdingReturnPct != null ? formatPercent(holdingReturnPct, 2) : "-")),
+              h("div", null, h("span", null, "종목 손익"), h("strong", { className: currentHoldingShares > 0 && holdingPnl >= 0 ? "metric-up" : "metric-down" }, currentHoldingShares > 0 ? formatCurrency(holdingPnl) : "-")),
+              h("div", null, h("span", null, "보유비중"), h("strong", null, currentHoldingShares > 0 ? formatPercent(holdingWeightPct, 1) : "-"))
+            )
+          ),
+          h(
+            "section",
+            { className: "panel chart-game-control-panel" },
+            h("div", { className: "chart-game-turn-row" },
+              h("span", null, "턴"),
+              h("div", { className: "chart-game-turn-track" }, h("span", { style: { width: ((turnIndex + 1) / Number(session.turn_count || 150) * 100) + "%" } })),
+              h("strong", null, currentTurnText)
+            ),
+            h("div", { className: "chart-game-weight-head" }, "비중"),
+            h("div", { className: "chart-game-weight-grid" },
+              [10, 25, 50, 100].map(function (value) {
+                return h(
+                  "button",
+                  {
+                    key: value,
+                    type: "button",
+                    className: "chart-game-weight-button" + (Number(weightPct) === value ? " active" : ""),
+                    onClick: function () {
+                      setWeightPct(value);
+                      setCustomInputMode("pct");
+                      setCustomWeightText(String(value));
+                    },
+                  },
+                  String(value) + "%"
+                );
+              }),
+              h("label", { className: "chart-game-weight-custom" },
+                h("span", null, "직접"),
+                h("div", { className: "chart-game-weight-mode-toggle" },
+                  h("button", {
+                    type: "button",
+                    className: "chart-game-weight-mode-button" + (customInputMode === "pct" ? " active" : ""),
+                    onClick: function () { setCustomInputMode("pct"); },
+                  }, "%"),
+                  h("button", {
+                    type: "button",
+                    className: "chart-game-weight-mode-button" + (customInputMode === "shares" ? " active" : ""),
+                    onClick: function () { setCustomInputMode("shares"); },
+                  }, "주")
+                ),
+                h("input", {
+                  type: "number",
+                  min: "1",
+                  max: customInputMode === "shares" ? "1000000" : "100",
+                  step: "1",
+                  value: customWeightText,
+                  onFocus: selectTextOnFocus,
+                  onChange: function (event) {
+                    const nextValue = String(event.target.value || "");
+                    setCustomWeightText(nextValue);
+                    const parsed = customInputMode === "shares" ? Math.floor(Number(nextValue)) : Number(nextValue);
+                    if (customInputMode === "pct" && Number.isFinite(parsed)) {
+                      setWeightPct(Math.max(1, Math.min(parsed, 100)));
+                    }
+                  },
+                })
+              )
+            ),
+            h("div", { className: "chart-game-available-text" }, "매수 가능: " + formatCurrency(cash) + (buyableShares > 0 ? " (" + numberFormat(buyableShares, 0) + "주)" : "") + (customInputMode === "shares" ? " · 직접 " + numberFormat(directBuyShares, 0) + "주" : "")),
+            h("div", { className: "chart-game-action-grid" },
+              h("button", { type: "button", className: "chart-game-action buy", onClick: function () { handleTrade("buy"); }, disabled: loading || !!pendingSessionSummary || buyableShares <= 0 }, "매수 (B)"),
+              h("button", { type: "button", className: "chart-game-action hold", onClick: function () { handleTrade("hold"); }, disabled: loading || !!pendingSessionSummary }, "다음 (H)"),
+              h("button", { type: "button", className: "chart-game-action sell", onClick: function () { handleTrade("sell"); }, disabled: loading || !!pendingSessionSummary || currentHoldingShares <= 0 }, "매도 (S)")
+            ),
+            h("button", { type: "button", className: "secondary-button chart-game-next-stock-button", onClick: handleNextStock, disabled: loading || currentHoldingShares > 0 || !!pendingSessionSummary }, "다음 종목"),
+            h("div", { className: "chart-game-shortcuts" }, "B 매수 · H 다음 · S 매도 · N 다음 종목")
+          ),
+          h(
+            "section",
+            { className: "panel chart-game-history-panel" },
+            h("div", { className: "section-toolbar compact" },
+              h("div", { className: "section-title chart-game-history-title" }, "매매 이력")
+            ),
+            recentTradeHistory.length
+              ? h("div", { className: "chart-game-history-list" },
+                  recentTradeHistory.map(function (item, index) {
+                    const type = String(item.type || "").toLowerCase();
+                    const positive = type !== "sell";
+                    return h(
+                      "div",
+                      { key: String(item.date || "") + "-" + String(item.type || "") + "-" + String(index), className: "chart-game-history-row" },
+                      h("div", { className: "chart-game-history-main" },
+                        h("strong", { className: positive ? "metric-up" : "metric-down" }, type === "sell" ? "매도" : "매수"),
+                        h("span", null, String(index + 1) + "번째 최근 거래")
+                      ),
+                      h("div", { className: "chart-game-history-meta" },
+                        h("span", null, Number.isFinite(Number(item.shares)) ? numberFormat(item.shares, 0) + "주" : "-"),
+                        h("span", null, Number.isFinite(Number(item.price)) ? "체결 " + formatCurrency(item.price) : ""),
+                        h("span", null, Number.isFinite(Number(item.avg_price)) ? "평단 " + formatCurrency(item.avg_price) : "")
+                      )
+                    );
+                  })
+                )
+              : h("div", { className: "chart-game-history-empty" }, "아직 매매 이력이 없습니다.")
+          )
+        )
+      ),
+      pendingSessionSummary
+        ? h(
+            "div",
+            { className: "modal-backdrop chart-game-summary-backdrop" },
+            h(
+              "div",
+              { className: "modal-panel chart-game-summary-modal", onClick: function (event) { event.stopPropagation(); } },
+              h("div", { className: "modal-head" },
+                h("div", null,
+                  h("h2", null, "이번 종목 결과"),
+                  h("p", null, String(pendingSessionSummary.turnCount || 150) + "턴 종료 후 자동 정산되었습니다.")
+                )
+              ),
+              h("div", { className: "chart-game-summary-modal-grid" },
+                h("div", { className: "chart-game-summary-stat" },
+                  h("span", null, "시작 자산"),
+                  h("strong", null, formatCurrency(pendingSessionSummary.startAsset))
+                ),
+                h("div", { className: "chart-game-summary-stat" },
+                  h("span", null, "종료 자산"),
+                  h("strong", null, formatCurrency(pendingSessionSummary.endAsset))
+                ),
+                h("div", { className: "chart-game-summary-stat" },
+                  h("span", null, "이번 종목 손익"),
+                  h("strong", { className: Number(pendingSessionSummary.pnl || 0) >= 0 ? "metric-up" : "metric-down" }, formatCurrency(pendingSessionSummary.pnl))
+                ),
+                h("div", { className: "chart-game-summary-stat" },
+                  h("span", null, "이번 종목 수익률"),
+                  h("strong", { className: Number(pendingSessionSummary.returnPct || 0) >= 0 ? "metric-up" : "metric-down" }, formatPercent(pendingSessionSummary.returnPct, 2))
+                )
+              ),
+              h("div", { className: "chart-game-summary-modal-meta" },
+                h("span", null, "매매 " + numberFormat(pendingSessionSummary.tradeCount || 0, 0) + "회"),
+                h("span", null, "매수 " + numberFormat(pendingSessionSummary.buyCount || 0, 0) + "회"),
+                h("span", null, "매도 " + numberFormat(pendingSessionSummary.sellCount || 0, 0) + "회"),
+                pendingSessionSummary.autoClosedShares > 0 ? h("span", null, "종료 정산 " + numberFormat(pendingSessionSummary.autoClosedShares, 0) + "주") : null
+              ),
+              h("div", { className: "chart-game-summary-modal-actions" },
+                h("button", { type: "button", className: "primary-button", onClick: handleContinueAfterSummary, disabled: loading }, loading ? "불러오는 중..." : "다음 종목")
+              )
+            )
+          )
+        : null
     );
   }
 
@@ -4280,6 +8302,1483 @@
     );
   }
 
+  function PortfolioPageModern() {
+    const request = useFetchJson("/api/portfolio/performance");
+    const [periodKey, setPeriodKey] = useState("");
+    const [allocationMode, setAllocationMode] = useState("sector");
+    const [assetView, setAssetView] = useState("total");
+    const [xRange, setXRange] = useState(null);
+    const [resetSignal, setResetSignal] = useState(0);
+    const [activeAccountType, setActiveAccountType] = useState("kr");
+    const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
+    const [saveState, setSaveState] = useState({ status: "idle", message: "" });
+    const [captureState, setCaptureState] = useState({ status: "idle", message: "" });
+    const [portfolioSuggestions, setPortfolioSuggestions] = useState({});
+    const [portfolioDragIndex, setPortfolioDragIndex] = useState(-1);
+    const captureRef = useRef(null);
+    const portfolioSearchTimerRef = useRef({});
+
+    function emptyItem() {
+      return {
+        item_id: "item-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8),
+        sector: "",
+        stock_name: "",
+        stock_code: "",
+        current_price: "",
+        avg_price: "",
+        weight_pct: "",
+        quantity: "",
+        quantity_auto: false,
+        stop_loss_price: "",
+        stop_loss_auto: true,
+        sell_price: "",
+        note: "",
+      };
+    }
+
+    function emptyForm(accountType, dateText) {
+      return {
+        snapshot_id: "",
+        trade_date: dateText || isoDateOffset(0),
+        account_type: accountType || "kr",
+        account_capital: "",
+        note: "",
+        items: [emptyItem()],
+      };
+    }
+
+    function snapshotToForm(snapshot) {
+      if (!snapshot) {
+        return emptyForm(activeAccountType, isoDateOffset(0));
+      }
+      return {
+        snapshot_id: snapshot.snapshot_id || "",
+        trade_date: snapshot.trade_date || isoDateOffset(0),
+        account_type: snapshot.account_type || activeAccountType || "kr",
+        account_capital: snapshot.account_capital != null ? String(snapshot.account_capital) : "",
+        note: snapshot.note || "",
+        items: ensureArray(snapshot.items).length
+          ? ensureArray(snapshot.items).map(function (item) {
+              return {
+                item_id: item.item_id || ("item-" + Math.random().toString(16).slice(2, 8)),
+                sector: item.sector || "",
+                stock_name: item.stock_name || "",
+                stock_code: item.stock_code || "",
+                current_price: item.current_price != null ? String(item.current_price) : "",
+                avg_price: item.avg_price != null ? String(item.avg_price) : "",
+                weight_pct: item.weight_pct != null ? String(item.weight_pct) : "",
+                quantity: item.quantity != null ? String(item.quantity) : "",
+                quantity_auto: false,
+                stop_loss_price: item.stop_loss_price != null ? String(item.stop_loss_price) : "",
+                stop_loss_auto: false,
+                sell_price: item.sell_price != null ? String(item.sell_price) : "",
+                note: item.note || "",
+              };
+            })
+          : [emptyItem()],
+      };
+    }
+
+    const [form, setForm] = useState(function () {
+      return emptyForm("kr", isoDateOffset(0));
+    });
+
+    useEffect(function () {
+      if (!request.data) {
+        return;
+      }
+      const monthOptions = portfolioMonthOptions(request.data.series);
+      if (!periodKey) {
+        setPeriodKey(monthOptions[monthOptions.length - 1] || "all");
+      }
+    }, [request.data, periodKey]);
+
+    useEffect(function () {
+      setXRange(null);
+      setResetSignal(function (value) { return value + 1; });
+    }, [periodKey]);
+
+    useEffect(function () {
+      return function () {
+        const timers = portfolioSearchTimerRef.current || {};
+        Object.keys(timers).forEach(function (key) {
+          clearTimeout(timers[key]);
+        });
+      };
+    }, []);
+
+    const data = request.data || {};
+    const accounts = ensureArray(data.manual_accounts);
+    const summary = data.summary || {};
+    const benchmarkSeriesMap = data.benchmarks || { kospi: ensureArray(data.benchmark) };
+    const benchmarkLabelMap = data.benchmark_labels || { kospi: "KOSPI", kosdaq: "KOSDAQ", nasdaq: "NASDAQ", sp500: "S&P 500" };
+    const benchmarkColorMap = { kospi: "#4c8bf5", kosdaq: "#14b8a6", nasdaq: "#8b5cf6", sp500: "#ef4444" };
+    const monthOptions = portfolioMonthOptions(data.series);
+    const activePeriod = periodKey || monthOptions[monthOptions.length - 1] || "all";
+    const viewSeries = normalizePortfolioSeriesForPeriod(data.series, activePeriod);
+    const viewLabels = viewSeries.map(function (item) { return item.date; });
+    const viewAllocations = ensureArray(data.daily_allocations).filter(function (item) {
+      return itemInPortfolioPeriod(item, activePeriod);
+    });
+    const viewSeriesWithInvestmentState = markPortfolioInvestmentState(viewSeries, viewAllocations);
+    const details = ensureArray(data.daily_details).filter(function (item) {
+      return itemInPortfolioPeriod(item, activePeriod);
+    });
+    const latestDetail = details[details.length - 1] || null;
+    const monthlyStats = ensureArray(data.monthly_stats);
+    const captureSets = ensureArray(data.capture_sets);
+    const activeAccount = accounts.find(function (account) { return account.account_type === activeAccountType; }) || null;
+    const activeSnapshots = ensureArray(activeAccount && activeAccount.snapshots).slice().reverse();
+    const selectedSnapshot = activeSnapshots.find(function (snapshot) { return snapshot.snapshot_id === selectedSnapshotId; }) || null;
+    const latestCaptureSnapshot = (activeAccount && activeAccount.latest_snapshot) || null;
+    const currentCapture = captureSets.find(function (item) {
+      return item.snapshot_id === (latestCaptureSnapshot && latestCaptureSnapshot.snapshot_id);
+    }) || null;
+    const periodLabel = activePeriod === "all" ? "전체 기간" : monthLabel(activePeriod);
+    const benchmarkDates = Object.keys(benchmarkSeriesMap).reduce(function (dates, key) {
+      return dates.concat(ensureArray(benchmarkSeriesMap[key]).map(function (item) { return item.date; }).filter(Boolean));
+    }, []);
+    const seriesDates = ensureArray(data.series).map(function (item) { return item.date; }).filter(Boolean);
+
+    function buildAccountSeries(snapshotRows) {
+      const rows = ensureArray(snapshotRows);
+      if (!rows.length) {
+        return [];
+      }
+      const baseRow = rows.find(function (row) {
+        return Number(row && (row.account_capital || row.capital) || 0) > 0 && Number(row && row.nav_close || 0) > 0;
+      }) || null;
+      const baseCapital = Number(baseRow && (baseRow.account_capital || baseRow.capital) || 0);
+      if (!(baseCapital > 0)) {
+        return rows.map(function (row) {
+          return {
+            date: row.trade_date,
+            value: null,
+            return_pct: null,
+            nav: Number(row.nav_close || 0),
+            daily_return_pct: Number(row.daily_return_pct || 0),
+          };
+        });
+      }
+      return rows.map(function (row) {
+        const nav = Number(row.nav_close || 0);
+        if (!(nav > 0)) {
+          return {
+            date: row.trade_date,
+            value: null,
+            return_pct: null,
+            nav: nav,
+            capital: baseCapital,
+            daily_return_pct: Number(row.daily_return_pct || 0),
+          };
+        }
+        return {
+          date: row.trade_date,
+          value: roundNumber((nav / baseCapital) * 100, 2),
+          return_pct: roundNumber(((nav / baseCapital) - 1) * 100, 2),
+          nav: nav,
+          capital: baseCapital,
+          daily_return_pct: Number(row.daily_return_pct || 0),
+        };
+      });
+    }
+
+    function buildCombinedAssetSeries(accountRows) {
+      const buckets = {};
+      ensureArray(accountRows).forEach(function (account) {
+        ensureArray(account && account.snapshots).forEach(function (snapshot) {
+          const dateKey = String(snapshot && snapshot.trade_date || "");
+          if (!dateKey) {
+            return;
+          }
+          if (!buckets[dateKey]) {
+            buckets[dateKey] = {
+              date: dateKey,
+              nav: 0,
+              capital: 0,
+            };
+          }
+          buckets[dateKey].nav += Number(snapshot && snapshot.nav_close || 0);
+          buckets[dateKey].capital += Number(snapshot && (snapshot.account_capital || snapshot.capital) || 0);
+        });
+      });
+      const rows = Object.keys(buckets).sort().map(function (dateKey) {
+        return buckets[dateKey];
+      });
+      if (!rows.length) {
+        return [];
+      }
+      const baseRow = rows.find(function (row) {
+        return Number(row && row.capital || 0) > 0 && Number(row && row.nav || 0) > 0;
+      }) || null;
+      const baseCapital = Number(baseRow && baseRow.capital || 0);
+      return rows.map(function (row, index) {
+        const nav = Number(row.nav || 0);
+        const previousNav = index > 0 ? Number(rows[index - 1].nav || 0) : 0;
+        if (!(baseCapital > 0) || !(nav > 0)) {
+          return {
+            date: row.date,
+            value: null,
+            return_pct: null,
+            nav: roundNumber(nav, 2),
+            capital: roundNumber(Number(row.capital || 0), 2),
+            daily_return_pct: previousNav > 0 && nav > 0 ? roundNumber(((nav / previousNav) - 1) * 100, 3) : 0,
+          };
+        }
+        return {
+          date: row.date,
+          value: roundNumber((nav / baseCapital) * 100, 2),
+          return_pct: roundNumber(((nav / baseCapital) - 1) * 100, 2),
+          nav: roundNumber(nav, 2),
+          capital: roundNumber(Number(row.capital || 0), 2),
+          daily_return_pct: previousNav > 0 ? roundNumber(((nav / previousNav) - 1) * 100, 3) : 0,
+        };
+      });
+    }
+
+    function roundNumber(value, digits) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return 0;
+      }
+      const factor = Math.pow(10, digits == null ? 0 : digits);
+      return Math.round(number * factor) / factor;
+    }
+
+    const krAccount = accounts.find(function (account) { return account.account_type === "kr"; }) || null;
+    const usAccount = accounts.find(function (account) { return account.account_type === "us"; }) || null;
+    const combinedAssetSeries = buildCombinedAssetSeries(accounts);
+    const cashBaseValue = Number((data.daily_details && data.daily_details[0] && data.daily_details[0].cash_close) || 0);
+    const cashSeries = ensureArray(data.daily_details).map(function (item, index) {
+      const cash = Number(item.cash_close || 0);
+      const normalized = cashBaseValue > 0 ? (cash / cashBaseValue) * 100 : 100;
+      return {
+        date: item.date,
+        value: roundNumber(normalized, 2),
+        return_pct: cashBaseValue > 0 ? roundNumber(((cash / cashBaseValue) - 1) * 100, 2) : 0,
+        nav: cash,
+        daily_return_pct: index > 0 && Number(data.daily_details[index - 1].cash_close || 0) > 0
+          ? roundNumber(((cash / Number(data.daily_details[index - 1].cash_close || 0)) - 1) * 100, 3)
+          : 0,
+      };
+    });
+    const assetSeriesMap = {
+      total: combinedAssetSeries,
+      kr: buildAccountSeries(krAccount && krAccount.snapshots),
+      us: buildAccountSeries(usAccount && usAccount.snapshots),
+      other: cashSeries,
+    };
+    const rawSelectedAssetSeries = assetSeriesMap[assetView] || combinedAssetSeries;
+    const selectedAssetSeries = normalizePortfolioSeriesForPeriod(rawSelectedAssetSeries, activePeriod);
+    const selectedAssetLatest = selectedAssetSeries.length ? selectedAssetSeries[selectedAssetSeries.length - 1] : null;
+    const selectedAssetBenchmarks = assetView === "total"
+      ? Object.keys(benchmarkSeriesMap).map(function (key) {
+          return {
+            key: key,
+            label: benchmarkLabelMap[key] || key.toUpperCase(),
+            color: benchmarkColorMap[key] || "#64748b",
+            rows: normalizeBenchmarkForLabels(benchmarkSeriesMap[key] || [], selectedAssetSeries.map(function (item) { return item.date; })),
+          };
+        })
+      : [];
+    const selectedAssetRelativeStatsMap = {};
+    selectedAssetBenchmarks.forEach(function (benchmark) {
+      selectedAssetRelativeStatsMap[benchmark.key] = calculateRelativePortfolioStats(selectedAssetSeries, benchmark.rows);
+    });
+    const accountEstimateBaseValue = Number(
+      form.account_capital
+      || (selectedSnapshot && selectedSnapshot.account_capital)
+      || (selectedSnapshot && selectedSnapshot.nav_close)
+      || (activeAccount && activeAccount.latest_snapshot && activeAccount.latest_snapshot.nav_close)
+      || 0
+    );
+    const assetViewLabelMap = {
+      total: "전체 자산",
+      kr: "국장",
+      us: "미장",
+      other: "기타 자산",
+    };
+    const assetViewLabel = assetViewLabelMap[assetView] || "전체 자산";
+
+    function nextWeekday(dateText) {
+      const shifted = shiftIsoDate(dateText || isoDateOffset(0), 1) || isoDateOffset(0);
+      const base = new Date(String(shifted).slice(0, 10) + "T00:00:00");
+      if (Number.isNaN(base.getTime())) {
+        return isoDateOffset(0);
+      }
+      while (base.getDay() === 0 || base.getDay() === 6) {
+        base.setDate(base.getDate() + 1);
+      }
+      return base.getFullYear() + "-" + String(base.getMonth() + 1).padStart(2, "0") + "-" + String(base.getDate()).padStart(2, "0");
+    }
+
+    function previousWeekday(dateText) {
+      const shifted = shiftIsoDate(dateText || isoDateOffset(0), -1) || isoDateOffset(0);
+      const base = new Date(String(shifted).slice(0, 10) + "T00:00:00");
+      if (Number.isNaN(base.getTime())) {
+        return isoDateOffset(-1);
+      }
+      while (base.getDay() === 0 || base.getDay() === 6) {
+        base.setDate(base.getDate() - 1);
+      }
+      return base.getFullYear() + "-" + String(base.getMonth() + 1).padStart(2, "0") + "-" + String(base.getDate()).padStart(2, "0");
+    }
+
+    function buildTradeDateOptions() {
+      const minTradeDate = "2026-08-01";
+      const known = {};
+      const todayDate = isoDateOffset(0);
+      const latestKnownDate = [isoDateOffset(0)]
+        .concat(seriesDates)
+        .concat(benchmarkDates)
+        .concat(activeSnapshots.map(function (snapshot) { return snapshot && snapshot.trade_date ? String(snapshot.trade_date) : ""; }))
+        .filter(Boolean)
+        .sort()
+        .slice(-1)[0] || todayDate;
+      let calendarProbe = minTradeDate;
+      const calendarMaxDate = latestKnownDate > todayDate ? todayDate : latestKnownDate;
+      while (calendarProbe <= calendarMaxDate) {
+        const base = new Date(String(calendarProbe).slice(0, 10) + "T00:00:00");
+        if (!Number.isNaN(base.getTime()) && base.getDay() !== 0 && base.getDay() !== 6) {
+          known[String(calendarProbe)] = true;
+        }
+        calendarProbe = shiftIsoDate(calendarProbe, 1) || calendarProbe;
+      }
+      return Object.keys(known).filter(function (dateText) {
+        return String(dateText || "") >= minTradeDate && String(dateText || "") <= todayDate;
+      }).sort().reverse();
+    }
+
+    const tradeDateOptions = buildTradeDateOptions();
+
+    useEffect(function () {
+      if (!request.data) {
+        return;
+      }
+      const snapshots = ensureArray(activeAccount && activeAccount.snapshots);
+      if (selectedSnapshotId && snapshots.some(function (snapshot) { return snapshot.snapshot_id === selectedSnapshotId; })) {
+        return;
+      }
+      const latest = snapshots.length ? snapshots[snapshots.length - 1] : null;
+      if (latest) {
+        setSelectedSnapshotId(latest.snapshot_id || "");
+        setForm(snapshotToForm(latest));
+        return;
+      }
+      setSelectedSnapshotId("");
+      setForm(emptyForm(activeAccountType, isoDateOffset(0)));
+    }, [request.data, activeAccountType]);
+
+    function buildLeaderLookup(rows) {
+      const lookup = {};
+      ensureArray(rows).forEach(function (row) {
+        const sector = String(row.manual_sector || row.theme || row.industry || row.sector || "").trim();
+        const currentPrice = Number(row.current_price || row.close_price || row.price || 0);
+        [
+          String(row.stock_name || "").trim(),
+          String(row.resolved_name || "").trim(),
+          String(row.stock_code || row.symbol || "").trim().toUpperCase(),
+        ].forEach(function (key) {
+          const normalized = normalizeLooseSearchText(key);
+          if (!normalized) {
+            return;
+          }
+          lookup[normalized] = {
+            sector: sector,
+            current_price: currentPrice > 0 ? currentPrice : null,
+          };
+        });
+      });
+      return lookup;
+    }
+
+    if (request.loading) {
+      return LoadingPanel({ label: request.label });
+    }
+    if (request.error) {
+      return ErrorPanel({ message: request.error });
+    }
+
+    function updateFormField(key, value) {
+      setForm(function (current) {
+        const next = Object.assign({}, current);
+        next[key] = value;
+        return next;
+      });
+    }
+
+    function updateAccountCapital(value) {
+      setForm(function (current) {
+        const next = Object.assign({}, current, { account_capital: value });
+        next.items = ensureArray(current.items).map(function (item) {
+          return syncEstimatedQuantity(Object.assign({}, item), current.account_type || activeAccountType || "kr", value);
+        });
+        return next;
+      });
+    }
+
+    function computeEstimatedQuantity(weightValue, priceValue, accountTypeValue, capitalBaseValue) {
+      const weightPct = Number(weightValue || 0);
+      const currentPrice = Number(priceValue || 0);
+      const baseCapital = Number(capitalBaseValue != null ? capitalBaseValue : accountEstimateBaseValue);
+      if (!(baseCapital > 0) || !(weightPct > 0) || !(currentPrice > 0)) {
+        return null;
+      }
+      const raw = (baseCapital * (weightPct / 100)) / currentPrice;
+      if (!(raw > 0)) {
+        return null;
+      }
+      return accountTypeValue === "us" ? roundNumber(raw, 2) : Math.max(1, Math.round(raw));
+    }
+
+    function stopLossStep(priceValue, accountTypeValue) {
+      const price = Number(priceValue || 0);
+      if (!(price > 0)) {
+        return accountTypeValue === "us" ? 0.1 : 10;
+      }
+      if (accountTypeValue === "us") {
+        if (price >= 100) {
+          return 1;
+        }
+        if (price >= 20) {
+          return 0.5;
+        }
+        if (price >= 5) {
+          return 0.25;
+        }
+        return 0.1;
+      }
+      if (price >= 100000) {
+        return 1000;
+      }
+      if (price >= 50000) {
+        return 500;
+      }
+      if (price >= 10000) {
+        return 100;
+      }
+      if (price >= 1000) {
+        return 50;
+      }
+      return 10;
+    }
+
+    function computeSuggestedStopLoss(avgPriceValue, currentPriceValue, accountTypeValue) {
+      const avgPrice = Number(avgPriceValue || 0);
+      const currentPrice = Number(currentPriceValue || 0);
+      const basePrice = avgPrice > 0 ? avgPrice : currentPrice;
+      if (!(basePrice > 0)) {
+        return null;
+      }
+      const rawStopLoss = basePrice * 0.92;
+      const step = stopLossStep(basePrice, accountTypeValue);
+      if (!(step > 0)) {
+        return accountTypeValue === "us" ? roundNumber(rawStopLoss, 2) : Math.max(0, Math.round(rawStopLoss));
+      }
+      const floored = Math.floor(rawStopLoss / step) * step;
+      if (accountTypeValue === "us") {
+        return roundNumber(floored, step < 1 ? 2 : 0);
+      }
+      return Math.max(step, Math.round(floored));
+    }
+
+    function syncEstimatedQuantity(item, accountTypeValue, capitalBaseValue) {
+      const next = Object.assign({}, item);
+      if (!String(next.quantity || "").trim() || next.quantity_auto) {
+        const estimate = computeEstimatedQuantity(next.weight_pct, next.current_price, accountTypeValue, capitalBaseValue);
+        if (estimate != null) {
+          next.quantity = String(estimate);
+          next.quantity_auto = true;
+        }
+      }
+      return next;
+    }
+
+    function syncSuggestedStopLoss(item, accountTypeValue) {
+      const next = Object.assign({}, item);
+      if (!String(next.stop_loss_price || "").trim() || next.stop_loss_auto) {
+        const suggested = computeSuggestedStopLoss(next.avg_price, next.current_price, accountTypeValue);
+        if (suggested != null) {
+          next.stop_loss_price = String(suggested);
+          next.stop_loss_auto = true;
+        }
+      }
+      return next;
+    }
+
+    function portfolioItemExitInfo(item) {
+      const manualSellPrice = Number(item && item.sell_price || 0);
+      if (manualSellPrice > 0) {
+        return { exited: true, price: manualSellPrice, reason: "manual_sell" };
+      }
+      const stopLossPrice = Number(item && item.stop_loss_price || 0);
+      const currentPrice = Number(item && item.current_price || 0);
+      if (stopLossPrice > 0 && currentPrice > 0 && currentPrice <= stopLossPrice) {
+        return { exited: true, price: stopLossPrice, reason: "stop_loss" };
+      }
+      return { exited: false, price: currentPrice > 0 ? currentPrice : null, reason: "" };
+    }
+
+    function updateItemPatch(index, patch) {
+      setForm(function (current) {
+        const next = Object.assign({}, current);
+        next.items = ensureArray(current.items).map(function (item, itemIndex) {
+          if (itemIndex !== index) {
+            return item;
+          }
+          const merged = Object.assign({}, item, patch);
+          if (Object.prototype.hasOwnProperty.call(patch, "quantity")) {
+            merged.quantity_auto = false;
+          }
+          if (Object.prototype.hasOwnProperty.call(patch, "stop_loss_price")) {
+            merged.stop_loss_auto = false;
+          }
+          if (
+            Object.prototype.hasOwnProperty.call(patch, "weight_pct")
+            || Object.prototype.hasOwnProperty.call(patch, "current_price")
+            || Object.prototype.hasOwnProperty.call(patch, "stock_name")
+            || Object.prototype.hasOwnProperty.call(patch, "avg_price")
+          ) {
+            return syncSuggestedStopLoss(
+              syncEstimatedQuantity(merged, current.account_type || activeAccountType || "kr", current.account_capital),
+              current.account_type || activeAccountType || "kr"
+            );
+          }
+          return merged;
+        });
+        return next;
+      });
+    }
+
+    function updateItemField(index, key, value) {
+      updateItemPatch(index, { [key]: value });
+    }
+
+    function cloneSnapshotForward(sourceSnapshot, nextAccount, nextDate) {
+      if (!sourceSnapshot) {
+        return emptyForm(nextAccount, nextDate);
+      }
+      const clonedItems = ensureArray(sourceSnapshot.items).filter(function (item) {
+        return !portfolioItemExitInfo(item).exited;
+      }).map(function (item) {
+        return {
+          item_id: "item-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8),
+          sector: item.sector || "",
+          stock_name: item.stock_name || "",
+          stock_code: item.stock_code || "",
+          current_price: item.current_price != null ? String(item.current_price) : "",
+          avg_price: item.avg_price != null ? String(item.avg_price) : "",
+          weight_pct: item.weight_pct != null ? String(item.weight_pct) : "",
+          quantity: item.quantity != null ? String(item.quantity) : "",
+          quantity_auto: false,
+          stop_loss_price: item.stop_loss_price != null ? String(item.stop_loss_price) : "",
+          stop_loss_auto: false,
+          sell_price: "",
+          note: item.note || "",
+        };
+      });
+      return {
+        snapshot_id: "",
+        trade_date: nextDate || nextWeekday(sourceSnapshot.trade_date || isoDateOffset(0)),
+        account_type: nextAccount || sourceSnapshot.account_type || "kr",
+        account_capital: sourceSnapshot.account_capital != null ? String(sourceSnapshot.account_capital) : "",
+        note: "",
+        items: clonedItems.length
+          ? clonedItems
+          : [emptyItem()],
+      };
+    }
+
+    function addItem() {
+      setForm(function (current) {
+        return Object.assign({}, current, { items: ensureArray(current.items).concat([emptyItem()]) });
+      });
+    }
+
+    function reorderPortfolioItems(fromIndex, toIndex) {
+      if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) {
+        return;
+      }
+      setForm(function (current) {
+        return Object.assign({}, current, {
+          items: moveArrayItem(ensureArray(current.items), fromIndex, toIndex),
+        });
+      });
+    }
+
+    function removeItem(index) {
+      setForm(function (current) {
+        const items = ensureArray(current.items).filter(function (_, itemIndex) { return itemIndex !== index; });
+        return Object.assign({}, current, { items: items.length ? items : [emptyItem()] });
+      });
+    }
+
+    function loadSnapshot(snapshot) {
+      setSelectedSnapshotId(snapshot && snapshot.snapshot_id ? snapshot.snapshot_id : "");
+      setSaveState({ status: "idle", message: "" });
+      setCaptureState({ status: "idle", message: "" });
+      setPortfolioSuggestions({});
+      setPortfolioDragIndex(-1);
+      setForm(snapshotToForm(snapshot));
+    }
+
+    function focusSnapshot(snapshot) {
+      if (!snapshot) {
+        return;
+      }
+      loadSnapshot(snapshot);
+      const dateText = snapshot.trade_date || "";
+      if (dateText) {
+        const focusIndex = selectedAssetSeries.findIndex(function (item) { return item && item.date === dateText; });
+        setXRange({
+          min: Math.max(0, focusIndex - 2),
+          max: Math.max(4, focusIndex + 2),
+        });
+      }
+    }
+
+    function handleTradeDateSelection(dateText) {
+      const nextDate = String(dateText || "").trim();
+      if (!nextDate) {
+        return;
+      }
+      const matchedSnapshot = activeSnapshots.find(function (snapshot) {
+        return String(snapshot && snapshot.trade_date || "") === nextDate;
+      }) || null;
+      if (matchedSnapshot) {
+        focusSnapshot(matchedSnapshot);
+        return;
+      }
+      updateFormField("trade_date", nextDate);
+    }
+
+    function startNewSnapshot(accountType) {
+      const nextAccount = accountType || activeAccountType || "kr";
+      const nextAccountView = accounts.find(function (account) { return account.account_type === nextAccount; }) || null;
+      const sourceSnapshot = (selectedSnapshot && selectedSnapshot.account_type === nextAccount)
+        ? selectedSnapshot
+        : (nextAccountView && ensureArray(nextAccountView.snapshots).length
+          ? ensureArray(nextAccountView.snapshots)[ensureArray(nextAccountView.snapshots).length - 1]
+          : null);
+      const nextDate = sourceSnapshot
+        ? nextWeekday(sourceSnapshot.trade_date || isoDateOffset(0))
+        : (tradeDateOptions[0] || nextWeekday(isoDateOffset(0)));
+      setActiveAccountType(nextAccount);
+      setSelectedSnapshotId("");
+      setSaveState({ status: "idle", message: "" });
+      setCaptureState({ status: "idle", message: "" });
+      setPortfolioSuggestions({});
+      setPortfolioDragIndex(-1);
+      setForm(cloneSnapshotForward(sourceSnapshot, nextAccount, nextDate));
+    }
+
+    function setPortfolioSuggestionState(itemId, patch) {
+      setPortfolioSuggestions(function (current) {
+        return Object.assign({}, current, {
+          [itemId]: Object.assign({ items: [], activeIndex: 0, loading: false }, current[itemId] || {}, patch),
+        });
+      });
+    }
+
+    function clearPortfolioSuggestions(itemId) {
+      setPortfolioSuggestionState(itemId, { items: [], activeIndex: 0, loading: false });
+    }
+
+    function lookupLeaderInfo(accountTypeValue, stockName, stockCode) {
+      const cached = PORTFOLIO_AUTOCOMPLETE_SOURCE_CACHE[accountTypeValue === "us" ? "us" : "kr"];
+      const lookup = cached && cached.lookup ? cached.lookup : {};
+      const codeKey = normalizeLooseSearchText(String(stockCode || "").trim().toUpperCase());
+      const nameKey = normalizeLooseSearchText(stockName);
+      return lookup[codeKey] || lookup[nameKey] || null;
+    }
+
+    async function ensurePortfolioAutocompleteSource(accountTypeValue) {
+      const key = accountTypeValue === "us" ? "us" : "kr";
+      const cached = PORTFOLIO_AUTOCOMPLETE_SOURCE_CACHE[key];
+      if (cached && cached.lookup) {
+        return cached.lookup;
+      }
+      if (cached && cached.promise) {
+        return cached.promise;
+      }
+      const url = key === "us"
+        ? "/api/us-themes/today?min_score=50"
+        : "/api/themes/today?min_score=50&lite=true&cache_only=true";
+      const promise = fetchJson(url, { silent: true }).then(function (payload) {
+        const lookup = buildLeaderLookup(payload && payload.qualified_stocks);
+        PORTFOLIO_AUTOCOMPLETE_SOURCE_CACHE[key] = { lookup: lookup, loadedAt: Date.now() };
+        return lookup;
+      }).catch(function () {
+        PORTFOLIO_AUTOCOMPLETE_SOURCE_CACHE[key] = { lookup: {}, loadedAt: Date.now() };
+        return {};
+      });
+      PORTFOLIO_AUTOCOMPLETE_SOURCE_CACHE[key] = { promise: promise };
+      return promise;
+    }
+
+    async function loadPortfolioCurrentPrice(accountTypeValue, stockName, stockCode) {
+      try {
+        if (accountTypeValue === "us") {
+          const detail = await fetchJson("/api/global-stocks/detail?symbol=" + encodeURIComponent(stockCode || stockName), { noCache: true });
+          const price = Number(detail && detail.price);
+          return Number.isFinite(price) && price > 0 ? price : null;
+        }
+        const overview = await fetchJson(
+          "/api/stocks/overview?" + (stockCode
+            ? ("code=" + encodeURIComponent(stockCode))
+            : ("name=" + encodeURIComponent(stockName))),
+          { noCache: true }
+        );
+        const price = Number(overview && overview.price);
+        return Number.isFinite(price) && price > 0 ? price : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function normalizePortfolioSuggestionItem(raw, accountTypeValue) {
+      const stockName = String(raw.name || raw.stock_name || "").trim();
+      const stockCode = String(raw.code || raw.symbol || raw.stock_code || "").trim().toUpperCase();
+      const leaderInfo = lookupLeaderInfo(accountTypeValue, stockName, stockCode) || {};
+      return {
+        stock_name: stockName,
+        stock_code: stockCode,
+        market: String(raw.market || raw.exchange || "").trim(),
+        sector: String(leaderInfo.sector || "").trim(),
+        current_price: leaderInfo.current_price || null,
+      };
+    }
+
+    function handlePortfolioStockInput(index, item, value) {
+      updateItemPatch(index, {
+        stock_name: value,
+        stock_code: "",
+        current_price: "",
+      });
+      const itemId = item.item_id || ("item-" + index);
+      const trimmed = String(value || "").trim();
+      if (portfolioSearchTimerRef.current[itemId]) {
+        clearTimeout(portfolioSearchTimerRef.current[itemId]);
+      }
+      if (trimmed.length < 1) {
+        clearPortfolioSuggestions(itemId);
+        return;
+      }
+      setPortfolioSuggestionState(itemId, { loading: true, items: [], activeIndex: 0 });
+      portfolioSearchTimerRef.current[itemId] = setTimeout(async function () {
+        try {
+          await ensurePortfolioAutocompleteSource(form.account_type || activeAccountType || "kr");
+          const endpoint = form.account_type === "us"
+            ? "/api/global-stocks/search?q=" + encodeURIComponent(trimmed) + "&limit=10"
+            : "/api/stocks/autocomplete?q=" + encodeURIComponent(trimmed) + "&limit=10";
+          const payload = await fetchJson(endpoint, { noCache: true });
+          const items = ensureArray(payload.items).map(function (entry) {
+            return normalizePortfolioSuggestionItem(entry, form.account_type || activeAccountType || "kr");
+          });
+          setPortfolioSuggestionState(itemId, { items: items, activeIndex: 0, loading: false });
+        } catch (error) {
+          setPortfolioSuggestionState(itemId, { items: [], activeIndex: 0, loading: false });
+        }
+      }, 160);
+    }
+
+    async function choosePortfolioSuggestion(index, item, suggestion) {
+      const accountTypeValue = form.account_type || activeAccountType || "kr";
+      const itemId = item.item_id || ("item-" + index);
+      clearPortfolioSuggestions(itemId);
+      const leaderInfo = lookupLeaderInfo(accountTypeValue, suggestion.stock_name, suggestion.stock_code) || {};
+      updateItemPatch(index, {
+        stock_name: suggestion.stock_name || "",
+        stock_code: suggestion.stock_code || "",
+        sector: String(suggestion.sector || leaderInfo.sector || item.sector || "").trim(),
+        current_price: suggestion.current_price || leaderInfo.current_price ? String(suggestion.current_price || leaderInfo.current_price) : "",
+      });
+      if (suggestion.current_price || leaderInfo.current_price) {
+        return;
+      }
+      const resolvedPrice = await loadPortfolioCurrentPrice(accountTypeValue, suggestion.stock_name, suggestion.stock_code);
+      if (resolvedPrice == null) {
+        return;
+      }
+      updateItemPatch(index, {
+        current_price: String(resolvedPrice),
+      });
+    }
+
+    function handlePortfolioSuggestionKeyDown(event, index, item) {
+      const itemId = item.item_id || ("item-" + index);
+      const state = portfolioSuggestions[itemId] || {};
+      const items = ensureArray(state.items);
+      if (!items.length) {
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setPortfolioSuggestionState(itemId, { activeIndex: ((state.activeIndex || 0) + 1) % items.length });
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setPortfolioSuggestionState(itemId, { activeIndex: ((state.activeIndex || 0) - 1 + items.length) % items.length });
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        choosePortfolioSuggestion(index, item, items[state.activeIndex || 0] || items[0]);
+      } else if (event.key === "Escape") {
+        clearPortfolioSuggestions(itemId);
+      }
+    }
+
+    async function saveSnapshot() {
+      const payload = {
+        snapshot_id: form.snapshot_id || null,
+        trade_date: form.trade_date,
+        account_type: form.account_type,
+        account_capital: form.account_capital === "" ? null : Number(form.account_capital),
+        note: form.note,
+        items: ensureArray(form.items).map(function (item) {
+            return {
+              item_id: item.item_id || null,
+              sector: item.sector,
+              stock_name: item.stock_name,
+              stock_code: item.stock_code,
+              avg_price: item.avg_price === "" ? null : Number(item.avg_price),
+              weight_pct: item.weight_pct === "" ? null : Number(item.weight_pct),
+              quantity: item.quantity === "" ? null : Number(item.quantity),
+              stop_loss_price: item.stop_loss_price === "" ? null : Number(item.stop_loss_price),
+              sell_price: item.sell_price === "" ? null : Number(item.sell_price),
+              note: item.note,
+            };
+          }),
+      };
+      setSaveState({ status: "working", message: "저장 중..." });
+      try {
+        const refreshed = await fetchJson("/api/portfolio/journal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          noCache: true,
+        });
+        const snapshots = ensureArray(refreshed && refreshed.manual_journal && refreshed.manual_journal.snapshots);
+        const matched = snapshots.filter(function (snapshot) {
+          return snapshot.trade_date === payload.trade_date && snapshot.account_type === payload.account_type;
+        }).slice(-1)[0];
+        if (matched) {
+          setSelectedSnapshotId(matched.snapshot_id || "");
+          setForm(snapshotToForm(matched));
+          setActiveAccountType(matched.account_type || payload.account_type || "kr");
+        }
+        setSaveState({ status: "done", message: "스냅샷을 저장했다." });
+        await request.refresh(true);
+      } catch (error) {
+        setSaveState({ status: "error", message: error.message || String(error) });
+      }
+    }
+
+    async function deleteSnapshot() {
+      if (!form.snapshot_id) {
+        startNewSnapshot(form.account_type || activeAccountType);
+        return;
+      }
+      setSaveState({ status: "working", message: "삭제 중..." });
+      try {
+        await fetchJson("/api/portfolio/journal?snapshot_id=" + encodeURIComponent(form.snapshot_id), {
+          method: "DELETE",
+          noCache: true,
+        });
+        setSaveState({ status: "done", message: "스냅샷을 삭제했다." });
+        setSelectedSnapshotId("");
+        setForm(emptyForm(form.account_type || activeAccountType, isoDateOffset(0)));
+        await request.refresh(true);
+      } catch (error) {
+        setSaveState({ status: "error", message: error.message || String(error) });
+      }
+    }
+
+    function copyCapture() {
+      const target = captureRef.current;
+      if (!target || !currentCapture) {
+        setCaptureState({ status: "error", message: "캡쳐할 스냅샷을 먼저 선택해라." });
+        return;
+      }
+      if (!window.html2canvas) {
+        setCaptureState({ status: "error", message: "캡쳐 기능을 사용할 수 없다." });
+        return;
+      }
+      setCaptureState({ status: "working", message: "캡쳐 복사 중..." });
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(function () {
+          window.html2canvas(target, {
+            backgroundColor: "#ffffff",
+            scale: Math.max(2, Math.min(3, window.devicePixelRatio || 2)),
+            useCORS: true,
+            logging: false,
+            windowWidth: Math.max(document.documentElement.clientWidth || 0, target.scrollWidth || 0),
+            windowHeight: Math.max(document.documentElement.clientHeight || 0, target.scrollHeight || 0),
+          }).then(function (canvas) {
+            return new Promise(function (resolve, reject) {
+              canvas.toBlob(function (blob) {
+                if (!blob) {
+                  reject(new Error("이미지 생성에 실패했다."));
+                  return;
+                }
+                resolve(blob);
+              }, "image/png");
+            });
+          }).then(function (blob) {
+            return copyImageBlobWithFallback(blob);
+          }).then(function () {
+            setCaptureState({ status: "done", message: "비중표를 클립보드에 복사했다." });
+          }).catch(function (error) {
+            setCaptureState({ status: "error", message: error.message || String(error) });
+          });
+        });
+      });
+    }
+
+    const formExposure = ensureArray(form.items).reduce(function (sum, item) {
+      return sum + Number(item.weight_pct || 0);
+    }, 0);
+    function roundCaptureWeight5(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return 0;
+      }
+      return Math.round(number / 5) * 5;
+    }
+
+    function computeLiveItemMetrics(item, capitalBaseValue) {
+      const exitInfo = portfolioItemExitInfo(item);
+      const currentPrice = Number(exitInfo.price || item && item.current_price || 0);
+      const avgPrice = Number(item && item.avg_price || 0);
+      const quantity = Number(item && item.quantity || 0);
+      const capital = Number(capitalBaseValue || 0);
+      const currentValue = currentPrice > 0 && quantity > 0 ? currentPrice * quantity : 0;
+      const investedValue = avgPrice > 0 && quantity > 0 ? avgPrice * quantity : 0;
+      const pnlValue = currentValue - investedValue;
+      return {
+        is_exited: exitInfo.exited,
+        exit_reason: exitInfo.reason,
+        mark_price: currentPrice > 0 ? currentPrice : null,
+        current_value: currentValue,
+        invested_value: investedValue,
+        pnl_value: pnlValue,
+        pnl_pct: investedValue > 0 ? ((currentValue / investedValue) - 1) * 100 : null,
+        actual_weight_pct: exitInfo.exited ? 0 : (capital > 0 ? (currentValue / capital) * 100 : null),
+      };
+    }
+
+    function sectorToneClass(value) {
+      const text = String(value || "").trim();
+      if (!text) {
+        return "tone-0";
+      }
+      let hash = 0;
+      for (let index = 0; index < text.length; index += 1) {
+        hash = ((hash * 31) + text.charCodeAt(index)) % 7;
+      }
+      return "tone-" + hash;
+    }
+
+    function portfolioDisplayDigits(accountTypeValue, fieldKey) {
+      if (accountTypeValue === "us") {
+        if (fieldKey === "weight_pct") {
+          return 1;
+        }
+        if (fieldKey === "quantity" || fieldKey === "current_price") {
+          return 2;
+        }
+      }
+      return 0;
+    }
+
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "section",
+        { className: "panel portfolio-asset-panel" },
+        h("div", { className: "section-toolbar" },
+          h("div", null,
+            h("div", { className: "eyebrow" }, "Manual Portfolio Journal"),
+            h("h1", { className: "page-title portfolio-page-title" }, "포트폴리오 수익")
+          ),
+          h("div", { className: "toggle-group portfolio-asset-toggle" },
+            h("button", { className: "mini-button" + (assetView === "total" ? " active" : ""), onClick: function () { setAssetView("total"); } }, "전체 자산"),
+            h("button", { className: "mini-button" + (assetView === "kr" ? " active" : ""), onClick: function () { setAssetView("kr"); } }, "국장"),
+            h("button", { className: "mini-button" + (assetView === "us" ? " active" : ""), onClick: function () { setAssetView("us"); } }, "미장"),
+            h("button", { className: "mini-button" + (assetView === "other" ? " active" : ""), onClick: function () { setAssetView("other"); } }, "기타 자산")
+          )
+        ),
+        h("div", { className: "chart-hint" }, "전체 자산은 KOSPI, KOSDAQ, NASDAQ, S&P 500과 동시에 비교하고, 국장/미장/기타 자산은 포트 자체 흐름만 본다."),
+        h(PerformanceChart, {
+          series: selectedAssetSeries,
+          benchmarks: selectedAssetBenchmarks,
+          xRange: xRange,
+          onRangeChange: setXRange,
+          resetSignal: resetSignal,
+        }),
+        h("div", { className: "portfolio-chart-legend" },
+          h("span", { className: "portfolio-legend-item portfolio-line-portfolio" }, "포트폴리오"),
+          selectedAssetBenchmarks.map(function (benchmark) {
+            return h("span", { key: benchmark.key, className: "portfolio-legend-item", style: { "--legend-color": benchmark.color } }, benchmark.label);
+          })
+        ),
+        h("div", { className: "portfolio-asset-meta" },
+          h("strong", null, assetViewLabel),
+          h("span", null, selectedAssetLatest ? ((selectedAssetLatest.date || "-") + " · " + formatPercent(selectedAssetLatest.return_pct, 2)) : "데이터 없음")
+        ),
+        assetView === "total"
+          ? h("div", { className: "portfolio-benchmark-summary-strip" },
+              selectedAssetBenchmarks.map(function (benchmark) {
+                const stats = selectedAssetRelativeStatsMap[benchmark.key] || {};
+                return h("div", { key: "benchmark-summary-" + benchmark.key, className: "portfolio-benchmark-summary-card" },
+                  h("strong", null, benchmark.label),
+                  h("span", null, "지수 " + (stats.benchmark_return_pct == null ? "-" : formatPercent(stats.benchmark_return_pct, 2))),
+                  h("em", { className: pnlClass(stats.alpha_pct) }, "초과 " + (stats.alpha_pct == null ? "-" : formatPercent(stats.alpha_pct, 2)))
+                );
+              })
+            )
+          : null,
+        h(
+          "div",
+          { className: "summary-grid portfolio-compact-summary" },
+          h(SummaryCard, { label: "누적", value: selectedAssetLatest ? formatPercent(selectedAssetLatest.return_pct, 2) : "-", help: assetViewLabel + " 시드 기준" }),
+          h(SummaryCard, { label: "평가금액", value: selectedAssetLatest ? formatCurrency(selectedAssetLatest.nav) : "-", help: selectedAssetLatest ? ((selectedAssetLatest.date || "-") + " 기준") : "데이터 없음" }),
+          h(SummaryCard, { label: "스냅샷", value: numberFormat(summary.snapshot_count || 0, 0) + "개", help: "KR + US" }),
+          h(SummaryCard, { label: "보유 종목", value: numberFormat(summary.holding_count_latest || 0, 0) + "개", help: "최신 기준" })
+        ),
+        h(
+          "div",
+          { className: "toggle-group portfolio-top-toolbar" },
+          h("label", { className: "inline-field" },
+            h("span", null, "표시 기간"),
+            h(
+              "select",
+              { value: activePeriod, onChange: function (event) { setPeriodKey(event.target.value); } },
+              [h("option", { key: "all", value: "all" }, "전체 기간")].concat(
+                monthOptions.slice().reverse().map(function (month) {
+                  return h("option", { key: month, value: month }, monthLabel(month));
+                })
+              )
+            )
+          ),
+          h("button", { className: "secondary-button", onClick: function () { startNewSnapshot(activeAccountType); } }, "새 스냅샷"),
+          h("button", { className: "primary-button", disabled: saveState.status === "working", onClick: saveSnapshot }, saveState.status === "working" ? "저장 중..." : "스냅샷 저장"),
+          h("button", { className: "secondary-button", onClick: function () { window.location.href = "/api/portfolio/export.xlsx"; } }, "엑셀 내보내기")
+        ),
+        saveState.message ? h("div", { className: "summary-help" + (saveState.status === "error" ? " text-danger" : "") }, saveState.message) : null
+      ),
+      h(
+        "section",
+        { className: "panel portfolio-journal-wide-panel" },
+        h("div", { className: "section-toolbar" },
+          h(SectionTitle, null, "일자별 저널"),
+          h("div", { className: "toggle-group" },
+            h("button", { className: "mini-button" + (activeAccountType === "kr" ? " active" : ""), onClick: function () { setActiveAccountType("kr"); updateFormField("account_type", "kr"); } }, "국내"),
+            h("button", { className: "mini-button" + (activeAccountType === "us" ? " active" : ""), onClick: function () { setActiveAccountType("us"); updateFormField("account_type", "us"); } }, "미장"),
+            h("button", { className: "mini-button", onClick: function () { startNewSnapshot(activeAccountType); } }, "최신 입력")
+          )
+        ),
+        h("div", { className: "portfolio-journal-list" },
+          activeSnapshots.length
+            ? activeSnapshots.map(function (snapshot) {
+                const exposure = ensureArray(snapshot.items).reduce(function (sum, item) { return sum + Number(item.weight_pct || 0); }, 0);
+                const previewItems = ensureArray(snapshot.items)
+                  .slice()
+                  .sort(function (a, b) { return Number(b.weight_pct || 0) - Number(a.weight_pct || 0); })
+                  .slice(0, 4);
+                const previewText = previewItems.map(function (previewItem) {
+                  return (previewItem.stock_name || previewItem.resolved_name || "-") + " " + formatPercent(previewItem.weight_pct, 1);
+                }).join(" · ");
+                return h(
+                  "button",
+                  {
+                    key: snapshot.snapshot_id,
+                    type: "button",
+                    className: "portfolio-journal-entry one-line" + (selectedSnapshotId === snapshot.snapshot_id ? " active" : ""),
+                    onClick: function () { focusSnapshot(snapshot); },
+                  },
+                  h("div", { className: "portfolio-journal-summary" },
+                    h("strong", { className: "portfolio-journal-date" }, snapshot.trade_date || "-"),
+                    h("span", { className: "portfolio-journal-meta" }, numberFormat(ensureArray(snapshot.items).length, 0) + "종목 · 총 비중 " + numberFormat(exposure, 1) + "%")
+                  ),
+                  h("div", { className: "portfolio-journal-chip-strip" },
+                    previewItems.length
+                      ? previewItems.map(function (previewItem, previewIndex) {
+                          return h(
+                            "span",
+                            {
+                              key: (previewItem.item_id || previewItem.stock_code || previewItem.stock_name || "") + "-" + previewIndex,
+                              className: "portfolio-journal-inline-chip " + sectorToneClass(previewItem.sector),
+                            },
+                            h("span", { className: "portfolio-journal-inline-sector" }, previewItem.sector || "미지정"),
+                            h("strong", null, previewItem.stock_name || previewItem.resolved_name || "-"),
+                            h("em", null, formatPercent(previewItem.weight_pct, 1))
+                          );
+                        })
+                      : h("span", { className: "portfolio-journal-preview-inline empty" }, "보유 종목 없음")
+                  )
+                );
+              })
+            : EmptyState({ message: (activeAccountType === "us" ? "미장" : "국내") + " 계좌 스냅샷이 아직 없다.", compact: true })
+        ),
+        h("div", { className: "portfolio-seed-bar" },
+          h("div", { className: "portfolio-seed-bar-head" },
+            h("strong", null, "시드금액"),
+            h("span", null, "예수금 포함 총 계좌자산 100% 기준이다. 이 금액에 비중을 곱해서 종목별 목표 금액과 수량을 자동 계산한다.")
+          ),
+          h("div", { className: "portfolio-seed-bar-controls" },
+            h("label", null,
+              h("span", null, "계좌"),
+              h("input", { className: "text-input", value: form.account_type === "us" ? "미장 계좌" : "국내 계좌", readOnly: true })
+            ),
+            h("label", null,
+              h("span", null, "기준 일자"),
+              h("select", {
+                className: "select-input",
+                value: form.trade_date,
+                onChange: function (event) { handleTradeDateSelection(event.target.value); },
+              }, tradeDateOptions.map(function (dateText) {
+                return h("option", { key: dateText, value: dateText }, dateText);
+              }))
+            ),
+            h("label", { className: "portfolio-seed-input" },
+              h("span", null, "시드금액(현금 포함)"),
+              h("input", { className: "text-input", type: "number", value: form.account_capital, placeholder: form.account_type === "us" ? "USD 시드 입력" : "KRW 시드 입력", onChange: function (event) { updateAccountCapital(event.target.value); } }),
+              h("em", { className: "portfolio-seed-caption" }, formatMoneyByCurrencyKoreanCompact(form.account_capital, form.account_type === "us" ? "USD" : "KRW"))
+            )
+          ),
+          h("div", { className: "portfolio-seed-actions" },
+            h("button", { className: "primary-button", type: "button", disabled: saveState.status === "working", onClick: saveSnapshot }, saveState.status === "working" ? "저장 중..." : "시드/일자 저장")
+          )
+        ),
+        h("div", { className: "portfolio-inline-form-grid" },
+          h("label", null, h("span", null, "모드"), h("input", { className: "text-input", value: form.snapshot_id ? "과거 수정" : "최신 입력", readOnly: true })),
+          h("label", { className: "wide" }, h("span", null, "메모"), h("input", { className: "text-input", value: form.note, onChange: function (event) { updateFormField("note", event.target.value); } }))
+        ),
+        h("div", { className: "portfolio-editor-toolbar compact" },
+          h("div", { className: "summary-help" }, "시드금액을 먼저 넣으면 비중 기준 수량이 자동 추정된다. 평단가와 실제 수량은 나중에 수정해도 된다."),
+          h("div", { className: "toggle-group" },
+            h("button", { className: "mini-button", type: "button", onClick: addItem }, "행 추가"),
+            h("button", { className: "mini-button danger", type: "button", onClick: deleteSnapshot }, form.snapshot_id ? "현재 삭제" : "입력 초기화")
+          )
+        ),
+        h("div", { className: "portfolio-item-scroll compact" },
+          ensureArray(form.items).map(function (item, index) {
+            const suggestionState = portfolioSuggestions[item.item_id] || {};
+            const suggestionItems = ensureArray(suggestionState.items);
+            const estimatedQuantity = computeEstimatedQuantity(item.weight_pct, item.current_price, form.account_type || activeAccountType || "kr", form.account_capital);
+            const liveMetrics = computeLiveItemMetrics(item, form.account_capital || accountEstimateBaseValue);
+            return h(
+              "div",
+              {
+                key: item.item_id || index,
+                className: "portfolio-item-card compact " + sectorToneClass(item.sector) + (portfolioDragIndex === index ? " dragging" : ""),
+                draggable: true,
+                onDragStart: function (event) {
+                  setPortfolioDragIndex(index);
+                  if (event && event.dataTransfer) {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", String(index));
+                  }
+                },
+                onDragOver: function (event) {
+                  event.preventDefault();
+                  if (event && event.dataTransfer) {
+                    event.dataTransfer.dropEffect = "move";
+                  }
+                },
+                onDrop: function (event) {
+                  event.preventDefault();
+                  reorderPortfolioItems(portfolioDragIndex, index);
+                  setPortfolioDragIndex(-1);
+                },
+                onDragEnd: function () {
+                  setPortfolioDragIndex(-1);
+                },
+              },
+              h("div", { className: "portfolio-item-topline" },
+                h("div", { className: "portfolio-item-chip-row" },
+                  h("span", { className: "portfolio-drag-handle", title: "드래그해서 순서 변경" }, "≡"),
+                  h("span", { className: "portfolio-item-order" }, numberFormat(index + 1, 0)),
+                  h("span", { className: "portfolio-sector-chip" }, item.sector || "섹터 미지정")
+                ),
+              h("div", { className: "portfolio-item-topmeta" },
+                  item.stock_name ? h("strong", null, item.stock_name) : h("strong", { className: "muted" }, "종목 선택"),
+                  h("span", null, [
+                    liveMetrics.actual_weight_pct == null ? null : ("실비중 " + numberFormat(liveMetrics.actual_weight_pct, 2) + "%"),
+                    liveMetrics.current_value > 0 ? ("평가 " + formatMoneyByCurrency(liveMetrics.current_value, form.account_type === "us" ? "USD" : "KRW")) : null,
+                    liveMetrics.is_exited ? (liveMetrics.exit_reason === "manual_sell" ? "직접매도 반영" : "손절청산 반영") : null,
+                  ].filter(Boolean).join(" · "))
+                )
+              ),
+              h("div", { className: "portfolio-item-live-row" },
+                h("span", null, "목표비중 " + (item.weight_pct ? numberFormat(item.weight_pct, 2) + "%" : "-")),
+                h("span", null, "평가금액 " + (liveMetrics.current_value > 0 ? formatMoneyByCurrency(liveMetrics.current_value, form.account_type === "us" ? "USD" : "KRW") : "-")),
+                h("span", { className: pnlClass(liveMetrics.pnl_value) }, "손익 " + (liveMetrics.current_value > 0 ? formatMoneyByCurrency(liveMetrics.pnl_value, form.account_type === "us" ? "USD" : "KRW") : "-")),
+                h("span", { className: pnlClass(liveMetrics.pnl_pct) }, "수익률 " + (liveMetrics.pnl_pct == null ? "-" : formatPercent(liveMetrics.pnl_pct, 2)))
+              ),
+              h("div", { className: "portfolio-item-grid wide-grid" },
+                h("label", null, h("span", null, "섹터"), h("input", { className: "text-input", value: item.sector, onChange: function (event) { updateItemField(index, "sector", event.target.value); } })),
+                h("label", { className: "portfolio-stock-autocomplete" },
+                  h("span", null, "종목명"),
+                  h("input", {
+                    className: "text-input",
+                    value: item.stock_name,
+                    placeholder: form.account_type === "us" ? "미장 종목 검색" : "국내 종목 검색",
+                    autoComplete: "off",
+                    onChange: function (event) { handlePortfolioStockInput(index, item, event.target.value); },
+                    onKeyDown: function (event) { handlePortfolioSuggestionKeyDown(event, index, item); },
+                    onBlur: function () {
+                      window.setTimeout(function () {
+                        clearPortfolioSuggestions(item.item_id);
+                      }, 140);
+                    },
+                  }),
+                  suggestionItems.length
+                    ? h("div", { className: "autocomplete-list inline portfolio-autocomplete-list" },
+                        suggestionItems.map(function (suggestion, suggestionIndex) {
+                          return h(
+                            "button",
+                            {
+                              key: (suggestion.stock_code || suggestion.stock_name || "") + "-" + suggestionIndex,
+                              type: "button",
+                              className: "autocomplete-item" + (suggestionIndex === (suggestionState.activeIndex || 0) ? " active" : ""),
+                              onMouseDown: function (event) {
+                                event.preventDefault();
+                                choosePortfolioSuggestion(index, item, suggestion);
+                              },
+                            },
+                            h("strong", null, suggestion.stock_name || "-"),
+                            h("span", null, [suggestion.stock_code, suggestion.market, suggestion.sector].filter(Boolean).join(" · ")),
+                            suggestion.current_price ? h("em", null, "현재가 " + numberFormat(suggestion.current_price, form.account_type === "us" ? 2 : 0)) : null
+                          );
+                        })
+                      )
+                    : null
+                ),
+                h("label", null, h("span", null, "현재가"), h("input", { className: "text-input", value: item.current_price, readOnly: true, placeholder: "종목 선택 시 자동" })),
+                h("label", null, h("span", null, "평단가"), h("input", { className: "text-input", type: "number", value: item.avg_price, placeholder: "추후 입력 가능", onChange: function (event) { updateItemField(index, "avg_price", event.target.value); } })),
+                h("label", null, h("span", null, "비중 %"), h("input", { className: "text-input", type: "number", value: item.weight_pct, onChange: function (event) { updateItemField(index, "weight_pct", event.target.value); } })),
+                h("label", null,
+                  h("span", null, "수량"),
+                  h("input", {
+                    className: "text-input",
+                    type: "number",
+                    value: item.quantity,
+                    placeholder: "비중 입력 시 자동 추정",
+                    onChange: function (event) { updateItemPatch(index, { quantity: event.target.value }); },
+                  }),
+                    estimatedQuantity != null
+                    ? h("em", { className: "portfolio-field-hint" }, "현재가 기준 약 " + numberFormat(estimatedQuantity, form.account_type === "us" ? 2 : 0) + (form.account_type === "us" ? "주" : "주"))
+                    : null
+                ),
+                h("label", null, h("span", null, "손절가"), h("input", { className: "text-input", type: "number", value: item.stop_loss_price, onChange: function (event) { updateItemField(index, "stop_loss_price", event.target.value); } })),
+                h("label", null, h("span", null, "매도가"), h("input", { className: "text-input", type: "number", value: item.sell_price, placeholder: "직접 매도 시 입력", onChange: function (event) { updateItemField(index, "sell_price", event.target.value); } })),
+                h("label", { className: "wide" }, h("span", null, "비고"), h("input", { className: "text-input", value: item.note, onChange: function (event) { updateItemField(index, "note", event.target.value); } })),
+                h("div", { className: "portfolio-item-inline-remove" }, h("button", { className: "mini-button danger", type: "button", onClick: function () { removeItem(index); } }, "삭제"))
+              )
+            );
+          })
+        ),
+        h("div", { className: "portfolio-journal-actions" },
+          h("div", { className: "summary-help" }, form.snapshot_id ? "선택한 날짜 스냅샷을 수정 중" : "최신 날짜 스냅샷을 새로 입력 중"),
+          h("div", { className: "toggle-group" },
+            h("button", { className: "secondary-button", type: "button", onClick: function () { startNewSnapshot(activeAccountType); } }, "새 스냅샷"),
+            h("button", { className: "primary-button", type: "button", disabled: saveState.status === "working", onClick: saveSnapshot }, saveState.status === "working" ? "저장 중..." : "일자 저장")
+          )
+        )
+      ),
+      h(
+        "div",
+        { className: "portfolio-chart-grid" },
+        h(
+          "section",
+          { className: "panel" },
+          h("div", { className: "chart-toolbar" },
+            h(SectionTitle, null, "비중 변화"),
+            h("div", { className: "toggle-group" },
+              h("button", { className: "mini-button" + (allocationMode === "sector" ? " active" : ""), onClick: function () { setAllocationMode("sector"); } }, "섹터별"),
+              h("button", { className: "mini-button" + (allocationMode === "stock" ? " active" : ""), onClick: function () { setAllocationMode("stock"); } }, "종목별")
+            )
+          ),
+          h(AllocationChart, { allocations: viewAllocations, mode: allocationMode, xRange: xRange })
+        ),
+        h(
+          "section",
+          { className: "panel portfolio-account-panel" },
+          h("div", { className: "section-toolbar" },
+            h(SectionTitle, null, (activeAccount && activeAccount.account_label) || "계좌 요약"),
+            h("div", { className: "summary-help" }, activeAccount && activeAccount.latest_snapshot ? (activeAccount.latest_snapshot.trade_date || "") : "")
+          ),
+          activeAccount && activeAccount.latest_snapshot
+            ? h(DataTable, {
+                rows: ensureArray(activeAccount.latest_snapshot.items),
+                compact: true,
+                emptyMessage: "보유 종목이 없다.",
+                columns: [
+                  { key: "sector", label: "섹터", render: function (row) { return row.sector || "-"; } },
+                  { key: "stock_name", label: "종목", render: function (row) { return row.stock_name || row.resolved_name || "-"; } },
+                  { key: "weight_pct", label: "비중", render: function (row) { return formatPercent(row.weight_pct, portfolioDisplayDigits(activeAccount.account_type, "weight_pct")); } },
+                  { key: "quantity", label: "수량", render: function (row) { return numberFormat(row.quantity, portfolioDisplayDigits(activeAccount.account_type, "quantity")); } },
+                  { key: "return_pct", label: "수익률", render: function (row) { return row.return_pct == null ? "-" : h("span", { className: pnlClass(row.return_pct) }, formatPercent(row.return_pct, 2)); } },
+                ],
+              })
+            : EmptyState({ message: "계좌 데이터가 없다.", compact: true })
+        )
+      ),
+      h(
+        "div",
+        { className: "portfolio-chart-grid" },
+        h(
+          "section",
+          { className: "panel" },
+          h("div", { className: "section-toolbar" },
+            h(SectionTitle, null, "월별 성과"),
+            h("div", { className: "summary-help" }, "승률은 수량 감소/청산 이벤트 기준")
+          ),
+          h(DataTable, {
+            rows: monthlyStats.slice().reverse(),
+            compact: true,
+            emptyMessage: "월별 통계가 아직 없다.",
+            columns: [
+              { key: "month", label: "월", render: function (row) { return formatYearMonthLabel(row.month); } },
+              { key: "account_label", label: "계좌" },
+              { key: "month_return_pct", label: "월 수익률", render: function (row) { return h("span", { className: pnlClass(row.month_return_pct) }, formatPercent(row.month_return_pct, 2)); } },
+              { key: "trade_count", label: "트레이드 수", render: function (row) { return row.trade_count == null ? "-" : numberFormat(row.trade_count, 0); } },
+              { key: "win_rate_pct", label: "승률", render: function (row) { return row.win_rate_pct == null ? "-" : formatPercent(row.win_rate_pct, 1); } },
+              { key: "realized_return_pct", label: "실현 수익률", render: function (row) { return row.realized_return_pct == null ? "-" : h("span", { className: pnlClass(row.realized_return_pct) }, formatPercent(row.realized_return_pct, 2)); } },
+            ],
+          })
+        ),
+        h(
+          "section",
+          { className: "panel portfolio-capture-panel" },
+          h("div", { className: "section-toolbar" },
+            h(SectionTitle, null, "데일리 비중 캡쳐"),
+            h("button", { className: "primary-button", disabled: !currentCapture || captureState.status === "working", onClick: copyCapture }, captureState.status === "working" ? "복사 중..." : "비중표 캡쳐 복사")
+          ),
+          h("div", { className: "summary-help" }, currentCapture ? ("최신 저장 스냅샷 · " + (currentCapture.trade_date || "") + " · " + (currentCapture.account_label || "")) : "최신 저장 스냅샷이 아직 없다."),
+          captureState.message ? h("div", { className: "summary-help" + (captureState.status === "error" ? " text-danger" : "") }, captureState.message) : null,
+          currentCapture && ensureArray(currentCapture.rows).length
+            ? h(DataTable, {
+                rows: ensureArray(currentCapture.rows),
+                compact: true,
+                emptyMessage: "캡쳐할 비중표가 없다.",
+                columns: [
+                  { key: "sector", label: "섹터", render: function (row) { return row.sector || "-"; } },
+                  { key: "stock_name", label: "종목" },
+                  { key: "prev_weight_pct", label: "이전", render: function (row) { return formatPercent(roundCaptureWeight5(row.prev_weight_pct), 0); } },
+                  { key: "weight_pct", label: "이후", render: function (row) { return formatPercent(roundCaptureWeight5(row.weight_pct), 0); } },
+                  { key: "note", label: "비고", render: function (row) { return (row.stop_loss_price ? ("손절가: " + numberFormat(row.stop_loss_price, 0)) : "") + ((row.stop_loss_price && row.note) ? " · " : "") + (row.note || ""); } },
+                ],
+              })
+            : EmptyState({ message: "캡쳐할 스냅샷이 없다.", compact: true })
+        )
+      ),
+      h(
+        "div",
+        { className: "portfolio-account-grid" },
+        ensureArray(accounts.length ? accounts : [
+          { account_type: "kr", account_label: "국내 계좌", latest_snapshot: null },
+          { account_type: "us", account_label: "미장 계좌", latest_snapshot: null },
+        ]).map(function (account) {
+          const latestSnapshot = account.latest_snapshot || null;
+          return h(
+            "section",
+            { key: account.account_type || account.account_label, className: "panel portfolio-account-panel" },
+            h("div", { className: "section-toolbar" },
+              h(SectionTitle, null, account.account_label || "-"),
+              h("button", { className: "mini-button", onClick: function () { setActiveAccountType(account.account_type || "kr"); startNewSnapshot(account.account_type || "kr"); } }, "새 스냅샷")
+            ),
+            latestSnapshot
+              ? h(React.Fragment, null,
+                  h("div", { className: "portfolio-account-summary-strip" },
+                    h(SummaryCard, { label: "최근 날짜", value: latestSnapshot.trade_date || "-", help: numberFormat(ensureArray(latestSnapshot.items).length, 0) + "종목" }),
+                    h(SummaryCard, { label: "시드금액", value: formatMoneyByCurrency(latestSnapshot.account_capital || latestSnapshot.capital, account.account_type === "us" ? "USD" : "KRW"), help: "계좌 기준" }),
+                    h(SummaryCard, { label: "평가금액", value: formatMoneyByCurrency(latestSnapshot.nav_close, account.account_type === "us" ? "USD" : "KRW"), help: "현금 포함" }),
+                    h(SummaryCard, { label: "일간 수익률", value: formatPercent(latestSnapshot.daily_return_pct, 2), help: "직전 스냅샷 대비" })
+                  ),
+                  h(DataTable, {
+                    rows: ensureArray(latestSnapshot.items),
+                    compact: true,
+                    emptyMessage: "보유 종목이 없다.",
+                    columns: [
+                      { key: "sector", label: "섹터", render: function (row) { return row.sector || "-"; } },
+                      { key: "stock_name", label: "종목", render: function (row) { return row.stock_name || row.resolved_name || "-"; } },
+                      { key: "weight_pct", label: "비중", render: function (row) { return formatPercent(row.weight_pct, portfolioDisplayDigits(account.account_type, "weight_pct")); } },
+                      { key: "quantity", label: "수량", render: function (row) { return numberFormat(row.quantity, portfolioDisplayDigits(account.account_type, "quantity")); } },
+                      { key: "current_price", label: "현재가", render: function (row) { return numberFormat(row.current_price, portfolioDisplayDigits(account.account_type, "current_price")); } },
+                      { key: "return_pct", label: "수익률", render: function (row) { return h("span", { className: pnlClass(row.return_pct) }, formatPercent(row.return_pct, 2)); } },
+                    ],
+                  })
+                )
+              : EmptyState({ message: "아직 저장된 스냅샷이 없다.", compact: true })
+          );
+        })
+      ),
+      h(
+        "section",
+        { className: "panel" },
+        h("div", { className: "section-toolbar" },
+          h(SectionTitle, null, "최근 스냅샷 설명"),
+          h("div", { className: "summary-help" }, latestDetail ? (latestDetail.date + " 기준") : "데이터 없음")
+        ),
+        latestDetail
+          ? h(React.Fragment, null,
+              h("div", { className: "summary-grid summary-grid-small" },
+                h(SummaryCard, { label: "일간 수익률", value: formatPercent(latestDetail.daily_return_pct, 3), help: latestDetail.date }),
+                h(SummaryCard, { label: "현금 잔액", value: formatCurrency(latestDetail.cash_close), help: "전체 계좌 합산" }),
+                h(SummaryCard, { label: "계좌 수", value: numberFormat(ensureArray(latestDetail.account_summaries).length, 0) + "개", help: "해당 일자 기준" })
+              ),
+              h(DataTable, {
+                rows: ensureArray(latestDetail.account_summaries),
+                compact: true,
+                emptyMessage: "계좌 요약이 없다.",
+                columns: [
+                  { key: "account_label", label: "계좌" },
+                  { key: "nav_close", label: "평가금액", render: function (row) { return formatCurrency(row.nav_close); } },
+                  { key: "daily_return_pct", label: "일간 수익률", render: function (row) { return h("span", { className: pnlClass(row.daily_return_pct) }, formatPercent(row.daily_return_pct, 2)); } },
+                  { key: "exposure_pct", label: "주식 노출", render: function (row) { return formatPercent(row.exposure_pct, 1); } },
+                ],
+              })
+            )
+          : EmptyState({ message: "최근 스냅샷 설명이 아직 없다.", compact: true })
+      ),
+      currentCapture && ensureArray(currentCapture.rows).length
+        ? h(
+            "div",
+            { className: "capture-hidden-stage" },
+            h(
+              "div",
+              { className: "portfolio-capture-stage", ref: captureRef },
+              h("div", { className: "portfolio-capture-stage-title" }, (currentCapture.trade_date || "") + " 비중"),
+              h(
+                "table",
+                { className: "portfolio-capture-table" },
+                h("thead", null, h("tr", null,
+                  h("th", null, "섹터"),
+                  h("th", null, "종목"),
+                  h("th", null, "이전"),
+                  h("th", null, "이후"),
+                  h("th", null, "비고")
+                )),
+                h("tbody", null,
+                  ensureArray(currentCapture.rows).map(function (row, index) {
+                    return h("tr", { key: "capture-" + index },
+                      h("td", null, row.sector || "-"),
+                      h("td", null, row.stock_name || "-"),
+                      h("td", null, formatPercent(roundCaptureWeight5(row.prev_weight_pct), 0)),
+                      h("td", null, formatPercent(roundCaptureWeight5(row.weight_pct), 0)),
+                      h("td", null, (row.stop_loss_price ? ("손절가 : " + numberFormat(row.stop_loss_price, 0)) : "") + ((row.stop_loss_price && row.note) ? " " : "") + (row.note || ""))
+                    );
+                  })
+                )
+              )
+            )
+          )
+        : null
+    );
+  }
+
   function ThemesPage() {
     const themesRequest = useFetchJson("/api/themes/today?min_score=50&recent_limit=20");
     const dartRequest = useFetchJson("/api/dart/today");
@@ -4329,13 +9828,13 @@
             { key: "stock_name", label: "종목" },
             { key: "appearances", label: "\ub4f1\uc7a5 \ud69f\uc218", render: function (row) { return numberFormat(row.appearances, 0); } },
             { key: "strong_days", label: "\uac15\ud55c \ub0a0 \uc218", render: function (row) { return numberFormat(row.strong_days, 0); } },
-            { key: "avg_score", label: "?됯퇏 ?먯닔", render: function (row) { return numberFormat(row.avg_score, 2); } },
-            { key: "max_score", label: "理쒓퀬 ?먯닔", render: function (row) { return numberFormat(row.max_score, 2); } },
+            { key: "avg_score", label: "평균 점수", render: function (row) { return numberFormat(row.avg_score, 2); } },
+            { key: "max_score", label: "최고 점수", render: function (row) { return numberFormat(row.max_score, 2); } },
             { key: "avg_change_pct", label: "\ud3c9\uade0 \ub4f1\ub77d\ub960", render: function (row) { return formatPercent(row.avg_change_pct, 2); } },
-            { key: "themes", label: "諛섎났 ?뚮쭏", render: function (row) { return ensureArray(row.themes).join(", "); } },
-            { key: "notes", label: "?뱀쭠 硫붾え", render: function (row) { return row.notes || "-"; } },
+            { key: "themes", label: "반복 테마", render: function (row) { return ensureArray(row.themes).join(", "); } },
+            { key: "notes", label: "핵심 메모", render: function (row) { return row.notes || "-"; } },
           ],
-          emptyMessage: "理쒓렐 諛섎났 ?깆옣 醫낅ぉ ?곗씠?곌? ?놁뒿?덈떎.",
+          emptyMessage: "최근 반복 등장 종목 데이터가 없습니다.",
           compact: true,
         })
       ),
@@ -4358,21 +9857,21 @@
                 );
               })
             )
-          : EmptyState({ message: "?ㅻ뒛 ?뚮쭏 ?곗씠?곌? ?놁뒿?덈떎." })
+          : EmptyState({ message: "오늘 테마 데이터가 없습니다." })
       ),
       h(
         "div",
         { className: "panel" },
-        h(SectionTitle, null, "?ㅻ뒛 議곌굔 異⑹” 醫낅ぉ"),
+        h(SectionTitle, null, "오늘 조건 충족 종목"),
         h(DataTable, {
           rows: ensureArray(themes.qualified_stocks),
           columns: [
             { key: "stock_name", label: "종목" },
-            { key: "theme", label: "?뚮쭏" },
-            { key: "score", label: "?먯닔", render: function (row) { return numberFormat(row.score, 2); } },
+            { key: "theme", label: "테마" },
+            { key: "score", label: "점수", render: function (row) { return numberFormat(row.score, 2); } },
             { key: "change_pct", label: "\ub4f1\ub77d\ub960", render: function (row) { return formatPercent(row.change_pct, 2); } },
-            { key: "lead_count", label: "二쇰룄 ?잛닔", render: function (row) { return numberFormat(row.lead_count, 0); } },
-            { key: "avg_lead_score", label: "?됯퇏 ?먯닔", render: function (row) { return numberFormat(row.avg_lead_score, 2); } },
+            { key: "lead_count", label: "주도 횟수", render: function (row) { return numberFormat(row.lead_count, 0); } },
+            { key: "avg_lead_score", label: "평균 점수", render: function (row) { return numberFormat(row.avg_lead_score, 2); } },
             { key: "note", label: "비고" },
           ],
           emptyMessage: "점수 50 이상 종목이 없습니다.",
@@ -4399,15 +9898,82 @@
   }
 
   function StrategyBacktestPage() {
+    const STRATEGY_BACKTEST_PREFS_LEGACY_KEY = "stock-dashboard-strategy-backtest-leader";
+    const STRATEGY_BACKTEST_PREFS_KEYS = {
+      kr: "stock-dashboard-strategy-backtest-leader-kr",
+      us: "stock-dashboard-strategy-backtest-leader-us",
+    };
+    function loadSavedLeaderBacktestPrefs(marketMode) {
+      const normalizedMarket = marketMode === "us" ? "us" : "kr";
+      try {
+        let raw = localStorage.getItem(STRATEGY_BACKTEST_PREFS_KEYS[normalizedMarket]);
+        if (!raw) {
+          const legacyRaw = localStorage.getItem(STRATEGY_BACKTEST_PREFS_LEGACY_KEY);
+          if (legacyRaw) {
+            const legacyParsed = JSON.parse(legacyRaw);
+            const legacyMarket = legacyParsed && legacyParsed.market === "us" ? "us" : "kr";
+            if (legacyMarket === normalizedMarket) {
+              raw = legacyRaw;
+              localStorage.setItem(STRATEGY_BACKTEST_PREFS_KEYS[normalizedMarket], legacyRaw);
+            }
+          }
+        }
+        if (!raw) {
+          return null;
+        }
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.stop_loss_mode === "atr2") {
+          parsed.stop_loss_mode = "atr";
+          if (!(Number(parsed.stop_loss_pct || 0) > 0)) {
+            parsed.stop_loss_pct = 2;
+          }
+        }
+        return parsed && typeof parsed === "object" ? parsed : null;
+      } catch (error) {
+        return null;
+      }
+    }
+    const savedKrLeaderBacktestPrefs = loadSavedLeaderBacktestPrefs("kr");
+    const savedUsLeaderBacktestPrefs = loadSavedLeaderBacktestPrefs("us");
+    const savedLeaderBacktestPrefs = savedKrLeaderBacktestPrefs;
     const [strategyMode, setStrategyMode] = useState("leader_top10");
+    const [leaderUsBenchmark, setLeaderUsBenchmark] = useState(
+      savedUsLeaderBacktestPrefs && (savedUsLeaderBacktestPrefs.index === "US500" || savedUsLeaderBacktestPrefs.index === "NDX100")
+        ? savedUsLeaderBacktestPrefs.index
+        : "US500"
+    );
     const [indexKey, setIndexKey] = useState("KS11");
-    const [leaderTopN, setLeaderTopN] = useState(100);
-    const [leaderEntryThreshold, setLeaderEntryThreshold] = useState(65);
-    const [leaderExitThreshold, setLeaderExitThreshold] = useState(50);
-    const [leaderAllocationMode, setLeaderAllocationMode] = useState("score_weight");
+    const [leaderTopN, setLeaderTopN] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.top_n != null ? savedLeaderBacktestPrefs.top_n : 100);
+    const [leaderExitTopN, setLeaderExitTopN] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.exit_top_n != null ? savedLeaderBacktestPrefs.exit_top_n : (savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.top_n != null ? savedLeaderBacktestPrefs.top_n : 100));
+    const [leaderUseEntryTopN, setLeaderUseEntryTopN] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_entry_top_n != null ? !!savedLeaderBacktestPrefs.use_entry_top_n : true);
+    const [leaderUseExitTopN, setLeaderUseExitTopN] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_exit_top_n != null ? !!savedLeaderBacktestPrefs.use_exit_top_n : true);
+    const [leaderEntryThreshold, setLeaderEntryThreshold] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.entry_threshold != null ? savedLeaderBacktestPrefs.entry_threshold : 65);
+    const [leaderExitThreshold, setLeaderExitThreshold] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.exit_threshold != null ? savedLeaderBacktestPrefs.exit_threshold : 50);
+    const [leaderUseEntryThreshold, setLeaderUseEntryThreshold] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_entry_threshold != null ? !!savedLeaderBacktestPrefs.use_entry_threshold : true);
+    const [leaderUseExitThreshold, setLeaderUseExitThreshold] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_exit_threshold != null ? !!savedLeaderBacktestPrefs.use_exit_threshold : true);
+    const [leaderStopLossPct, setLeaderStopLossPct] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.stop_loss_pct != null ? savedLeaderBacktestPrefs.stop_loss_pct : 0);
+    const [leaderUseStopLoss, setLeaderUseStopLoss] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_stop_loss != null ? !!savedLeaderBacktestPrefs.use_stop_loss : !!(savedLeaderBacktestPrefs && Number(savedLeaderBacktestPrefs.stop_loss_pct || 0) > 0));
+    const [leaderStopLossMode, setLeaderStopLossMode] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.stop_loss_mode ? savedLeaderBacktestPrefs.stop_loss_mode : "pct");
+    const [leaderExitMa20Break, setLeaderExitMa20Break] = useState(!!(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.exit_ma20_break));
+    const [leaderExitMa60Break, setLeaderExitMa60Break] = useState(!!(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.exit_ma60_break));
+    const [leaderEntryStreakDays, setLeaderEntryStreakDays] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.entry_streak_days != null ? savedLeaderBacktestPrefs.entry_streak_days : 1);
+    const [leaderUseEntryStreak, setLeaderUseEntryStreak] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_entry_streak != null ? !!savedLeaderBacktestPrefs.use_entry_streak : true);
+    const [leaderRunupLookbackDays, setLeaderRunupLookbackDays] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.runup_lookback_days != null ? savedLeaderBacktestPrefs.runup_lookback_days : 0);
+    const [leaderRunupExcludePct, setLeaderRunupExcludePct] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.runup_exclude_pct != null ? savedLeaderBacktestPrefs.runup_exclude_pct : 0);
+    const [leaderUseRunupFilter, setLeaderUseRunupFilter] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_runup_filter != null ? !!savedLeaderBacktestPrefs.use_runup_filter : !!(savedLeaderBacktestPrefs && Number(savedLeaderBacktestPrefs.runup_lookback_days || 0) > 0));
+    const [leaderMinMarketCap100m, setLeaderMinMarketCap100m] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.min_market_cap_100m != null ? savedLeaderBacktestPrefs.min_market_cap_100m : 0);
+    const [leaderUseMinMarketCapFilter, setLeaderUseMinMarketCapFilter] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_min_market_cap_filter != null ? !!savedLeaderBacktestPrefs.use_min_market_cap_filter : !!(savedLeaderBacktestPrefs && Number(savedLeaderBacktestPrefs.min_market_cap_100m || 0) > 0));
+    const [leaderMaxAtr20, setLeaderMaxAtr20] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.max_atr_20 != null ? savedLeaderBacktestPrefs.max_atr_20 : 0);
+    const [leaderUseAtrFilter, setLeaderUseAtrFilter] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_atr_filter != null ? !!savedLeaderBacktestPrefs.use_atr_filter : !!(savedLeaderBacktestPrefs && Number(savedLeaderBacktestPrefs.max_atr_20 || 0) > 0));
+    const [leaderEntryHighFilter, setLeaderEntryHighFilter] = useState(
+      savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.entry_high_filter
+        ? String(savedLeaderBacktestPrefs.entry_high_filter)
+        : (!!(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_entry_52w_high) ? "52w" : "none")
+    );
+    const [leaderAllocationMode, setLeaderAllocationMode] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.allocation_mode ? savedLeaderBacktestPrefs.allocation_mode : "score_weight");
     const [strategyKey, setStrategyKey] = useState("ma20_cross");
-    const [startDate, setStartDate] = useState(function () { return isoDateOffset(-365); });
-    const [endDate, setEndDate] = useState(function () { return isoDateOffset(0); });
+    const [startDate, setStartDate] = useState(function () { return savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.start ? savedLeaderBacktestPrefs.start : isoDateOffset(-365); });
+    const [endDate, setEndDate] = useState(function () { return savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.end ? savedLeaderBacktestPrefs.end : isoDateOffset(0); });
     const [advancedStartDate, setAdvancedStartDate] = useState(function () { return isoDateOffset(-180); });
     const [advancedEndDate, setAdvancedEndDate] = useState(function () { return isoDateOffset(0); });
     const [advancedMinScore, setAdvancedMinScore] = useState(50);
@@ -4433,6 +9999,16 @@
       scoreError: "",
       scoreData: null,
     });
+    const leaderSnapshotRequest = useFetchJson("/api/strategy/snapshots?strategy_group=leader_kr&limit=60", { refreshOnMount: true });
+    const [activeLeaderSnapshot, setActiveLeaderSnapshot] = useState(null);
+    const [activeLeaderSnapshotId, setActiveLeaderSnapshotId] = useState(0);
+    const [leaderSnapshotSaving, setLeaderSnapshotSaving] = useState(false);
+    const [leaderSnapshotMessage, setLeaderSnapshotMessage] = useState("");
+    const [compareLeftSnapshotId, setCompareLeftSnapshotId] = useState("");
+    const [compareRightSnapshotId, setCompareRightSnapshotId] = useState("");
+    const [compareLeftSnapshot, setCompareLeftSnapshot] = useState(null);
+    const [compareRightSnapshot, setCompareRightSnapshot] = useState(null);
+    const [compareStockKey, setCompareStockKey] = useState("");
     const [sectorStartDate, setSectorStartDate] = useState(function () { return isoDateOffset(-120); });
     const [sectorEndDate, setSectorEndDate] = useState(function () { return isoDateOffset(0); });
     const [sectorMinScore, setSectorMinScore] = useState(50);
@@ -4440,15 +10016,84 @@
     const [sectorStocksCount, setSectorStocksCount] = useState(4);
     const [sectorLeverage, setSectorLeverage] = useState(1);
     const [sectorWeightMethod, setSectorWeightMethod] = useState("strength");
+    const [indexBacktestStarted, setIndexBacktestStarted] = useState(false);
+    const [leaderBacktestStarted, setLeaderBacktestStarted] = useState(false);
+    const [leaderPeriodSummaryMode, setLeaderPeriodSummaryMode] = useState("year");
+    const [leaderAiMessagesByMarket, setLeaderAiMessagesByMarket] = useState({ kr: [], us: [] });
+    const [leaderAiInputByMarket, setLeaderAiInputByMarket] = useState({ kr: "", us: "" });
+    const [leaderAiLoadingByMarket, setLeaderAiLoadingByMarket] = useState({ kr: false, us: false });
+    const [leaderAiErrorByMarket, setLeaderAiErrorByMarket] = useState({ kr: "", us: "" });
+    const leaderLastQueryByMarketRef = useRef({ kr: null, us: null });
+    const [sectorBacktestStarted, setSectorBacktestStarted] = useState(false);
+    const [advancedBacktestStarted, setAdvancedBacktestStarted] = useState(false);
     const [queryState, setQueryState] = useState(function () {
+      if (savedLeaderBacktestPrefs) {
+        return {
+          index: savedLeaderBacktestPrefs.index || "KS11",
+          market: savedLeaderBacktestPrefs.market || "kr",
+          strategy: "leader_custom",
+          start: savedLeaderBacktestPrefs.start || isoDateOffset(-365),
+          end: savedLeaderBacktestPrefs.end || isoDateOffset(0),
+          top_n: savedLeaderBacktestPrefs.top_n != null ? savedLeaderBacktestPrefs.top_n : 100,
+          exit_top_n: savedLeaderBacktestPrefs.exit_top_n != null ? savedLeaderBacktestPrefs.exit_top_n : (savedLeaderBacktestPrefs.top_n != null ? savedLeaderBacktestPrefs.top_n : 100),
+          use_entry_top_n: savedLeaderBacktestPrefs.use_entry_top_n != null ? !!savedLeaderBacktestPrefs.use_entry_top_n : true,
+          use_exit_top_n: savedLeaderBacktestPrefs.use_exit_top_n != null ? !!savedLeaderBacktestPrefs.use_exit_top_n : true,
+          entry_threshold: savedLeaderBacktestPrefs.entry_threshold != null ? savedLeaderBacktestPrefs.entry_threshold : 65,
+          exit_threshold: savedLeaderBacktestPrefs.exit_threshold != null ? savedLeaderBacktestPrefs.exit_threshold : 50,
+          use_entry_threshold: savedLeaderBacktestPrefs.use_entry_threshold != null ? !!savedLeaderBacktestPrefs.use_entry_threshold : true,
+          use_exit_threshold: savedLeaderBacktestPrefs.use_exit_threshold != null ? !!savedLeaderBacktestPrefs.use_exit_threshold : true,
+          stop_loss_pct: savedLeaderBacktestPrefs.stop_loss_pct != null ? savedLeaderBacktestPrefs.stop_loss_pct : 0,
+          use_stop_loss: savedLeaderBacktestPrefs.use_stop_loss != null ? !!savedLeaderBacktestPrefs.use_stop_loss : !!Number(savedLeaderBacktestPrefs.stop_loss_pct || 0),
+          stop_loss_mode: savedLeaderBacktestPrefs.stop_loss_mode || "pct",
+          exit_ma20_break: !!savedLeaderBacktestPrefs.exit_ma20_break,
+          exit_ma60_break: !!savedLeaderBacktestPrefs.exit_ma60_break,
+          entry_streak_days: savedLeaderBacktestPrefs.entry_streak_days != null ? savedLeaderBacktestPrefs.entry_streak_days : 1,
+          use_entry_streak: savedLeaderBacktestPrefs.use_entry_streak != null ? !!savedLeaderBacktestPrefs.use_entry_streak : true,
+          runup_lookback_days: savedLeaderBacktestPrefs.runup_lookback_days != null ? savedLeaderBacktestPrefs.runup_lookback_days : 0,
+          runup_exclude_pct: savedLeaderBacktestPrefs.runup_exclude_pct != null ? savedLeaderBacktestPrefs.runup_exclude_pct : 0,
+          use_runup_filter: savedLeaderBacktestPrefs.use_runup_filter != null ? !!savedLeaderBacktestPrefs.use_runup_filter : !!Number(savedLeaderBacktestPrefs.runup_lookback_days || 0),
+          min_market_cap_100m: savedLeaderBacktestPrefs.min_market_cap_100m != null ? savedLeaderBacktestPrefs.min_market_cap_100m : 0,
+          use_min_market_cap_filter: savedLeaderBacktestPrefs.use_min_market_cap_filter != null ? !!savedLeaderBacktestPrefs.use_min_market_cap_filter : !!Number(savedLeaderBacktestPrefs.min_market_cap_100m || 0),
+          max_atr_20: savedLeaderBacktestPrefs.max_atr_20 != null ? savedLeaderBacktestPrefs.max_atr_20 : 0,
+          use_atr_filter: savedLeaderBacktestPrefs.use_atr_filter != null ? !!savedLeaderBacktestPrefs.use_atr_filter : !!Number(savedLeaderBacktestPrefs.max_atr_20 || 0),
+          entry_high_filter: savedLeaderBacktestPrefs.entry_high_filter
+            ? String(savedLeaderBacktestPrefs.entry_high_filter)
+            : (!!savedLeaderBacktestPrefs.use_entry_52w_high ? "52w" : "none"),
+          use_entry_52w_high: !!savedLeaderBacktestPrefs.use_entry_52w_high,
+          allocation_mode: savedLeaderBacktestPrefs.allocation_mode || "score_weight",
+          refresh: String(savedLeaderBacktestPrefs.refresh || Date.now()),
+        };
+      }
       return {
         index: "KS11",
+        market: "kr",
         strategy: "leader_custom",
         start: isoDateOffset(-365),
         end: isoDateOffset(0),
         top_n: 100,
+        exit_top_n: 100,
+        use_entry_top_n: true,
+        use_exit_top_n: true,
         entry_threshold: 65,
         exit_threshold: 50,
+        use_entry_threshold: true,
+        use_exit_threshold: true,
+        stop_loss_pct: 0,
+        use_stop_loss: false,
+        stop_loss_mode: "pct",
+        exit_ma20_break: false,
+        exit_ma60_break: false,
+        entry_streak_days: 1,
+        use_entry_streak: true,
+        runup_lookback_days: 0,
+        runup_exclude_pct: 0,
+        use_runup_filter: false,
+        min_market_cap_100m: 0,
+        use_min_market_cap_filter: false,
+        max_atr_20: 0,
+        use_atr_filter: false,
+        entry_high_filter: "none",
+        use_entry_52w_high: false,
         allocation_mode: "score_weight",
         refresh: String(Date.now()),
       };
@@ -4482,16 +10127,42 @@
       };
     });
     const params = new URLSearchParams({
-      index: strategyMode === "leader_top10" ? "KS11" : queryState.index,
-      strategy: strategyMode === "leader_top10" ? "leader_custom" : queryState.strategy,
+      index: (strategyMode === "leader_top10" || strategyMode === "us_leader")
+        ? String(queryState.index || (strategyMode === "us_leader" ? leaderUsBenchmark : "KS11"))
+        : queryState.index,
+      market: (strategyMode === "leader_top10" || strategyMode === "us_leader")
+        ? String(queryState.market || (strategyMode === "us_leader" ? "us" : "kr"))
+        : "kr",
+      strategy: (strategyMode === "leader_top10" || strategyMode === "us_leader") ? "leader_custom" : queryState.strategy,
       start: queryState.start,
       end: queryState.end,
     });
-    if (strategyMode === "leader_top10") {
+    if (strategyMode === "leader_top10" || strategyMode === "us_leader") {
       params.set("strategy", "leader_custom");
       params.set("top_n", String(queryState.top_n || leaderTopN || 100));
+      params.set("exit_top_n", String(queryState.exit_top_n || leaderExitTopN || queryState.top_n || leaderTopN || 100));
+      params.set("use_entry_top_n", String(!!(queryState.use_entry_top_n != null ? queryState.use_entry_top_n : leaderUseEntryTopN)));
+      params.set("use_exit_top_n", String(!!(queryState.use_exit_top_n != null ? queryState.use_exit_top_n : leaderUseExitTopN)));
       params.set("entry_threshold", String(queryState.entry_threshold != null ? queryState.entry_threshold : leaderEntryThreshold));
       params.set("exit_threshold", String(queryState.exit_threshold != null ? queryState.exit_threshold : leaderExitThreshold));
+      params.set("use_entry_threshold", String(!!(queryState.use_entry_threshold != null ? queryState.use_entry_threshold : leaderUseEntryThreshold)));
+      params.set("use_exit_threshold", String(!!(queryState.use_exit_threshold != null ? queryState.use_exit_threshold : leaderUseExitThreshold)));
+      params.set("stop_loss_pct", String(queryState.stop_loss_pct != null ? queryState.stop_loss_pct : leaderStopLossPct || 0));
+      params.set("use_stop_loss", String(!!(queryState.use_stop_loss != null ? queryState.use_stop_loss : leaderUseStopLoss)));
+      params.set("stop_loss_mode", String(queryState.stop_loss_mode || leaderStopLossMode || "pct"));
+      params.set("exit_ma20_break", String(!!(queryState.exit_ma20_break != null ? queryState.exit_ma20_break : leaderExitMa20Break)));
+      params.set("exit_ma60_break", String(!!(queryState.exit_ma60_break != null ? queryState.exit_ma60_break : leaderExitMa60Break)));
+      params.set("entry_streak_days", String(queryState.entry_streak_days != null ? queryState.entry_streak_days : leaderEntryStreakDays || 1));
+      params.set("use_entry_streak", String(!!(queryState.use_entry_streak != null ? queryState.use_entry_streak : leaderUseEntryStreak)));
+      params.set("runup_lookback_days", String(queryState.runup_lookback_days != null ? queryState.runup_lookback_days : leaderRunupLookbackDays || 0));
+      params.set("runup_exclude_pct", String(queryState.runup_exclude_pct != null ? queryState.runup_exclude_pct : leaderRunupExcludePct || 0));
+      params.set("use_runup_filter", String(!!(queryState.use_runup_filter != null ? queryState.use_runup_filter : leaderUseRunupFilter)));
+      params.set("min_market_cap_100m", String(queryState.min_market_cap_100m != null ? queryState.min_market_cap_100m : leaderMinMarketCap100m || 0));
+      params.set("use_min_market_cap_filter", String(!!(queryState.use_min_market_cap_filter != null ? queryState.use_min_market_cap_filter : leaderUseMinMarketCapFilter)));
+      params.set("max_atr_20", String(queryState.max_atr_20 != null ? queryState.max_atr_20 : leaderMaxAtr20 || 0));
+      params.set("use_atr_filter", String(!!(queryState.use_atr_filter != null ? queryState.use_atr_filter : leaderUseAtrFilter)));
+      params.set("entry_high_filter", String(queryState.entry_high_filter || leaderEntryHighFilter || "none"));
+      params.set("use_entry_52w_high", String((queryState.entry_high_filter || leaderEntryHighFilter || "none") === "52w"));
       params.set("allocation_mode", String(queryState.allocation_mode || leaderAllocationMode || "score_weight"));
       params.set("refresh", String(queryState.refresh || Date.now()));
     }
@@ -4519,9 +10190,11 @@
       trading_rank_limit: advancedQueryState.trading_rank_limit,
       stock_selection: advancedQueryState.stock_selection,
     });
-    const indexRequest = useFetchJson("/api/strategy/backtest?" + params.toString(), { enabled: strategyMode === "index" || strategyMode === "leader_top10" });
-    const sectorRequest = useFetchJson("/api/strategy/sector-rotation?" + sectorParams.toString(), { enabled: strategyMode === "sector_rotation" });
-    const advancedRequest = useFetchJson("/api/strategy/advanced-sector?" + advancedParams.toString(), { enabled: strategyMode === "advanced_sector" });
+    const indexRequest = useFetchJson("/api/strategy/backtest?" + params.toString(), {
+      enabled: (strategyMode === "index" && indexBacktestStarted) || ((strategyMode === "leader_top10" || strategyMode === "us_leader") && leaderBacktestStarted),
+    });
+    const sectorRequest = useFetchJson("/api/strategy/sector-rotation?" + sectorParams.toString(), { enabled: strategyMode === "sector_rotation" && sectorBacktestStarted });
+    const advancedRequest = useFetchJson("/api/strategy/advanced-sector?" + advancedParams.toString(), { enabled: strategyMode === "advanced_sector" && advancedBacktestStarted });
     const diagnosticRequest = useFetchJson("/api/strategy/portfolio-diagnostic", { enabled: strategyMode === "portfolio_diagnostic" });
     const data = indexRequest.data || {};
     const sectorData = sectorRequest.data || {};
@@ -4562,8 +10235,377 @@
           { key: "IXIC", name: "NASDAQ" },
           { key: "US500", name: "S&P 500" },
         ];
+    const savedLeaderSnapshots = ensureArray(leaderSnapshotRequest.data && leaderSnapshotRequest.data.snapshots);
+
+    function leaderSnapshotDefaultLabel() {
+      const marketLabel = "국내 주도주";
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const dd = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mi = String(now.getMinutes()).padStart(2, "0");
+      return marketLabel + " " + yyyy + "-" + mm + "-" + dd + " " + hh + ":" + mi;
+    }
+
+    function hydrateLeaderControlsFromQuery(savedQuery) {
+      const query = savedQuery || {};
+      if (query.index === "US500" || query.index === "NDX100") {
+        setLeaderUsBenchmark(String(query.index));
+      }
+      setLeaderTopN(query.top_n != null ? Number(query.top_n) : 100);
+      setLeaderExitTopN(query.exit_top_n != null ? Number(query.exit_top_n) : (query.top_n != null ? Number(query.top_n) : 100));
+      setLeaderUseEntryTopN(query.use_entry_top_n != null ? !!query.use_entry_top_n : true);
+      setLeaderUseExitTopN(query.use_exit_top_n != null ? !!query.use_exit_top_n : true);
+      setLeaderEntryThreshold(query.entry_threshold != null ? Number(query.entry_threshold) : 65);
+      setLeaderExitThreshold(query.exit_threshold != null ? Number(query.exit_threshold) : 50);
+      setLeaderUseEntryThreshold(query.use_entry_threshold != null ? !!query.use_entry_threshold : true);
+      setLeaderUseExitThreshold(query.use_exit_threshold != null ? !!query.use_exit_threshold : true);
+      setLeaderStopLossPct(query.stop_loss_pct != null ? Number(query.stop_loss_pct) : 0);
+      setLeaderUseStopLoss(query.use_stop_loss != null ? !!query.use_stop_loss : false);
+      setLeaderStopLossMode(String(query.stop_loss_mode || "pct"));
+      setLeaderExitMa20Break(!!query.exit_ma20_break);
+      setLeaderExitMa60Break(!!query.exit_ma60_break);
+      setLeaderEntryStreakDays(query.entry_streak_days != null ? Number(query.entry_streak_days) : 1);
+      setLeaderUseEntryStreak(query.use_entry_streak != null ? !!query.use_entry_streak : true);
+      setLeaderRunupLookbackDays(query.runup_lookback_days != null ? Number(query.runup_lookback_days) : 0);
+      setLeaderRunupExcludePct(query.runup_exclude_pct != null ? Number(query.runup_exclude_pct) : 0);
+      setLeaderUseRunupFilter(query.use_runup_filter != null ? !!query.use_runup_filter : false);
+      setLeaderMinMarketCap100m(query.min_market_cap_100m != null ? Number(query.min_market_cap_100m) : 0);
+      setLeaderUseMinMarketCapFilter(query.use_min_market_cap_filter != null ? !!query.use_min_market_cap_filter : false);
+      setLeaderMaxAtr20(query.max_atr_20 != null ? Number(query.max_atr_20) : 0);
+      setLeaderUseAtrFilter(query.use_atr_filter != null ? !!query.use_atr_filter : false);
+      setLeaderEntryHighFilter(String(query.entry_high_filter || (query.use_entry_52w_high ? "52w" : "none")));
+      setLeaderAllocationMode(String(query.allocation_mode || "score_weight"));
+      setStartDate(String(query.start || isoDateOffset(-365)));
+      setEndDate(String(query.end || isoDateOffset(0)));
+    }
+
+    function defaultLeaderQuery(marketMode) {
+      const normalizedMarket = marketMode === "us" ? "us" : "kr";
+      return {
+        index: normalizedMarket === "us" ? "US500" : "KS11",
+        market: normalizedMarket,
+        strategy: "leader_custom",
+        start: isoDateOffset(-365),
+        end: isoDateOffset(0),
+        top_n: 100,
+        exit_top_n: 100,
+        use_entry_top_n: true,
+        use_exit_top_n: true,
+        entry_threshold: 65,
+        exit_threshold: 50,
+        use_entry_threshold: true,
+        use_exit_threshold: true,
+        stop_loss_pct: 0,
+        use_stop_loss: false,
+        stop_loss_mode: "pct",
+        exit_ma20_break: false,
+        exit_ma60_break: false,
+        entry_streak_days: 1,
+        use_entry_streak: true,
+        runup_lookback_days: 0,
+        runup_exclude_pct: 0,
+        use_runup_filter: false,
+        min_market_cap_100m: 0,
+        use_min_market_cap_filter: false,
+        max_atr_20: 0,
+        use_atr_filter: false,
+        entry_high_filter: "none",
+        use_entry_52w_high: false,
+        allocation_mode: "score_weight",
+      };
+    }
+
+    function buildLeaderQueryFromControls(marketMode, refreshValue) {
+      const normalizedMarket = marketMode === "us" ? "us" : "kr";
+      const nextQuery = {
+        index: normalizedMarket === "us" ? leaderUsBenchmark : "KS11",
+        market: normalizedMarket,
+        strategy: "leader_custom",
+        start: startDate || isoDateOffset(-365),
+        end: endDate || isoDateOffset(0),
+        top_n: Number(leaderTopN || 0) > 0 ? Number(leaderTopN) : 9999,
+        exit_top_n: Number(leaderExitTopN || 0) > 0 ? Number(leaderExitTopN) : (Number(leaderTopN || 0) > 0 ? Number(leaderTopN) : 9999),
+        use_entry_top_n: !!leaderUseEntryTopN,
+        use_exit_top_n: !!leaderUseExitTopN,
+        entry_threshold: Number(leaderEntryThreshold || 0),
+        exit_threshold: Number(leaderExitThreshold || 0),
+        use_entry_threshold: !!leaderUseEntryThreshold,
+        use_exit_threshold: !!leaderUseExitThreshold,
+        stop_loss_pct: Number(leaderStopLossPct || 0),
+        use_stop_loss: !!leaderUseStopLoss,
+        stop_loss_mode: leaderStopLossMode || "pct",
+        exit_ma20_break: !!leaderExitMa20Break,
+        exit_ma60_break: !!leaderExitMa60Break,
+        entry_streak_days: Number(leaderEntryStreakDays || 1),
+        use_entry_streak: !!leaderUseEntryStreak,
+        runup_lookback_days: Number(leaderRunupLookbackDays || 0),
+        runup_exclude_pct: Number(leaderRunupExcludePct || 0),
+        use_runup_filter: !!leaderUseRunupFilter,
+        min_market_cap_100m: Number(leaderMinMarketCap100m || 0),
+        use_min_market_cap_filter: !!leaderUseMinMarketCapFilter,
+        max_atr_20: Number(leaderMaxAtr20 || 0),
+        use_atr_filter: !!leaderUseAtrFilter,
+        entry_high_filter: String(leaderEntryHighFilter || "none"),
+        use_entry_52w_high: String(leaderEntryHighFilter || "none") === "52w",
+        allocation_mode: leaderAllocationMode || "score_weight",
+      };
+      if (refreshValue != null) {
+        nextQuery.refresh = String(refreshValue);
+      }
+      return nextQuery;
+    }
+
+    function saveLeaderBacktestPrefs(marketMode, query) {
+      const normalizedMarket = marketMode === "us" ? "us" : "kr";
+      try {
+        localStorage.setItem(STRATEGY_BACKTEST_PREFS_KEYS[normalizedMarket], JSON.stringify(query));
+      } catch (error) {
+      }
+    }
+
+    function switchStrategyMode(nextMode) {
+      const currentLeaderMarket = strategyMode === "us_leader" ? "us" : (strategyMode === "leader_top10" ? "kr" : "");
+      if (currentLeaderMarket) {
+        saveLeaderBacktestPrefs(currentLeaderMarket, buildLeaderQueryFromControls(currentLeaderMarket));
+      }
+      const nextLeaderMarket = nextMode === "us_leader" ? "us" : (nextMode === "leader_top10" ? "kr" : "");
+      if (nextLeaderMarket) {
+        const savedPrefs = loadSavedLeaderBacktestPrefs(nextLeaderMarket) || defaultLeaderQuery(nextLeaderMarket);
+        hydrateLeaderControlsFromQuery(savedPrefs);
+        const lastExecutedQuery = leaderLastQueryByMarketRef.current[nextLeaderMarket];
+        setQueryState(lastExecutedQuery || savedPrefs);
+        setLeaderBacktestStarted(!!lastExecutedQuery);
+        setActiveLeaderSnapshot(null);
+        setActiveLeaderSnapshotId(0);
+        setLeaderSnapshotMessage("");
+      } else {
+        setLeaderBacktestStarted(false);
+      }
+      setStrategyMode(nextMode);
+    }
+
+    useEffect(function () {
+      const activeMarket = strategyMode === "us_leader" ? "us" : (strategyMode === "leader_top10" ? "kr" : "");
+      if (!activeMarket) {
+        return;
+      }
+      saveLeaderBacktestPrefs(activeMarket, buildLeaderQueryFromControls(activeMarket));
+    }, [
+      strategyMode,
+      leaderUsBenchmark,
+      leaderTopN,
+      leaderExitTopN,
+      leaderUseEntryTopN,
+      leaderUseExitTopN,
+      leaderEntryThreshold,
+      leaderExitThreshold,
+      leaderUseEntryThreshold,
+      leaderUseExitThreshold,
+      leaderStopLossPct,
+      leaderUseStopLoss,
+      leaderStopLossMode,
+      leaderExitMa20Break,
+      leaderExitMa60Break,
+      leaderEntryStreakDays,
+      leaderUseEntryStreak,
+      leaderRunupLookbackDays,
+      leaderRunupExcludePct,
+      leaderUseRunupFilter,
+      leaderMinMarketCap100m,
+      leaderUseMinMarketCapFilter,
+      leaderMaxAtr20,
+      leaderUseAtrFilter,
+      leaderEntryHighFilter,
+      leaderAllocationMode,
+      startDate,
+      endDate,
+    ]);
+
+    function extractLeaderSellRows(sourceRows) {
+      const results = [];
+      ensureArray(sourceRows).forEach(function (row) {
+        ensureArray(row && row.entry_exit && row.entry_exit.sell_details).forEach(function (detail) {
+          results.push({
+            date: row.date,
+            signal_date: detail.signal_date || row.signal_date || "",
+            stock_code: detail.stock_code || "",
+            stock_name: detail.stock_name || detail.stock_code || "-",
+            buy_reason: detail.buy_reason || "",
+            reason: detail.reason || "-",
+            buy_avg_price: detail.avg_buy_price,
+            buy_date: detail.buy_date || "",
+            sell_avg_price: detail.sell_price,
+            sell_date: detail.sell_date || detail.date || row.date,
+            sell_return_pct: detail.sell_return_pct,
+            markers: strategyTradeMarkers({
+              entry_date: detail.buy_date || "",
+              exit_date: detail.sell_date || row.date,
+              entry_price: detail.avg_buy_price,
+              exit_price: detail.sell_price,
+              trade_return_pct: detail.sell_return_pct,
+            }),
+          });
+        });
+      });
+      return results;
+    }
+
+    function buildLeaderPeriodMeta(dateText, mode) {
+      const raw = String(dateText || "");
+      const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return null;
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+        return null;
+      }
+      const quarter = Math.floor((month - 1) / 3) + 1;
+      if (mode === "quarter") {
+        return {
+          key: year + "-Q" + quarter,
+          label: year + "." + quarter + "Q",
+          sortValue: year * 10 + quarter,
+        };
+      }
+      return {
+        key: String(year),
+        label: String(year),
+        sortValue: year,
+      };
+    }
+
+    function calculateLeaderPeriodMdd(navPath) {
+      let peak = null;
+      let worstDrawdown = 0;
+      ensureArray(navPath).forEach(function (value) {
+        const nav = Number(value);
+        if (!Number.isFinite(nav) || nav <= 0) return;
+        if (peak == null || nav > peak) {
+          peak = nav;
+        }
+        if (!peak) return;
+        const drawdownPct = ((nav - peak) / peak) * 100;
+        if (drawdownPct < worstDrawdown) {
+          worstDrawdown = drawdownPct;
+        }
+      });
+      return worstDrawdown;
+    }
+
+    function buildLeaderPeriodicSummaryRows(backtestRows, sellRows, mode) {
+      const groups = {};
+      ensureArray(backtestRows).forEach(function (row) {
+        const meta = buildLeaderPeriodMeta(row && row.date, mode);
+        if (!meta) return;
+        if (!groups[meta.key]) {
+          groups[meta.key] = {
+            key: meta.key,
+            label: meta.label,
+            sortValue: meta.sortValue,
+            nav: 100,
+            navPath: [100],
+            tradeReturns: [],
+          };
+        }
+        const group = groups[meta.key];
+        const dailyReturnPct = Number(row && row.daily_return_pct);
+        if (Number.isFinite(dailyReturnPct)) {
+          group.nav *= 1 + (dailyReturnPct / 100);
+        }
+        group.navPath.push(group.nav);
+      });
+      ensureArray(sellRows).forEach(function (row) {
+        const meta = buildLeaderPeriodMeta((row && (row.sell_date || row.date)) || "", mode);
+        if (!meta) return;
+        if (!groups[meta.key]) {
+          groups[meta.key] = {
+            key: meta.key,
+            label: meta.label,
+            sortValue: meta.sortValue,
+            nav: 100,
+            navPath: [100],
+            tradeReturns: [],
+          };
+        }
+        const returnPct = Number(row && row.sell_return_pct);
+        if (Number.isFinite(returnPct)) {
+          groups[meta.key].tradeReturns.push(returnPct);
+        }
+      });
+      return Object.keys(groups).map(function (key) {
+        const item = groups[key];
+        const tradeReturns = ensureArray(item.tradeReturns);
+        const winningReturns = tradeReturns.filter(function (value) { return Number(value) > 0; });
+        const losingReturns = tradeReturns.filter(function (value) { return Number(value) < 0; });
+        const tradeCount = tradeReturns.length;
+        return {
+          key: item.key,
+          label: item.label,
+          sortValue: item.sortValue,
+          trade_count: tradeCount,
+          return_pct: item.nav - 100,
+          win_rate_pct: tradeCount ? (winningReturns.length / tradeCount) * 100 : null,
+          avg_profit_pct: winningReturns.length
+            ? (winningReturns.reduce(function (sum, value) { return sum + Number(value || 0); }, 0) / winningReturns.length)
+            : null,
+          avg_loss_pct: losingReturns.length
+            ? (losingReturns.reduce(function (sum, value) { return sum + Number(value || 0); }, 0) / losingReturns.length)
+            : null,
+          mdd_pct: calculateLeaderPeriodMdd(item.navPath),
+        };
+      }).sort(function (a, b) {
+        return Number(a.sortValue || 0) - Number(b.sortValue || 0);
+      });
+    }
+
+    function buildLeaderTradeLookup(snapshotPayload) {
+      const byStock = {};
+      const rowsToUse = ensureArray(snapshotPayload && snapshotPayload.rows);
+      extractLeaderSellRows(rowsToUse).forEach(function (item) {
+        const codeKey = String(item.stock_code || "").trim().toUpperCase();
+        const nameKey = String(item.stock_name || "").trim();
+        const stockKey = codeKey || nameKey;
+        if (!stockKey) return;
+        if (!byStock[stockKey]) {
+          byStock[stockKey] = [];
+        }
+        byStock[stockKey].push(item);
+      });
+      Object.keys(byStock).forEach(function (key) {
+        byStock[key] = byStock[key].slice().sort(function (a, b) {
+          return String(a.sell_date || a.date || "").localeCompare(String(b.sell_date || b.date || ""));
+        });
+      });
+      return byStock;
+    }
+
+    function buildLeaderCompareStockOptions(leftSnapshot, rightSnapshot) {
+      const stockMap = {};
+      [leftSnapshot, rightSnapshot].forEach(function (snapshot) {
+        const rowsToUse = ensureArray(snapshot && snapshot.payload && snapshot.payload.rows);
+        extractLeaderSellRows(rowsToUse).forEach(function (item) {
+          const codeKey = String(item.stock_code || "").trim().toUpperCase();
+          const nameKey = String(item.stock_name || "").trim();
+          const key = codeKey || nameKey;
+          if (!key) return;
+          if (!stockMap[key]) {
+            stockMap[key] = {
+              key: key,
+              stock_code: codeKey,
+              stock_name: nameKey || codeKey || "-",
+            };
+          }
+        });
+      });
+      return Object.keys(stockMap).map(function (key) { return stockMap[key]; }).sort(function (a, b) {
+        return String(a.stock_name || a.key).localeCompare(String(b.stock_name || b.key), "ko");
+      });
+    }
 
     function applyBacktest() {
+      setIndexBacktestStarted(true);
       setQueryState({
         index: indexKey,
         strategy: strategyKey,
@@ -4572,25 +10614,550 @@
       });
     }
 
-    function applyLeaderBacktest() {
-      const leaderStart = startDate || isoDateOffset(-365);
-      const leaderEnd = endDate || isoDateOffset(0);
-      setIndexKey("KS11");
-      setStartDate(leaderStart);
-      setQueryState({
-        index: "KS11",
-        strategy: "leader_custom",
-        start: leaderStart,
-        end: leaderEnd,
-        top_n: Number(leaderTopN || 0) > 0 ? Number(leaderTopN) : 9999,
-        entry_threshold: Number(leaderEntryThreshold || 0),
-        exit_threshold: Number(leaderExitThreshold || 0),
-        allocation_mode: leaderAllocationMode || "score_weight",
-        refresh: String(Date.now()),
-      });
+    function applyLeaderBacktest(marketMode) {
+      var normalizedMarket = marketMode === "us" ? "us" : "kr";
+      const nextLeaderQuery = buildLeaderQueryFromControls(normalizedMarket, Date.now());
+      setLeaderBacktestStarted(true);
+      setIndexKey(normalizedMarket === "us" ? leaderUsBenchmark : "KS11");
+      setQueryState(nextLeaderQuery);
+      leaderLastQueryByMarketRef.current[normalizedMarket] = nextLeaderQuery;
+      saveLeaderBacktestPrefs(normalizedMarket, nextLeaderQuery);
+      setActiveLeaderSnapshot(null);
+      setActiveLeaderSnapshotId(0);
+      setLeaderSnapshotMessage("");
     }
 
+    async function saveCurrentLeaderBacktest() {
+      const payloadToSave = (activeLeaderSnapshot && activeLeaderSnapshot.payload) ? activeLeaderSnapshot.payload : data;
+      const rowsToSave = ensureArray(payloadToSave && payloadToSave.rows);
+      if (!payloadToSave || !rowsToSave.length || String(queryState.market || "kr") !== "kr") {
+        setLeaderSnapshotMessage("저장할 국내 주도주 백테스트 결과가 없습니다.");
+        return;
+      }
+      const nextLabel = window.prompt("저장 이름", leaderSnapshotDefaultLabel());
+      if (nextLabel == null) {
+        return;
+      }
+      const trimmedLabel = String(nextLabel || "").trim();
+      if (!trimmedLabel) {
+        setLeaderSnapshotMessage("저장 이름이 비어 있습니다.");
+        return;
+      }
+      setLeaderSnapshotSaving(true);
+      setLeaderSnapshotMessage("");
+      try {
+        const payload = await postJson("/api/strategy/snapshots", {
+          strategy_group: "leader_kr",
+          market: "kr",
+          label: trimmedLabel,
+          query: queryState,
+          payload: payloadToSave,
+        });
+        const savedSnapshot = payload && payload.snapshot ? payload.snapshot : null;
+        setActiveLeaderSnapshot(savedSnapshot);
+        setActiveLeaderSnapshotId(savedSnapshot && savedSnapshot.id ? Number(savedSnapshot.id) : 0);
+        setLeaderSnapshotMessage("저장 완료");
+        await leaderSnapshotRequest.refresh(true);
+      } catch (error) {
+        setLeaderSnapshotMessage(error.message || String(error));
+      } finally {
+        setLeaderSnapshotSaving(false);
+      }
+    }
+
+    async function loadLeaderSnapshot(snapshotId) {
+      const targetId = Number(snapshotId || 0);
+      if (!(targetId > 0)) {
+        setActiveLeaderSnapshot(null);
+        setActiveLeaderSnapshotId(0);
+        return;
+      }
+      try {
+        const payload = await fetchJson("/api/strategy/snapshots/" + targetId, { forceRefresh: true, noCache: true });
+        const snapshot = payload && payload.snapshot ? payload.snapshot : null;
+        if (!snapshot) {
+          return;
+        }
+        const savedQuery = snapshot.query || {};
+        hydrateLeaderControlsFromQuery(savedQuery);
+        setQueryState(Object.assign({}, savedQuery));
+        setStrategyMode("leader_top10");
+        setLeaderBacktestStarted(false);
+        setActiveLeaderSnapshot(snapshot);
+        setActiveLeaderSnapshotId(targetId);
+        setLeaderSnapshotMessage("저장 결과 불러옴");
+      } catch (error) {
+        setLeaderSnapshotMessage(error.message || String(error));
+      }
+    }
+
+    async function submitLeaderAiChat(marketMode, payload, questionText) {
+      const normalizedMarket = marketMode === "us" ? "us" : "kr";
+      const question = String(questionText || "").trim();
+      if (!question || !payload) {
+        return;
+      }
+      setLeaderAiErrorByMarket(function (prev) {
+        return Object.assign({}, prev, { [normalizedMarket]: "" });
+      });
+      setLeaderAiLoadingByMarket(function (prev) {
+        return Object.assign({}, prev, { [normalizedMarket]: true });
+      });
+      setLeaderAiMessagesByMarket(function (prev) {
+        const next = Object.assign({}, prev);
+        const rows = ensureArray(next[normalizedMarket]).slice();
+        rows.push({ role: "user", text: question, created_at: new Date().toISOString() });
+        next[normalizedMarket] = rows;
+        return next;
+      });
+      setLeaderAiInputByMarket(function (prev) {
+        return Object.assign({}, prev, { [normalizedMarket]: "" });
+      });
+      try {
+        const response = await postJson("/api/strategy/backtest/ai-chat", {
+          market: normalizedMarket,
+          question: question,
+          query: Object.assign({}, queryState, { market: normalizedMarket }),
+          payload: {
+            strategy_name: payload.strategy_name,
+            index_name: payload.index_name,
+            start_date: payload.start_date,
+            end_date: payload.end_date,
+            summary: payload.summary || {},
+            rows: ensureArray(payload.rows).slice(-180),
+            signals: ensureArray(payload.signals).slice(-80),
+          },
+        });
+        const result = response && response.result ? response.result : {};
+        setLeaderAiMessagesByMarket(function (prev) {
+          const next = Object.assign({}, prev);
+          const rows = ensureArray(next[normalizedMarket]).slice();
+          rows.push({
+            role: "assistant",
+            text: String(result.answer || "").trim() || "답변을 생성하지 못했습니다.",
+            bullet_points: ensureArray(result.bullet_points).filter(Boolean),
+            suggested_questions: ensureArray(result.suggested_questions).filter(Boolean),
+            created_at: result.generated_at || new Date().toISOString(),
+          });
+          next[normalizedMarket] = rows;
+          return next;
+        });
+      } catch (error) {
+        setLeaderAiErrorByMarket(function (prev) {
+          return Object.assign({}, prev, {
+            [normalizedMarket]: error && error.message ? error.message : "AI 답변 요청 중 오류가 발생했습니다.",
+          });
+        });
+      } finally {
+        setLeaderAiLoadingByMarket(function (prev) {
+          return Object.assign({}, prev, { [normalizedMarket]: false });
+        });
+      }
+    }
+
+    function renderLeaderAiPanel(marketMode, payload, mddContributorRows) {
+      const normalizedMarket = marketMode === "us" ? "us" : "kr";
+      const messages = ensureArray(leaderAiMessagesByMarket[normalizedMarket]);
+      const inputValue = String((leaderAiInputByMarket && leaderAiInputByMarket[normalizedMarket]) || "");
+      const loading = !!(leaderAiLoadingByMarket && leaderAiLoadingByMarket[normalizedMarket]);
+      const error = String((leaderAiErrorByMarket && leaderAiErrorByMarket[normalizedMarket]) || "");
+      return h(
+        "div",
+        { className: "mini-table-panel strategy-wide-table", style: { marginTop: "12px" } },
+        h(
+          "div",
+          { className: "section-toolbar" },
+          h("div", null,
+            h("div", { className: "subsection-title" }, "AI 전략 리뷰"),
+            h("div", { className: "summary-help" }, "현재 백테스트 결과와 20일 신고가→52주 신고가 전이 통계를 함께 사용합니다.")
+          ),
+          loading ? h("span", { className: "telegram-status-pill" }, "답변 생성 중") : null
+        ),
+        h(
+          "div",
+          { className: "mini-table-panel", style: { marginBottom: "10px", background: "#fbfdff" } },
+          h("div", { className: "subsection-title" }, "MDD 구간 기여 종목"),
+          h(DataTable, {
+            rows: ensureArray(mddContributorRows).slice(0, 10),
+            emptyMessage: "MDD 기여 종목 데이터가 없습니다.",
+            compact: true,
+            columns: [
+              { key: "stock_name", label: "종목", render: function (row) {
+                return h("button", { type: "button", className: "table-link-button", onClick: function () { openStrategyTradeChart(row.trade || row); } }, row.stock_name || row.stock_code || "-");
+              } },
+              { key: "contribution_pct", label: "누적 기여", render: function (row) {
+                return row.contribution_pct == null ? "-" : h("span", { className: pnlClass(row.contribution_pct) }, formatPercent(row.contribution_pct, 2));
+              } },
+              { key: "active_days", label: "영향 일수", render: function (row) { return numberFormat(row.active_days, 0) + "일"; } },
+              { key: "trade_count", label: "매도 건", render: function (row) { return numberFormat(row.trade_count, 0) + "건"; } },
+              { key: "latest_sell_date", label: "최근 매도일", render: function (row) { return row.latest_sell_date || "-"; } },
+            ],
+          })
+        ),
+        h(
+          "div",
+          {
+            className: "strategy-scroll-panel",
+            style: { maxHeight: "360px", overflowY: "auto", padding: "10px", border: "1px solid #e2e8f0", borderRadius: "12px", background: "#f8fbff" },
+          },
+          messages.length
+            ? messages.map(function (message, index) {
+                const isUser = message.role === "user";
+                return h(
+                  "div",
+                  {
+                    key: String(message.created_at || index) + "-" + index,
+                    style: { display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: "10px" },
+                  },
+                  h(
+                    "div",
+                    {
+                      style: {
+                        maxWidth: "88%",
+                        border: "1px solid " + (isUser ? "#c7d8ff" : "#dbe7f5"),
+                        background: isUser ? "#eef4ff" : "#ffffff",
+                        borderRadius: "12px",
+                        padding: "10px 12px",
+                      },
+                    },
+                    h("div", { style: { whiteSpace: "pre-wrap", lineHeight: 1.6, color: "#1e293b", fontSize: "13px" } }, message.text || "-"),
+                    ensureArray(message.bullet_points).length
+                      ? h("ul", { style: { margin: "8px 0 0", paddingLeft: "18px", color: "#475569", fontSize: "12px", lineHeight: 1.6 } },
+                          ensureArray(message.bullet_points).map(function (item, bulletIndex) {
+                            return h("li", { key: bulletIndex }, item);
+                          })
+                        )
+                      : null
+                  )
+                );
+              })
+            : h("div", { className: "summary-help" }, "현재 전략의 약점, MDD 원인, 신고가 전이 통계 등에 대해 질문할 수 있습니다.")
+        ),
+        error ? h("div", { className: "summary-help", style: { color: "#dc2626", marginTop: "8px" } }, error) : null,
+        h(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "1fr auto", gap: "8px", marginTop: "10px", alignItems: "end" } },
+          h("textarea", {
+            className: "text-input",
+            rows: 3,
+            value: inputValue,
+            placeholder: "예: 20일 신고가 후 52주 신고가까지 평균 상승률과 탈락 비율을 설명해줘",
+            onChange: function (event) {
+              const nextValue = event.target.value;
+              setLeaderAiInputByMarket(function (prev) {
+                return Object.assign({}, prev, { [normalizedMarket]: nextValue });
+              });
+            },
+          }),
+          h("button", {
+            type: "button",
+            className: "primary-button",
+            disabled: loading || !inputValue.trim(),
+            onClick: function () { submitLeaderAiChat(normalizedMarket, payload, inputValue); },
+          }, loading ? "답변 생성 중" : "질문하기")
+        )
+      );
+    }
+
+    function BacktestEventCurveChart(props) {
+      var series = ensureArray(props && props.series).filter(function (item) {
+        return ensureArray(item && item.points).length > 0;
+      });
+      if (!series.length) {
+        return h("div", { className: "summary-help" }, "이벤트 이후 수익률 곡선 데이터가 없습니다.");
+      }
+      var width = Number(props && props.width) || 920;
+      var height = Number(props && props.height) || 280;
+      var paddingLeft = 44;
+      var paddingRight = 18;
+      var paddingTop = 16;
+      var paddingBottom = 34;
+      var innerWidth = Math.max(10, width - paddingLeft - paddingRight);
+      var innerHeight = Math.max(10, height - paddingTop - paddingBottom);
+      var palette = ["#2563eb", "#16a34a", "#f59e0b", "#7c3aed", "#ef4444"];
+      var allPoints = [];
+      series.forEach(function (item) {
+        ensureArray(item.points).forEach(function (point) {
+          var day = Number(point && point.day);
+          var value = Number(point && point.avg_return_pct);
+          if (Number.isFinite(day) && Number.isFinite(value)) {
+            allPoints.push({ day: day, value: value });
+          }
+        });
+      });
+      if (!allPoints.length) {
+        return h("div", { className: "summary-help" }, "이벤트 이후 수익률 곡선 데이터가 없습니다.");
+      }
+      var minDay = Math.min.apply(null, allPoints.map(function (item) { return item.day; }));
+      var maxDay = Math.max.apply(null, allPoints.map(function (item) { return item.day; }));
+      var minValue = Math.min(0, Math.min.apply(null, allPoints.map(function (item) { return item.value; })));
+      var maxValue = Math.max(0, Math.max.apply(null, allPoints.map(function (item) { return item.value; })));
+      if (!(maxDay > minDay)) maxDay = minDay + 1;
+      if (!(maxValue > minValue)) {
+        maxValue = minValue + 1;
+      }
+      var xOf = function (day) {
+        return paddingLeft + (((day - minDay) / (maxDay - minDay)) * innerWidth);
+      };
+      var yOf = function (value) {
+        return paddingTop + (1 - ((value - minValue) / (maxValue - minValue))) * innerHeight;
+      };
+      var zeroY = yOf(0);
+      var yTicks = 5;
+      var gridRows = [];
+      for (var i = 0; i <= yTicks; i += 1) {
+        var ratio = i / yTicks;
+        var value = maxValue - ((maxValue - minValue) * ratio);
+        var y = paddingTop + (innerHeight * ratio);
+        gridRows.push(
+          h("g", { key: "y-grid-" + i },
+            h("line", { x1: paddingLeft, y1: y, x2: width - paddingRight, y2: y, stroke: "#e2e8f0", strokeWidth: 1 }),
+            h("text", { x: 6, y: y + 4, fill: "#64748b", fontSize: 11 }, formatPercent(value, 1))
+          )
+        );
+      }
+      var xTickDays = [1, 5, 10, 20, 40, 60].filter(function (day) {
+        return day >= minDay && day <= maxDay;
+      });
+      var xTickRows = xTickDays.map(function (day) {
+        var x = xOf(day);
+        return h("g", { key: "x-grid-" + day },
+          h("line", { x1: x, y1: paddingTop, x2: x, y2: height - paddingBottom, stroke: "#f1f5f9", strokeWidth: 1 }),
+          h("text", { x: x, y: height - 10, fill: "#64748b", fontSize: 11, textAnchor: "middle" }, "D+" + day)
+        );
+      });
+      return h(
+        "div",
+        null,
+        h(
+          "div",
+          { className: "score-history-lightweight-legend", style: { marginBottom: "8px" } },
+          series.map(function (item, index) {
+            return h(
+              "span",
+              { key: item.key || index, className: "legend-item" },
+              h("span", { className: "legend-swatch", style: { background: palette[index % palette.length] } }),
+              item.label || ("시리즈 " + (index + 1))
+            );
+          })
+        ),
+        h(
+          "svg",
+          { viewBox: "0 0 " + width + " " + height, style: { width: "100%", height: "280px", display: "block" } },
+          gridRows,
+          xTickRows,
+          h("line", { x1: paddingLeft, y1: zeroY, x2: width - paddingRight, y2: zeroY, stroke: "#94a3b8", strokeDasharray: "4 4", strokeWidth: 1 }),
+          series.map(function (item, index) {
+            var points = ensureArray(item.points).filter(function (point) {
+              return Number.isFinite(Number(point && point.day)) && Number.isFinite(Number(point && point.avg_return_pct));
+            });
+            if (!points.length) return null;
+            var path = points.map(function (point, pointIndex) {
+              var prefix = pointIndex === 0 ? "M" : "L";
+              return prefix + xOf(Number(point.day)) + " " + yOf(Number(point.avg_return_pct));
+            }).join(" ");
+            return h("path", {
+              key: item.key || index,
+              d: path,
+              fill: "none",
+              stroke: palette[index % palette.length],
+              strokeWidth: 2.5,
+              strokeLinecap: "round",
+              strokeLinejoin: "round",
+            });
+          })
+        )
+      );
+    }
+
+    function renderLeaderBreakoutInsightsPanel(payload) {
+      var insights = payload && payload.breakout_insights ? payload.breakout_insights : null;
+      var summaryRows = ensureArray(insights && insights.summary_rows);
+      var whipsawRows = ensureArray(insights && insights.whipsaw_rows);
+      var forwardCurves = ensureArray(insights && insights.forward_curves);
+      var clusterRows = ensureArray(insights && insights.cluster_rows);
+      if (!summaryRows.length && !whipsawRows.length && !forwardCurves.length && !clusterRows.length) {
+        return null;
+      }
+      return h(
+        "div",
+        { className: "mini-table-panel strategy-wide-table", style: { marginTop: "12px" } },
+        h(
+          "div",
+          { className: "section-toolbar" },
+          h("div", null,
+            h("div", { className: "subsection-title" }, "신고가 돌파 분석"),
+            h("div", { className: "summary-help" }, "실제 체결된 돌파 매매를 기준으로 분포, 휩소, 이벤트 이후 경로, 유형별 특성을 정리합니다.")
+          )
+        ),
+        h(
+          "div",
+          { className: "sector-rotation-table-grid advanced-detail-grid" },
+          h(
+            "div",
+            { className: "mini-table-panel strategy-wide-table" },
+            h("div", { className: "subsection-title" }, "신고가 돌파 분포 요약"),
+            h(DataTable, {
+              rows: summaryRows,
+              compact: true,
+              emptyMessage: "돌파 요약 데이터가 없습니다.",
+              columns: [
+                { key: "label", label: "유형", render: function (row) { return row.label || "-"; } },
+                { key: "event_count", label: "건수", render: function (row) { return numberFormat(row.event_count, 0) + "건"; } },
+                { key: "avg_return_pct", label: "평균 수익률", render: function (row) { return row.avg_return_pct == null ? "-" : h("span", { className: pnlClass(row.avg_return_pct) }, formatPercent(row.avg_return_pct, 2)); } },
+                { key: "win_rate_pct", label: "승률", render: function (row) { return row.win_rate_pct == null ? "-" : formatPercent(row.win_rate_pct, 1); } },
+                { key: "avg_peak_return_pct", label: "평균 최대 상승", render: function (row) { return row.avg_peak_return_pct == null ? "-" : h("span", { className: pnlClass(row.avg_peak_return_pct) }, formatPercent(row.avg_peak_return_pct, 2)); } },
+                { key: "hit_20_pct", label: "+20% 도달", render: function (row) { return row.hit_20_pct == null ? "-" : formatPercent(row.hit_20_pct, 1); } },
+                { key: "reached_52w_pct", label: "52주 신고가 도달", render: function (row) { return row.reached_52w_pct == null ? "-" : formatPercent(row.reached_52w_pct, 1); } },
+              ],
+            })
+          ),
+          h(
+            "div",
+            { className: "mini-table-panel strategy-wide-table" },
+            h("div", { className: "subsection-title" }, "휩소 분석"),
+            h("div", { className: "summary-help", style: { marginBottom: "8px" } }, "손실 또는 본전 이하로 매도된 거래를 매도 사유별로 묶었습니다."),
+            h(DataTable, {
+              rows: whipsawRows,
+              compact: true,
+              emptyMessage: "휩소 분석 대상 거래가 없습니다.",
+              columns: [
+                { key: "reason", label: "매도 사유", render: function (row) { return row.reason || "-"; } },
+                { key: "event_count", label: "건수", render: function (row) { return numberFormat(row.event_count, 0) + "건"; } },
+                { key: "share_pct", label: "비중", render: function (row) { return row.share_pct == null ? "-" : formatPercent(row.share_pct, 1); } },
+                { key: "avg_return_pct", label: "평균 손익", render: function (row) { return row.avg_return_pct == null ? "-" : h("span", { className: pnlClass(row.avg_return_pct) }, formatPercent(row.avg_return_pct, 2)); } },
+                { key: "avg_hold_days", label: "평균 보유일", render: function (row) { return row.avg_hold_days == null ? "-" : numberFormat(row.avg_hold_days, 1) + "일"; } },
+              ],
+            })
+          )
+        ),
+        h(
+          "div",
+          { className: "mini-table-panel strategy-wide-table", style: { marginTop: "12px" } },
+          h("div", { className: "subsection-title" }, "이벤트 이후 수익률 곡선"),
+          h("div", { className: "summary-help", style: { marginBottom: "8px" } }, "돌파 이벤트 이후 D+1, 3, 5, 10, 20, 40, 60 거래일 평균 수익률입니다."),
+          h(BacktestEventCurveChart, { series: forwardCurves })
+        ),
+        h(
+          "div",
+          { className: "mini-table-panel strategy-wide-table", style: { marginTop: "12px" } },
+          h("div", { className: "subsection-title" }, "유형별 클러스터 비교"),
+          h(DataTable, {
+            rows: clusterRows,
+            compact: true,
+            emptyMessage: "클러스터 비교 데이터가 없습니다.",
+            columns: [
+              { key: "cluster", label: "클러스터", render: function (row) { return row.cluster || "-"; } },
+              { key: "event_count", label: "건수", render: function (row) { return numberFormat(row.event_count, 0) + "건"; } },
+              { key: "avg_return_pct", label: "평균 수익률", render: function (row) { return row.avg_return_pct == null ? "-" : h("span", { className: pnlClass(row.avg_return_pct) }, formatPercent(row.avg_return_pct, 2)); } },
+              { key: "win_rate_pct", label: "승률", render: function (row) { return row.win_rate_pct == null ? "-" : formatPercent(row.win_rate_pct, 1); } },
+              { key: "avg_peak_return_pct", label: "평균 최대 상승", render: function (row) { return row.avg_peak_return_pct == null ? "-" : h("span", { className: pnlClass(row.avg_peak_return_pct) }, formatPercent(row.avg_peak_return_pct, 2)); } },
+              { key: "whipsaw_rate_pct", label: "휩소 비율", render: function (row) { return row.whipsaw_rate_pct == null ? "-" : formatPercent(row.whipsaw_rate_pct, 1); } },
+            ],
+          })
+        )
+      );
+    }
+
+    async function deleteLeaderSnapshot(snapshotId) {
+      const targetId = Number(snapshotId || 0);
+      if (!(targetId > 0)) {
+        return;
+      }
+      if (!window.confirm("저장된 백테스트를 삭제할까요?")) {
+        return;
+      }
+      try {
+        await deleteJson("/api/strategy/snapshots/" + targetId);
+        if (Number(activeLeaderSnapshotId || 0) === targetId) {
+          setActiveLeaderSnapshot(null);
+          setActiveLeaderSnapshotId(0);
+        }
+        if (String(compareLeftSnapshotId || "") === String(targetId)) {
+          setCompareLeftSnapshotId("");
+          setCompareLeftSnapshot(null);
+        }
+        if (String(compareRightSnapshotId || "") === String(targetId)) {
+          setCompareRightSnapshotId("");
+          setCompareRightSnapshot(null);
+        }
+        setLeaderSnapshotMessage("삭제 완료");
+        await leaderSnapshotRequest.refresh(true);
+      } catch (error) {
+        setLeaderSnapshotMessage(error.message || String(error));
+      }
+    }
+
+    useEffect(function () {
+      if (!savedLeaderSnapshots.length) {
+        return;
+      }
+      if (!compareLeftSnapshotId) {
+        setCompareLeftSnapshotId(String(savedLeaderSnapshots[0].id || ""));
+      }
+      if (!compareRightSnapshotId && savedLeaderSnapshots.length > 1) {
+        setCompareRightSnapshotId(String(savedLeaderSnapshots[1].id || ""));
+      }
+    }, [savedLeaderSnapshots, compareLeftSnapshotId, compareRightSnapshotId]);
+
+    useEffect(function () {
+      let cancelled = false;
+      const targetId = Number(compareLeftSnapshotId || 0);
+      if (!(targetId > 0)) {
+        setCompareLeftSnapshot(null);
+        return function () { cancelled = true; };
+      }
+      fetchJson("/api/strategy/snapshots/" + targetId, { forceRefresh: true, noCache: true })
+        .then(function (payload) {
+          if (!cancelled) {
+            setCompareLeftSnapshot(payload && payload.snapshot ? payload.snapshot : null);
+          }
+        })
+        .catch(function () {
+          if (!cancelled) {
+            setCompareLeftSnapshot(null);
+          }
+        });
+      return function () { cancelled = true; };
+    }, [compareLeftSnapshotId]);
+
+    useEffect(function () {
+      let cancelled = false;
+      const targetId = Number(compareRightSnapshotId || 0);
+      if (!(targetId > 0)) {
+        setCompareRightSnapshot(null);
+        return function () { cancelled = true; };
+      }
+      fetchJson("/api/strategy/snapshots/" + targetId, { forceRefresh: true, noCache: true })
+        .then(function (payload) {
+          if (!cancelled) {
+            setCompareRightSnapshot(payload && payload.snapshot ? payload.snapshot : null);
+          }
+        })
+        .catch(function () {
+          if (!cancelled) {
+            setCompareRightSnapshot(null);
+          }
+      });
+      return function () { cancelled = true; };
+    }, [compareRightSnapshotId]);
+
+    useEffect(function () {
+      const options = buildLeaderCompareStockOptions(compareLeftSnapshot, compareRightSnapshot);
+      if (!options.length) {
+        if (compareStockKey) {
+          setCompareStockKey("");
+        }
+        return;
+      }
+      const exists = options.some(function (item) { return String(item.key) === String(compareStockKey || ""); });
+      if (!exists) {
+        setCompareStockKey(String(options[0].key || ""));
+      }
+    }, [compareLeftSnapshot, compareRightSnapshot, compareStockKey]);
+
     function applySectorBacktest() {
+      setSectorBacktestStarted(true);
       setSelectedSectorDate("");
       setSectorQueryState({
         start: sectorStartDate,
@@ -4604,6 +11171,7 @@
     }
 
     function applyAdvancedBacktest() {
+      setAdvancedBacktestStarted(true);
       setSelectedAdvancedDate("");
       setAdvancedQueryState({
         start: advancedStartDate,
@@ -4628,7 +11196,7 @@
         {
           type: "button",
           className: "strategy-mode-button" + (strategyMode === mode ? " active" : ""),
-          onClick: function () { setStrategyMode(mode); },
+          onClick: function () { switchStrategyMode(mode); },
         },
         label
       );
@@ -4648,7 +11216,7 @@
         markers.push({
           date: trade.entry_date,
           type: "buy",
-          label: "편출",
+          label: "매수",
           price: trade.entry_price,
         });
       }
@@ -4656,7 +11224,7 @@
         markers.push({
           date: trade.exit_date,
           type: "sell",
-          label: "편출",
+          label: "매도",
           price: trade.exit_price,
           return_pct: trade.trade_return_pct,
         });
@@ -4670,10 +11238,35 @@
       return markers;
     }
 
+    function addDaysToIsoDate(value, days) {
+      if (!value) return "";
+      const text = String(value).slice(0, 10);
+      const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) return "";
+      const dt = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+      if (Number.isNaN(dt.getTime())) return "";
+      dt.setDate(dt.getDate() + Number(days || 0));
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, "0");
+      const d = String(dt.getDate()).padStart(2, "0");
+      return y + "-" + m + "-" + d;
+    }
+
     function openStrategyTradeChart(trade) {
       const row = trade || {};
-      const code = String(row.stock_code || "").replace(/\D/g, "").padStart(6, "0");
-      const name = row.stock_name || row.resolved_name || row.stock_key || "";
+      const rawCode = String(row.stock_code || "").trim();
+      const normalizedDigits = rawCode.replace(/\D/g, "");
+      const normalizedSymbol = rawCode.toUpperCase();
+      const isGlobalSymbol = !!normalizedSymbol && /[A-Z]/.test(normalizedSymbol) && !normalizedDigits;
+      const code = normalizedDigits ? normalizedDigits.padStart(6, "0") : "";
+      const name = row.stock_name || row.resolved_name || row.stock_key || normalizedSymbol || "";
+      if (isGlobalSymbol) {
+        openStockInGlobalCompany({
+          stock_code: normalizedSymbol,
+          stock_name: name,
+        });
+        return;
+      }
       if (!code || code === "000000") {
         return;
       }
@@ -4681,7 +11274,16 @@
       const params = new URLSearchParams();
       params.set("code", code);
       params.set("name", name);
-      params.set("months", "12");
+      const focusStartDate = row.entry_date || row.buy_date || row.apply_date || row.date || "";
+      const focusEndDate = row.exit_date || row.sell_date || row.date || row.apply_date || focusStartDate;
+      const chartStartDate = addDaysToIsoDate(focusStartDate, -14);
+      const chartEndDate = addDaysToIsoDate(focusEndDate, 14);
+      if (chartStartDate && chartEndDate) {
+        params.set("start_date", chartStartDate);
+        params.set("end_date", chartEndDate);
+      } else {
+        params.set("months", "3");
+      }
       fetchJson("/api/stocks/chart-preview?" + params.toString())
         .then(function (payload) {
           const tradeMarkers = strategyTradeMarkers(row);
@@ -4978,7 +11580,7 @@
         "div",
         { className: "strategy-control-grid" },
         h("label", null,
-          h("span", null, "종목 선별"),
+          h("span", null, "비교지수"),
           h("select", {
             className: "select-input",
             value: indexKey,
@@ -4988,7 +11590,7 @@
           }))
         ),
         h("label", null,
-          h("span", null, "종목 선별"),
+          h("span", null, "전략"),
           h("select", {
             className: "select-input",
             value: strategyKey,
@@ -4998,7 +11600,7 @@
           }))
         ),
         h("label", null,
-          h("span", null, "종목 선별"),
+          h("span", null, "기간 시작"),
           h("input", {
             className: "text-input",
             type: "date",
@@ -5007,7 +11609,7 @@
           })
         ),
         h("label", null,
-          h("span", null, "종목 선별"),
+          h("span", null, "기간 마감"),
           h("input", {
             className: "text-input",
             type: "date",
@@ -5028,54 +11630,224 @@
       );
     }
 
-    function renderLeaderControls() {
+    function renderLeaderControls(marketMode) {
+      var isUsLeaderMode = marketMode === "us";
+      function renderLeaderConditionTitle(label, checked, onChange) {
+        return h(
+          "span",
+          { className: "strategy-condition-title" },
+          h("input", {
+            type: "checkbox",
+            checked: !!checked,
+            onChange: function (event) { onChange(event.target.checked); },
+          }),
+          " " + label
+        );
+      }
       return h(
         "div",
         { className: "strategy-control-grid" },
         h("label", null,
-          h("span", null, "TopN"),
+          renderLeaderConditionTitle("편입 TopN", leaderUseEntryTopN, setLeaderUseEntryTopN),
           h("input", {
             className: "text-input",
             type: "number",
             min: "1",
             step: "1",
             value: leaderTopN,
+            disabled: !leaderUseEntryTopN,
             onChange: function (event) { setLeaderTopN(event.target.value); },
           })
         ),
         h("label", null,
-          h("span", null, "종목 선별"),
+          renderLeaderConditionTitle("편출 TopN", leaderUseExitTopN, setLeaderUseExitTopN),
+          h("input", {
+            className: "text-input",
+            type: "number",
+            min: "1",
+            step: "1",
+            value: leaderExitTopN,
+            disabled: !leaderUseExitTopN,
+            onChange: function (event) { setLeaderExitTopN(event.target.value); },
+          })
+        ),
+        h("label", null,
+          renderLeaderConditionTitle("편입기준", leaderUseEntryThreshold, setLeaderUseEntryThreshold),
           h("input", {
             className: "text-input",
             type: "number",
             step: "0.1",
             value: leaderEntryThreshold,
+            disabled: !leaderUseEntryThreshold,
             onChange: function (event) { setLeaderEntryThreshold(event.target.value); },
           })
         ),
         h("label", null,
-          h("span", null, "종목 선별"),
+          renderLeaderConditionTitle("편출기준", leaderUseExitThreshold, setLeaderUseExitThreshold),
           h("input", {
             className: "text-input",
             type: "number",
             step: "0.1",
             value: leaderExitThreshold,
+            disabled: !leaderUseExitThreshold,
             onChange: function (event) { setLeaderExitThreshold(event.target.value); },
           })
         ),
         h("label", null,
-          h("span", null, "종목 선별"),
+          renderLeaderConditionTitle("로스컷", leaderUseStopLoss, setLeaderUseStopLoss),
+          h("select", {
+            className: "select-input",
+            value: leaderStopLossMode,
+            disabled: !leaderUseStopLoss,
+            onChange: function (event) { setLeaderStopLossMode(event.target.value); },
+          },
+            h("option", { value: "pct" }, "평가손실 %"),
+            h("option", { value: "atr" }, "ATR")
+          ),
+          leaderStopLossMode === "pct"
+            ? h("input", {
+                className: "text-input",
+                type: "number",
+                min: "0",
+                step: "0.1",
+                value: leaderStopLossPct,
+                disabled: !leaderUseStopLoss,
+                onChange: function (event) { setLeaderStopLossPct(event.target.value); },
+              })
+            : h(React.Fragment, null,
+                h("input", {
+                  className: "text-input",
+                  type: "number",
+                  min: "0",
+                  step: "0.1",
+                  value: leaderStopLossPct,
+                  disabled: !leaderUseStopLoss,
+                  onChange: function (event) { setLeaderStopLossPct(event.target.value); },
+                }),
+                h("div", { className: "summary-help" }, "매수가 대비 입력한 ATR 배수만큼 역행 시 강제 매도")
+              )
+        ),
+        h("label", null,
+          h("span", null, "추세 이탈 매도"),
+          h("div", { className: "toggle-group", style: { gap: "12px", alignItems: "center" } },
+            h("label", { className: "telegram-all-room-toggle", style: { padding: 0, border: "none", background: "transparent" } },
+              h("input", {
+                type: "checkbox",
+                checked: !!leaderExitMa20Break,
+                onChange: function (event) { setLeaderExitMa20Break(event.target.checked); },
+              }),
+              h("em", null, "20일선")
+            ),
+            h("label", { className: "telegram-all-room-toggle", style: { padding: 0, border: "none", background: "transparent" } },
+              h("input", {
+                type: "checkbox",
+                checked: !!leaderExitMa60Break,
+                onChange: function (event) { setLeaderExitMa60Break(event.target.checked); },
+              }),
+              h("em", null, "60일선")
+            )
+          )
+        ),
+        h("label", null,
+          renderLeaderConditionTitle("매수연속일", leaderUseEntryStreak, setLeaderUseEntryStreak),
+          h("input", {
+            className: "text-input",
+            type: "number",
+            min: "1",
+            step: "1",
+            value: leaderEntryStreakDays,
+            disabled: !leaderUseEntryStreak,
+            onChange: function (event) { setLeaderEntryStreakDays(event.target.value); },
+          })
+        ),
+        h("label", null,
+          renderLeaderConditionTitle("급등 제외 기준일", leaderUseRunupFilter, setLeaderUseRunupFilter),
+          h("input", {
+            className: "text-input",
+            type: "number",
+            min: "0",
+            step: "1",
+            value: leaderRunupLookbackDays,
+            disabled: !leaderUseRunupFilter,
+            onChange: function (event) { setLeaderRunupLookbackDays(event.target.value); },
+          })
+        ),
+        h("label", null,
+          renderLeaderConditionTitle("급등 제외 상승률", leaderUseRunupFilter, setLeaderUseRunupFilter),
+          h("input", {
+            className: "text-input",
+            type: "number",
+            step: "0.1",
+            value: leaderRunupExcludePct,
+            disabled: !leaderUseRunupFilter,
+            onChange: function (event) { setLeaderRunupExcludePct(event.target.value); },
+          })
+        ),
+        h("label", null,
+          renderLeaderConditionTitle("최소 시총(억)", leaderUseMinMarketCapFilter, setLeaderUseMinMarketCapFilter),
+          h("input", {
+            className: "text-input",
+            type: "number",
+            min: "0",
+            step: "1",
+            value: leaderMinMarketCap100m,
+            disabled: !leaderUseMinMarketCapFilter,
+            onChange: function (event) { setLeaderMinMarketCap100m(event.target.value); },
+          })
+        ),
+        h("label", null,
+          renderLeaderConditionTitle("최대 ATR(%)", leaderUseAtrFilter, setLeaderUseAtrFilter),
+          h("input", {
+            className: "text-input",
+            type: "number",
+            min: "0",
+            step: "0.1",
+            value: leaderMaxAtr20,
+            disabled: !leaderUseAtrFilter,
+            onChange: function (event) { setLeaderMaxAtr20(event.target.value); },
+          })
+        ),
+        h("label", null,
+          renderLeaderConditionTitle("신고가 매수", String(leaderEntryHighFilter || "none") !== "none", function (nextEnabled) {
+            setLeaderEntryHighFilter(nextEnabled ? "52w" : "none");
+          }),
+          h("select", {
+            className: "select-input",
+            value: leaderEntryHighFilter,
+            disabled: String(leaderEntryHighFilter || "none") === "none",
+            onChange: function (event) { setLeaderEntryHighFilter(event.target.value || "52w"); },
+          },
+            h("option", { value: "20d" }, "20일 신고가 매수"),
+            h("option", { value: "60d" }, "60일 신고가 매수"),
+            h("option", { value: "52w" }, "52주 신고가 매수")
+          ),
+          h("div", { className: "summary-help" }, "진입 시점 신고가 조건을 만족한 종목만 신규 편입")
+        ),
+        h("label", null,
+          h("span", null, "편입 비중"),
           h("select", {
             className: "select-input",
             value: leaderAllocationMode,
             onChange: function (event) { setLeaderAllocationMode(event.target.value); },
           },
             h("option", { value: "score_weight" }, "\uc810\uc218 \ube44\uc911\ub300\ub85c"),
-            h("option", { value: "fixed_20" }, "\uc885\ubaa9\ub2f9 20%")
+            h("option", { value: "fixed_20" }, "\uc885\ubaa9\ub2f9 20%"),
+            h("option", { value: "vol_inverse" }, "\ubcc0\ub3d9\uc131 \uc5ed\uac00\uc911")
           )
         ),
+        isUsLeaderMode ? h("label", null,
+          h("span", null, "비교 지수"),
+          h("select", {
+            className: "select-input",
+            value: leaderUsBenchmark,
+            onChange: function (event) { setLeaderUsBenchmark(event.target.value || "US500"); },
+          },
+            h("option", { value: "US500" }, "S&P 500"),
+            h("option", { value: "NDX100" }, "NASDAQ 100")
+          )
+        ) : null,
         h("label", null,
-          h("span", null, "종목 선별"),
+          h("span", null, "기간 시작"),
           h("input", {
             className: "text-input",
             type: "date",
@@ -5084,7 +11856,7 @@
           })
         ),
         h("label", null,
-          h("span", null, "종목 선별"),
+          h("span", null, "기간 마감"),
           h("input", {
             className: "text-input",
             type: "date",
@@ -5097,7 +11869,7 @@
           {
             type: "button",
             className: "primary-button",
-            onClick: applyLeaderBacktest,
+            onClick: function () { applyLeaderBacktest(isUsLeaderMode ? "us" : "kr"); },
             disabled: indexRequest.loading,
           },
           indexRequest.loading ? "계산 중" : "백테스트 실행"
@@ -5106,11 +11878,71 @@
     }
 
     function renderLeaderResult() {
-      var leaderRows = rows;
-      var leaderAllocationLabel = (queryState.allocation_mode || leaderAllocationMode || "score_weight") === "fixed_20" ? "\uc885\ubaa9\ub2f9 20%" : "\uc810\uc218 \ube44\uc911\ub300\ub85c";
-      var selectedLeaderLabel = "\uc624\ub298\uc758 \uc8fc\ub3c4\uc8fc \uc804\ub7b5 Top" + numberFormat(Number(queryState.top_n || leaderTopN || 100), 0)
-        + " / \ub9e4\uc218 " + numberFormat(Number(queryState.entry_threshold != null ? queryState.entry_threshold : leaderEntryThreshold), 1)
-        + " / \ub9e4\ub3c4 " + numberFormat(Number(queryState.exit_threshold != null ? queryState.exit_threshold : leaderExitThreshold), 1)
+      var expectedLeaderMarket = strategyMode === "us_leader" ? "us" : "kr";
+      var liveDataMatchesMarket = !data.market || String(data.market) === expectedLeaderMarket;
+      var leaderSnapshotPayload = (strategyMode === "leader_top10" && activeLeaderSnapshot && activeLeaderSnapshot.payload)
+        ? activeLeaderSnapshot.payload
+        : (liveDataMatchesMarket ? data : {});
+      var leaderRows = ensureArray(leaderSnapshotPayload && leaderSnapshotPayload.rows);
+      var leaderSummary = (leaderSnapshotPayload && leaderSnapshotPayload.summary) || {};
+      var leaderMarketMode = String(
+        (strategyMode === "leader_top10" && activeLeaderSnapshot && activeLeaderSnapshot.query && activeLeaderSnapshot.query.market)
+        || queryState.market
+        || (strategyMode === "us_leader" ? "us" : "kr")
+      );
+      var leaderTitleText = leaderMarketMode === "us" ? "미국 주도주 전략" : "국내 주도주 전략";
+      var benchmarkLabel = String((leaderSnapshotPayload && leaderSnapshotPayload.index_name) || (leaderMarketMode === "us"
+        ? (String(queryState.index || leaderUsBenchmark) === "NDX100" ? "NASDAQ 100" : "S&P 500")
+        : "KOSPI"));
+      function leaderPriceText(value) {
+        if (value == null || !Number.isFinite(Number(value))) return "-";
+        return leaderMarketMode === "us"
+          ? "$" + numberFormat(value, 2)
+          : numberFormat(value, 0) + "원";
+      }
+      var leaderAllocationModeValue = queryState.allocation_mode || leaderAllocationMode || "score_weight";
+      var leaderAllocationLabel = leaderAllocationModeValue === "fixed_20"
+        ? "\uc885\ubaa9\ub2f9 20%"
+        : (leaderAllocationModeValue === "vol_inverse" ? "\ubcc0\ub3d9\uc131 \uc5ed\uac00\uc911" : "\uc810\uc218 \ube44\uc911\ub300\ub85c");
+      var leaderUseEntryTopNLabel = !!(queryState.use_entry_top_n != null ? queryState.use_entry_top_n : leaderUseEntryTopN);
+      var leaderUseExitTopNLabel = !!(queryState.use_exit_top_n != null ? queryState.use_exit_top_n : leaderUseExitTopN);
+      var leaderUseEntryThresholdLabel = !!(queryState.use_entry_threshold != null ? queryState.use_entry_threshold : leaderUseEntryThreshold);
+      var leaderUseExitThresholdLabel = !!(queryState.use_exit_threshold != null ? queryState.use_exit_threshold : leaderUseExitThreshold);
+      var leaderUseStopLossLabel = !!(queryState.use_stop_loss != null ? queryState.use_stop_loss : leaderUseStopLoss);
+      var leaderStopLossModeLabel = String(queryState.stop_loss_mode || leaderStopLossMode || "pct");
+      var leaderStopLossLabel = Number(queryState.stop_loss_pct != null ? queryState.stop_loss_pct : leaderStopLossPct || 0);
+      var leaderExitMa20BreakLabel = !!(queryState.exit_ma20_break != null ? queryState.exit_ma20_break : leaderExitMa20Break);
+      var leaderExitMa60BreakLabel = !!(queryState.exit_ma60_break != null ? queryState.exit_ma60_break : leaderExitMa60Break);
+      var leaderUseEntryStreakLabel = !!(queryState.use_entry_streak != null ? queryState.use_entry_streak : leaderUseEntryStreak);
+      var leaderUseRunupFilterLabel = !!(queryState.use_runup_filter != null ? queryState.use_runup_filter : leaderUseRunupFilter);
+      var leaderRunupLookbackLabel = Number(queryState.runup_lookback_days != null ? queryState.runup_lookback_days : leaderRunupLookbackDays || 0);
+      var leaderRunupExcludeLabel = Number(queryState.runup_exclude_pct != null ? queryState.runup_exclude_pct : leaderRunupExcludePct || 0);
+      var leaderUseMinMarketCapFilterLabel = !!(queryState.use_min_market_cap_filter != null ? queryState.use_min_market_cap_filter : leaderUseMinMarketCapFilter);
+      var leaderMinMarketCapLabel = Number(queryState.min_market_cap_100m != null ? queryState.min_market_cap_100m : leaderMinMarketCap100m || 0);
+      var leaderUseAtrFilterLabel = !!(queryState.use_atr_filter != null ? queryState.use_atr_filter : leaderUseAtrFilter);
+      var leaderMaxAtr20Label = Number(queryState.max_atr_20 != null ? queryState.max_atr_20 : leaderMaxAtr20 || 0);
+      var leaderEntryHighFilterLabel = String(queryState.entry_high_filter || leaderEntryHighFilter || "none");
+      var leaderEntryHighFilterText = "";
+      if (leaderEntryHighFilterLabel === "20d") {
+        leaderEntryHighFilterText = "20일 신고가만 매수";
+      } else if (leaderEntryHighFilterLabel === "60d") {
+        leaderEntryHighFilterText = "60일 신고가만 매수";
+      } else if (leaderEntryHighFilterLabel === "52w") {
+        leaderEntryHighFilterText = "52주 신고가만 매수";
+      }
+      var selectedLeaderLabel = leaderTitleText
+        + (leaderUseEntryTopNLabel ? " / \uc9c4\uc785Top" + numberFormat(Number(queryState.top_n || leaderTopN || 100), 0) : " / \uc9c4\uc785TopN \ud574\uc81c")
+        + (leaderUseExitTopNLabel ? " / \uc720\uc9c0Top" + numberFormat(Number(queryState.exit_top_n || leaderExitTopN || queryState.top_n || leaderTopN || 100), 0) : " / \ud3b8\ucd9cTopN \ud574\uc81c")
+        + (leaderUseEntryThresholdLabel ? " / \ub9e4\uc218 " + numberFormat(Number(queryState.entry_threshold != null ? queryState.entry_threshold : leaderEntryThreshold), 1) : "")
+        + (leaderUseExitThresholdLabel ? " / \ub9e4\ub3c4 " + numberFormat(Number(queryState.exit_threshold != null ? queryState.exit_threshold : leaderExitThreshold), 1) : "")
+        + (leaderUseStopLossLabel ? (leaderStopLossModeLabel === "atr" ? " / " + numberFormat(leaderStopLossLabel, 1) + "ATR \ub85c\uc2a4\ucef7" : " / \ub85c\uc2a4\ucef7 " + numberFormat(leaderStopLossLabel, 1) + "%") : "")
+        + (leaderExitMa20BreakLabel ? " / 20\uc77c\uc120 \uc774\ud0c8" : "")
+        + (leaderExitMa60BreakLabel ? " / 60\uc77c\uc120 \uc774\ud0c8" : "")
+        + (leaderUseEntryStreakLabel ? " / \ub9e4\uc218 " + numberFormat(Number(queryState.entry_streak_days != null ? queryState.entry_streak_days : leaderEntryStreakDays || 1), 0) + "\uc77c \uc5f0\uc18d" : "")
+        + (leaderUseRunupFilterLabel && leaderRunupLookbackLabel > 0 ? " / " + numberFormat(leaderRunupLookbackLabel, 0) + "\uc77c " + numberFormat(leaderRunupExcludeLabel, 1) + "% \uae09\ub4f1 \uc81c\uc678" : "")
+        + (leaderUseMinMarketCapFilterLabel && leaderMinMarketCapLabel > 0 ? " / \uc2dc\ucd1d " + numberFormat(leaderMinMarketCapLabel, 0) + "\uc5b5+" : "")
+        + (leaderUseAtrFilterLabel && leaderMaxAtr20Label > 0 ? " / ATR " + numberFormat(leaderMaxAtr20Label, 1) + "% 이하" : "")
+        + (leaderEntryHighFilterText ? " / " + leaderEntryHighFilterText : "")
         + " / " + leaderAllocationLabel;
       var holdingsTimelineRows = leaderRows
         .map(function (row) {
@@ -5141,50 +11973,253 @@
             sector_weight_sum: sectors || "-",
           };
         });
-      var holdingDetailRows = [];
+      var tradeEventRows = [];
       leaderRows.forEach(function (row) {
-        var currentHoldings = ensureArray(row.holdings);
-        currentHoldings.forEach(function (item) {
-          if (String(item.status || "") === "\ud3b8\uc785") {
-            holdingDetailRows.push({
-              date: row.date,
-              stock_code: item.stock_code || "",
-              stock_name: item.stock_name || item.stock_key || "-",
-              action: "\ub9e4\uc218",
-              buy_avg_price: item.avg_buy_price,
-              sell_avg_price: null,
-              sell_return_pct: null,
-              markers: [{ date: row.date, type: "buy", label: "\ub9e4\uc218" }],
-            });
-          }
+        ensureArray(row.entry_exit && row.entry_exit.buy_details).forEach(function (detail) {
+          tradeEventRows.push({
+            date: row.date,
+            signal_date: detail.signal_date || row.signal_date || "",
+            stock_code: detail.stock_code || "",
+            stock_name: detail.stock_name || detail.stock_code || "-",
+            action: "\ub9e4\uc218",
+            buy_reason: detail.reason || "",
+            reason: "",
+            buy_avg_price: detail.buy_price,
+            buy_date: detail.buy_date || row.date,
+            sell_avg_price: null,
+            sell_date: null,
+            sell_return_pct: null,
+            markers: [{ date: row.date, type: "buy", label: "\ub9e4\uc218" }],
+          });
         });
         ensureArray(row.entry_exit && row.entry_exit.sell_details).forEach(function (detail) {
-          holdingDetailRows.push({
+          tradeEventRows.push({
             date: row.date,
+            signal_date: detail.signal_date || row.signal_date || "",
             stock_code: detail.stock_code || "",
             stock_name: detail.stock_name || detail.stock_code || "-",
             action: "\ub9e4\ub3c4",
+            buy_reason: detail.buy_reason || "",
+            reason: detail.reason || "\uc810\uc218",
             buy_avg_price: detail.avg_buy_price,
+            buy_date: detail.buy_date || "",
             sell_avg_price: detail.sell_price,
+            sell_date: detail.sell_date || row.date,
             sell_return_pct: detail.sell_return_pct,
             markers: [{ date: row.date, type: "sell", label: "\ub9e4\ub3c4" }],
           });
         });
       });
       var stockMarkerMap = {};
-      holdingDetailRows.forEach(function (item) {
+      tradeEventRows.forEach(function (item) {
         var code = String(item.stock_code || "").replace(/\D/g, "").padStart(6, "0");
         var key = code || String(item.stock_name || "");
         if (!key) return;
         if (!stockMarkerMap[key]) stockMarkerMap[key] = [];
         stockMarkerMap[key] = stockMarkerMap[key].concat(ensureArray(item.markers));
       });
-      holdingDetailRows = holdingDetailRows.map(function (item) {
+      var holdingDetailRows = tradeEventRows.map(function (item) {
         var code = String(item.stock_code || "").replace(/\D/g, "").padStart(6, "0");
         var key = code || String(item.stock_name || "");
         return Object.assign({}, item, { markers: ensureArray(stockMarkerMap[key]) });
+      }).filter(function (item) {
+        return String(item.action || "") === "매도";
       });
-      return indexRequest.error
+      var derivedSellRows = holdingDetailRows.slice();
+      var topLossTradeRows = derivedSellRows
+        .filter(function (item) { return Number.isFinite(Number(item.sell_return_pct)); })
+        .slice()
+        .sort(function (a, b) { return Number(a.sell_return_pct || 0) - Number(b.sell_return_pct || 0); })
+        .slice(0, 12);
+      var topProfitTradeRows = derivedSellRows
+        .filter(function (item) { return Number.isFinite(Number(item.sell_return_pct)); })
+        .slice()
+        .sort(function (a, b) { return Number(b.sell_return_pct || 0) - Number(a.sell_return_pct || 0); })
+        .slice(0, 12);
+      var profitStockMap = {};
+      derivedSellRows.forEach(function (item) {
+        var rawCode = String(item.stock_code || "").replace(/\D/g, "").padStart(6, "0");
+        var stockKey = rawCode || String(item.stock_name || "");
+        if (!stockKey) return;
+        var returnPct = Number(item.sell_return_pct);
+        if (!Number.isFinite(returnPct)) return;
+        if (!profitStockMap[stockKey]) {
+          profitStockMap[stockKey] = {
+            stock_key: stockKey,
+            stock_code: rawCode || item.stock_code || "",
+            stock_name: item.stock_name || item.stock_code || "-",
+            trade_count: 0,
+            winning_count: 0,
+            losing_count: 0,
+            total_return_pct: 0,
+            avg_return_pct: 0,
+            best_return_pct: null,
+            worst_return_pct: null,
+            latest_sell_date: "",
+            latest_trade: item,
+          };
+        }
+        var summaryRow = profitStockMap[stockKey];
+        summaryRow.trade_count += 1;
+        summaryRow.total_return_pct += returnPct;
+        if (returnPct > 0) {
+          summaryRow.winning_count += 1;
+        } else if (returnPct < 0) {
+          summaryRow.losing_count += 1;
+        }
+        if (summaryRow.best_return_pct == null || returnPct > summaryRow.best_return_pct) {
+          summaryRow.best_return_pct = returnPct;
+        }
+        if (summaryRow.worst_return_pct == null || returnPct < summaryRow.worst_return_pct) {
+          summaryRow.worst_return_pct = returnPct;
+        }
+        if (!summaryRow.latest_sell_date || String(item.sell_date || item.date || "") > summaryRow.latest_sell_date) {
+          summaryRow.latest_sell_date = String(item.sell_date || item.date || "");
+          summaryRow.latest_trade = item;
+        }
+      });
+      var topProfitStockRows = Object.keys(profitStockMap).map(function (key) {
+        var item = profitStockMap[key];
+        var tradeCount = Number(item.trade_count || 0);
+        return Object.assign({}, item, {
+          avg_return_pct: tradeCount ? item.total_return_pct / tradeCount : null,
+          win_rate_pct: tradeCount ? (Number(item.winning_count || 0) / tradeCount) * 100 : null,
+        });
+      }).sort(function (a, b) {
+        var totalDiff = Number(b.total_return_pct || 0) - Number(a.total_return_pct || 0);
+        if (Math.abs(totalDiff) > 0.000001) return totalDiff;
+        var avgDiff = Number(b.avg_return_pct || 0) - Number(a.avg_return_pct || 0);
+        if (Math.abs(avgDiff) > 0.000001) return avgDiff;
+        return Number(b.trade_count || 0) - Number(a.trade_count || 0);
+      }).slice(0, 12);
+      var derivedSellCount = derivedSellRows.length;
+      var derivedWinningSellCount = derivedSellRows.filter(function (item) {
+        return Number(item.sell_return_pct) > 0;
+      }).length;
+      var derivedAverageSellReturnPct = derivedSellRows.length
+        ? (derivedSellRows.reduce(function (sum, item) {
+            var value = Number(item.sell_return_pct);
+            return sum + (Number.isFinite(value) ? value : 0);
+          }, 0) / derivedSellRows.length)
+        : null;
+      var effectiveSellCount = leaderSummary.sell_count != null && Number.isFinite(Number(leaderSummary.sell_count))
+        ? Number(leaderSummary.sell_count)
+        : derivedSellCount;
+      var effectiveWinningSellCount = leaderSummary.winning_sell_count != null && Number.isFinite(Number(leaderSummary.winning_sell_count))
+        ? Number(leaderSummary.winning_sell_count)
+        : derivedWinningSellCount;
+      var effectiveAverageSellReturnPct = leaderSummary.avg_sell_return_pct != null && Number.isFinite(Number(leaderSummary.avg_sell_return_pct))
+        ? Number(leaderSummary.avg_sell_return_pct)
+        : derivedAverageSellReturnPct;
+      var derivedWinningSellRows = derivedSellRows.filter(function (item) {
+        return Number(item.sell_return_pct) > 0;
+      });
+      var derivedLosingSellRows = derivedSellRows.filter(function (item) {
+        return Number(item.sell_return_pct) < 0;
+      });
+      var derivedWinningAverageSellReturnPct = derivedWinningSellRows.length
+        ? (derivedWinningSellRows.reduce(function (sum, item) {
+            var value = Number(item.sell_return_pct);
+            return sum + (Number.isFinite(value) ? value : 0);
+          }, 0) / derivedWinningSellRows.length)
+        : null;
+      var derivedLosingAverageSellReturnPct = derivedLosingSellRows.length
+        ? (derivedLosingSellRows.reduce(function (sum, item) {
+            var value = Number(item.sell_return_pct);
+            return sum + (Number.isFinite(value) ? value : 0);
+          }, 0) / derivedLosingSellRows.length)
+        : null;
+      var effectiveWinRatePct = leaderSummary.win_rate_pct != null && Number.isFinite(Number(leaderSummary.win_rate_pct))
+        ? Number(leaderSummary.win_rate_pct)
+        : (derivedSellCount ? (derivedWinningSellCount / derivedSellCount) * 100 : null);
+      var effectiveWinningAverageSellReturnPct = leaderSummary.avg_winning_sell_return_pct != null && Number.isFinite(Number(leaderSummary.avg_winning_sell_return_pct))
+        ? Number(leaderSummary.avg_winning_sell_return_pct)
+        : derivedWinningAverageSellReturnPct;
+      var effectiveLosingAverageSellReturnPct = leaderSummary.avg_losing_sell_return_pct != null && Number.isFinite(Number(leaderSummary.avg_losing_sell_return_pct))
+        ? Number(leaderSummary.avg_losing_sell_return_pct)
+        : derivedLosingAverageSellReturnPct;
+      var leaderDrawdownPeak = -Infinity;
+      var leaderDrawdownMin = 0;
+      var leaderDrawdownPeakDate = "";
+      var leaderDrawdownTroughDate = "";
+      leaderRows.forEach(function (row) {
+        var value = Number(row && row.strategy_return_pct);
+        if (!Number.isFinite(value)) {
+          return;
+        }
+        if (value > leaderDrawdownPeak) {
+          leaderDrawdownPeak = value;
+          leaderDrawdownPeakDate = String(row.date || "");
+        }
+        var drawdown = value - leaderDrawdownPeak;
+        if (drawdown < leaderDrawdownMin) {
+          leaderDrawdownMin = drawdown;
+          leaderDrawdownTroughDate = String(row.date || "");
+        }
+      });
+      var mddContributionMap = {};
+      leaderRows.forEach(function (row) {
+        var rowDate = String(row && row.date || "");
+        if (!rowDate || !leaderDrawdownPeakDate || !leaderDrawdownTroughDate) {
+          return;
+        }
+        if (rowDate < leaderDrawdownPeakDate || rowDate > leaderDrawdownTroughDate) {
+          return;
+        }
+        ensureArray(row.holdings_before_close).forEach(function (item) {
+          if (!item || typeof item !== "object") {
+            return;
+          }
+          var stockKey = String(item.stock_key || item.stock_code || item.stock_name || "").trim();
+          if (!stockKey) {
+            return;
+          }
+          var contribution = Number(item.daily_contribution_pct);
+          if (!Number.isFinite(contribution)) {
+            contribution = 0;
+          }
+          if (!mddContributionMap[stockKey]) {
+            var matchedTrade = derivedSellRows.find(function (tradeRow) {
+              var tradeCode = String(tradeRow.stock_code || "").trim();
+              var itemCode = String(item.stock_code || "").trim();
+              return (tradeCode && itemCode && tradeCode === itemCode) || String(tradeRow.stock_name || "") === String(item.stock_name || "");
+            }) || null;
+            mddContributionMap[stockKey] = {
+              stock_key: stockKey,
+              stock_code: item.stock_code || "",
+              stock_name: item.stock_name || item.stock_code || stockKey,
+              contribution_pct: 0,
+              active_days: 0,
+              trade_count: 0,
+              latest_sell_date: "",
+              trade: matchedTrade,
+            };
+          }
+          mddContributionMap[stockKey].contribution_pct += contribution;
+          mddContributionMap[stockKey].active_days += 1;
+        });
+      });
+      derivedSellRows.forEach(function (tradeRow) {
+        var stockKey = String(tradeRow.stock_code || tradeRow.stock_name || "").trim();
+        if (!stockKey || !mddContributionMap[stockKey]) {
+          return;
+        }
+        mddContributionMap[stockKey].trade_count += 1;
+        var sellDate = String(tradeRow.sell_date || tradeRow.date || "");
+        if (sellDate && (!mddContributionMap[stockKey].latest_sell_date || sellDate > mddContributionMap[stockKey].latest_sell_date)) {
+          mddContributionMap[stockKey].latest_sell_date = sellDate;
+          mddContributionMap[stockKey].trade = tradeRow;
+        }
+      });
+      var mddContributorRows = Object.keys(mddContributionMap).map(function (key) {
+        var row = mddContributionMap[key];
+        row.contribution_pct = Number(numberFormat(row.contribution_pct, 3));
+        return row;
+      }).sort(function (a, b) {
+        return Number(a.contribution_pct || 0) - Number(b.contribution_pct || 0);
+      });
+      var leaderPeriodicSummaryRows = buildLeaderPeriodicSummaryRows(leaderRows, holdingDetailRows, leaderPeriodSummaryMode);
+      return (((strategyMode !== "leader_top10") || !activeLeaderSnapshot) && indexRequest.error)
         ? h(ErrorPanel, { message: indexRequest.error })
         : h(
             "div",
@@ -5196,7 +12231,19 @@
                 h(SectionTitle, null, "\ubc31\ud14c\uc2a4\ud2b8 \uacb0\uacfc \u00b7 " + selectedLeaderLabel),
                 h("div", { className: "summary-help" }, "당일 점수 기준 편입/편출 전략으로, 일부 구간에서는 현금 비중이 커집니다.")
               ),
-              h("span", { className: "telegram-status-pill" }, (data.start_date || startDate) + " ~ " + (data.end_date || endDate))
+              h(
+                "div",
+                { className: "toolbar-actions", style: { display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center" } },
+                strategyMode === "leader_top10"
+                  ? h("button", {
+                      type: "button",
+                      className: "mini-button",
+                      onClick: saveCurrentLeaderBacktest,
+                      disabled: leaderSnapshotSaving || !leaderRows.length,
+                    }, leaderSnapshotSaving ? "저장 중" : "현재 결과 저장")
+                  : null,
+                h("span", { className: "telegram-status-pill" }, (leaderSnapshotPayload.start_date || startDate) + " ~ " + (leaderSnapshotPayload.end_date || endDate))
+              )
             ),
             h(
               "div",
@@ -5204,12 +12251,18 @@
               h(
                 "div",
                 { className: "strategy-summary-row" },
-                h(SummaryCard, { label: "KOSPI 수익률", value: formatPercent(summary.index_return_pct, 2) }),
-                h(SummaryCard, { label: "포트폴리오 수익률", value: formatPercent(summary.strategy_return_pct, 2) }),
-                h(SummaryCard, { label: "알파", value: formatPercent(summary.excess_return_pct, 2) }),
-                h(SummaryCard, { label: "리밸런싱 신호", value: numberFormat(summary.signal_count, 0) + "회" }),
-                h(SummaryCard, { label: "\ud3c9\uade0 \ubcf4\uc720 \uc885\ubaa9", value: numberFormat(summary.avg_holdings_count, 1) + "\uac1c" }),
-                h(SummaryCard, { label: "\ub204\uc801 \uc218\uc218\ub8cc", value: formatPercent(summary.total_fee_pct_points, 2) })
+                h(SummaryCard, { label: benchmarkLabel + " 수익률", value: formatPercent(leaderSummary.index_return_pct, 2) }),
+                h(SummaryCard, { label: "포트폴리오 수익률", value: formatPercent(leaderSummary.strategy_return_pct, 2) }),
+                h(SummaryCard, { label: "알파", value: formatPercent(leaderSummary.excess_return_pct, 2) }),
+                h(SummaryCard, { label: "최대 MDD", value: formatPercent(leaderSummary.mdd_pct, 2), help: benchmarkLabel + " " + formatPercent(leaderSummary.benchmark_mdd_pct, 2) }),
+                h(SummaryCard, { label: "총 매도", value: numberFormat(effectiveSellCount, 0) + "회" }),
+                h(SummaryCard, { label: "수익 매도", value: numberFormat(effectiveWinningSellCount, 0) + "회" }),
+                h(SummaryCard, { label: "평균 매도수익률", value: effectiveAverageSellReturnPct == null ? "-" : formatPercent(effectiveAverageSellReturnPct, 2) }),
+                h(SummaryCard, { label: "수익매도 평균", value: effectiveWinningAverageSellReturnPct == null ? "-" : formatPercent(effectiveWinningAverageSellReturnPct, 2) }),
+                h(SummaryCard, { label: "손실매도 평균", value: effectiveLosingAverageSellReturnPct == null ? "-" : formatPercent(effectiveLosingAverageSellReturnPct, 2) }),
+                h(SummaryCard, { label: "승률", value: effectiveWinRatePct == null ? "-" : formatPercent(effectiveWinRatePct, 1), help: "매도 완료 건 중 수익 거래 비율" }),
+                h(SummaryCard, { label: "\ud3c9\uade0 \ubcf4\uc720 \uc885\ubaa9", value: numberFormat(leaderSummary.avg_holdings_count, 1) + "\uac1c" }),
+                h(SummaryCard, { label: "\ub204\uc801 \uc218\uc218\ub8cc", value: formatPercent(leaderSummary.total_fee_pct_points, 2) })
               )
             ),
             indexRequest.loading && !leaderRows.length
@@ -5220,45 +12273,28 @@
                     null,
                     h(StrategyBacktestChart, {
                       rows: leaderRows,
-                      indexName: "KOSPI",
-                      strategyName: "\uc624\ub298\uc758 \uc8fc\ub3c4\uc8fc",
+                      indexName: benchmarkLabel,
+                      strategyName: leaderMarketMode === "us" ? "미국 주도주" : "국내 주도주",
                     }),
                     h(
                       "div",
-                      { className: "strategy-detail-grid" },
+                      { className: "strategy-detail-single" },
                       h(
                         "div",
                         { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
-                        h("div", { className: "subsection-title" }, "일자별 편입 종목 (Top5)"),
-                        h(DataTable, {
-                          rows: holdingsTimelineRows,
-                          emptyMessage: "편입 종목 데이터가 없습니다.",
-                          columns: [
-                            { key: "date", label: "date" },
-                            { key: "holdings_count", label: "\ubcf4\uc720\uc885\ubaa9\uc218" },
-                            { key: "all_holdings", label: "all_holdings" },
-                            { key: "top5_holdings", label: "top5_holdings" },
-                            { key: "entry_exit", label: "\ud3b8\uc785/\ud3b8\ucd9c" },
-                            { key: "sector_weight_sum", label: "\uc139\ud130 \ube44\uc911 \ud569\uacc4" },
-                          ],
-                          compact: true,
-                        })
-                      ),
-                      h(
-                        "div",
-                        { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
-                        h("div", { className: "subsection-title" }, "최근 편입/제외 로그"),
+                        h("div", { className: "subsection-title" }, "최근 편출 로그"),
                         h(DataTable, {
                           rows: holdingDetailRows,
-                          emptyMessage: "매수/매도 이벤트 데이터가 없습니다.",
+                          emptyMessage: "매도 완료 이벤트 데이터가 없습니다.",
                           columns: [
                             { key: "date", label: "신호일" },
                             { key: "stock_name", label: "종목", render: function (row) {
                               return h("button", { type: "button", className: "table-link-button", onClick: function () { openStrategyTradeChart(row); } }, row.stock_name || row.stock_code || "-");
                             } },
-                            { key: "action", label: "구분" },
-                            { key: "buy_avg_price", label: "\ub9e4\uc218\ud3c9\uade0\uac00", render: function (row) { return row.buy_avg_price == null ? "-" : numberFormat(row.buy_avg_price, 0) + "\uc6d0"; } },
-                            { key: "sell_avg_price", label: "\ub9e4\ub3c4\ud3c9\uade0\uac00", render: function (row) { return row.sell_avg_price == null ? "-" : numberFormat(row.sell_avg_price, 0) + "\uc6d0"; } },
+                            { key: "buy_reason", label: "매수 사유", render: function (row) { return row.buy_reason || "-"; } },
+                            { key: "reason", label: "매도 사유", render: function (row) { return row.reason || "-"; } },
+                            { key: "buy_avg_price", label: "\ub9e4\uc218\uac00", render: function (row) { return row.buy_avg_price == null ? "-" : leaderPriceText(row.buy_avg_price) + (row.buy_date ? " (" + row.buy_date + ")" : ""); } },
+                            { key: "sell_avg_price", label: "\ub9e4\ub3c4\uac00", render: function (row) { return row.sell_avg_price == null ? "-" : leaderPriceText(row.sell_avg_price) + (row.sell_date ? " (" + row.sell_date + ")" : ""); } },
                             { key: "sell_return_pct", label: "\ub9e4\ub3c4\uc218\uc775\ub960", render: function (row) {
                               return row.sell_return_pct == null ? "-" : h("span", { className: pnlClass(row.sell_return_pct) }, formatPercent(row.sell_return_pct, 2));
                             } },
@@ -5266,10 +12302,345 @@
                           compact: true,
                         })
                       )
+                    ),
+                    h(
+                      "div",
+                      { className: "sector-rotation-table-grid advanced-detail-grid" },
+                      h(
+                        "div",
+                        { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
+                        h("div", { className: "subsection-title" }, "손실 상위 거래"),
+                        h(DataTable, {
+                          rows: topLossTradeRows,
+                          emptyMessage: "완료된 매도 거래가 없습니다.",
+                          columns: [
+                            { key: "stock_name", label: "종목", render: function (row) {
+                              return h("button", { type: "button", className: "table-link-button", onClick: function () { openStrategyTradeChart(row); } }, row.stock_name || row.stock_code || "-");
+                            } },
+                            { key: "buy_reason", label: "\ub9e4\uc218 \uc0ac\uc720", render: function (row) { return row.buy_reason || "-"; } },
+                            { key: "reason", label: "\ub9e4\ub3c4 \uc0ac\uc720", render: function (row) { return row.reason || "-"; } },
+                            { key: "buy_avg_price", label: "매수가", render: function (row) { return leaderPriceText(row.buy_avg_price); } },
+                            { key: "buy_date", label: "매수일", render: function (row) { return row.buy_date || "-"; } },
+                            { key: "sell_avg_price", label: "매도가", render: function (row) { return leaderPriceText(row.sell_avg_price); } },
+                            { key: "sell_date", label: "매도일", render: function (row) { return row.sell_date || row.date || "-"; } },
+                            { key: "sell_return_pct", label: "수익률", render: function (row) {
+                              return row.sell_return_pct == null ? "-" : h("span", { className: pnlClass(row.sell_return_pct) }, formatPercent(row.sell_return_pct, 2));
+                            } },
+                          ],
+                          compact: true,
+                        })
+                      ),
+                      h(
+                        "div",
+                        { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
+                        h("div", { className: "subsection-title" }, "수익 상위 거래"),
+                        h(DataTable, {
+                          rows: topProfitTradeRows,
+                          emptyMessage: "완료된 매도 거래가 없습니다.",
+                          columns: [
+                            { key: "stock_name", label: "종목", render: function (row) {
+                              return h("button", { type: "button", className: "table-link-button", onClick: function () { openStrategyTradeChart(row); } }, row.stock_name || row.stock_code || "-");
+                            } },
+                            { key: "buy_reason", label: "\ub9e4\uc218 \uc0ac\uc720", render: function (row) { return row.buy_reason || "-"; } },
+                            { key: "reason", label: "\ub9e4\ub3c4 \uc0ac\uc720", render: function (row) { return row.reason || "-"; } },
+                            { key: "buy_avg_price", label: "매수가", render: function (row) { return leaderPriceText(row.buy_avg_price); } },
+                            { key: "buy_date", label: "매수일", render: function (row) { return row.buy_date || "-"; } },
+                            { key: "sell_avg_price", label: "매도가", render: function (row) { return leaderPriceText(row.sell_avg_price); } },
+                            { key: "sell_date", label: "매도일", render: function (row) { return row.sell_date || row.date || "-"; } },
+                            { key: "sell_return_pct", label: "수익률", render: function (row) {
+                              return row.sell_return_pct == null ? "-" : h("span", { className: pnlClass(row.sell_return_pct) }, formatPercent(row.sell_return_pct, 2));
+                            } },
+                          ],
+                          compact: true,
+                        })
+                      ),
+                      h(
+                        "div",
+                        { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
+                        h("div", { className: "subsection-title" }, "수익 상위 종목"),
+                        h(DataTable, {
+                          rows: topProfitStockRows,
+                          emptyMessage: "완료된 매도 거래가 없습니다.",
+                          columns: [
+                            { key: "stock_name", label: "종목", render: function (row) {
+                              var tradeRow = row.latest_trade || {};
+                              return h("button", { type: "button", className: "table-link-button", onClick: function () { openStrategyTradeChart(tradeRow); } }, row.stock_name || row.stock_code || "-");
+                            } },
+                            { key: "trade_count", label: "매도 수", render: function (row) { return numberFormat(row.trade_count, 0) + "회"; } },
+                            { key: "winning_count", label: "수익 매도", render: function (row) { return numberFormat(row.winning_count, 0) + "회"; } },
+                            { key: "win_rate_pct", label: "승률", render: function (row) { return row.win_rate_pct == null ? "-" : formatPercent(row.win_rate_pct, 1); } },
+                            { key: "total_return_pct", label: "누적 수익률", render: function (row) {
+                              return row.total_return_pct == null ? "-" : h("span", { className: pnlClass(row.total_return_pct) }, formatPercent(row.total_return_pct, 2));
+                            } },
+                            { key: "avg_return_pct", label: "평균 수익률", render: function (row) {
+                              return row.avg_return_pct == null ? "-" : h("span", { className: pnlClass(row.avg_return_pct) }, formatPercent(row.avg_return_pct, 2));
+                            } },
+                            { key: "latest_sell_date", label: "최근 매도일", render: function (row) { return row.latest_sell_date || "-"; } },
+                          ],
+                          compact: true,
+                        })
+                      )
+                    ),
+                    strategyMode === "leader_top10"
+                      ? h(
+                          "div",
+                          { className: "mini-table-panel strategy-wide-table strategy-scroll-panel", style: { marginTop: "12px" } },
+                          h(
+                            "div",
+                            { className: "section-toolbar" },
+                            h("div", { className: "subsection-title" }, "기간별 성과"),
+                            h(
+                              "div",
+                              { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+                              h("button", {
+                                type: "button",
+                                className: "mini-button" + (leaderPeriodSummaryMode === "year" ? " active" : ""),
+                                onClick: function () { setLeaderPeriodSummaryMode("year"); },
+                              }, "연도별"),
+                              h("button", {
+                                type: "button",
+                                className: "mini-button" + (leaderPeriodSummaryMode === "quarter" ? " active" : ""),
+                                onClick: function () { setLeaderPeriodSummaryMode("quarter"); },
+                              }, "분기별")
+                            )
+                          ),
+                          h(DataTable, {
+                            rows: leaderPeriodicSummaryRows,
+                            emptyMessage: "기간별 성과 데이터가 없습니다.",
+                            columns: [
+                              { key: "label", label: leaderPeriodSummaryMode === "quarter" ? "분기" : "연도", render: function (row) { return row.label || "-"; } },
+                              { key: "trade_count", label: "거래건", render: function (row) { return numberFormat(row.trade_count, 0) + "건"; } },
+                              { key: "return_pct", label: leaderPeriodSummaryMode === "quarter" ? "분기수익률" : "연수익률", render: function (row) {
+                                return row.return_pct == null ? "-" : h("span", { className: pnlClass(row.return_pct) }, formatPercent(row.return_pct, 2));
+                              } },
+                              { key: "win_rate_pct", label: "승률", render: function (row) { return row.win_rate_pct == null ? "-" : formatPercent(row.win_rate_pct, 1); } },
+                              { key: "avg_profit_pct", label: "평균수익", render: function (row) {
+                                return row.avg_profit_pct == null ? "-" : h("span", { className: pnlClass(row.avg_profit_pct) }, formatPercent(row.avg_profit_pct, 2));
+                              } },
+                              { key: "avg_loss_pct", label: "평균손실", render: function (row) {
+                                return row.avg_loss_pct == null ? "-" : h("span", { className: pnlClass(row.avg_loss_pct) }, formatPercent(row.avg_loss_pct, 2));
+                              } },
+                              { key: "mdd_pct", label: "MDD", render: function (row) {
+                                return row.mdd_pct == null ? "-" : h("span", { className: pnlClass(row.mdd_pct) }, formatPercent(row.mdd_pct, 2));
+                              } },
+                            ],
+                            compact: true,
+                          })
+                        )
+                      : null,
+                    strategyMode === "leader_top10"
+                      ? renderLeaderBreakoutInsightsPanel(leaderSnapshotPayload)
+                      : null,
+                    renderLeaderAiPanel(leaderMarketMode, leaderSnapshotPayload, mddContributorRows)
                     )
-                  )
                 : h(EmptyState, { compact: true, message: "백테스트 데이터가 없습니다." })
           );
+    }
+
+    function renderLeaderSavedSnapshotsPanel() {
+      if (strategyMode !== "leader_top10") {
+        return null;
+      }
+      return h(
+        "div",
+        { className: "panel strategy-panel" },
+        h(
+          "div",
+          { className: "mini-table-panel" },
+          h("div", { className: "subsection-title" }, "저장된 국내 주도주 백테스트"),
+          leaderSnapshotMessage ? h("div", { className: "summary-help" }, leaderSnapshotMessage) : null,
+          leaderSnapshotRequest.loading && !savedLeaderSnapshots.length
+            ? h(LoadingPanel, { label: leaderSnapshotRequest.label })
+            : h(DataTable, {
+                rows: savedLeaderSnapshots,
+                emptyMessage: "저장된 백테스트가 없습니다.",
+                columns: [
+                  { key: "label", label: "이름", render: function (row) { return h("strong", null, row.label || "-"); } },
+                  { key: "created_at", label: "저장시각", render: function (row) { return row.created_at || "-"; } },
+                  { key: "strategy_return_pct", label: "수익률", render: function (row) {
+                    return row.strategy_return_pct == null ? "-" : h("span", { className: pnlClass(row.strategy_return_pct) }, formatPercent(row.strategy_return_pct, 2));
+                  } },
+                  { key: "excess_return_pct", label: "알파", render: function (row) {
+                    return row.excess_return_pct == null ? "-" : h("span", { className: pnlClass(row.excess_return_pct) }, formatPercent(row.excess_return_pct, 2));
+                  } },
+                  { key: "mdd_pct", label: "MDD", render: function (row) { return row.mdd_pct == null ? "-" : formatPercent(row.mdd_pct, 2); } },
+                  { key: "actions", label: "관리", render: function (row) {
+                    var rowId = Number(row.id || 0);
+                    return h("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+                      h("button", { type: "button", className: "mini-button", onClick: function () { loadLeaderSnapshot(rowId); } }, Number(activeLeaderSnapshotId || 0) === rowId ? "불러옴" : "불러오기"),
+                      h("button", { type: "button", className: "mini-button danger", onClick: function () { deleteLeaderSnapshot(rowId); } }, "삭제")
+                    );
+                  } },
+                ],
+                compact: true,
+              })
+        )
+      );
+    }
+
+    function renderLeaderCompareResult() {
+      var leftSnapshot = compareLeftSnapshot && compareLeftSnapshot.payload ? compareLeftSnapshot : null;
+      var rightSnapshot = compareRightSnapshot && compareRightSnapshot.payload ? compareRightSnapshot : null;
+      var stockOptions = buildLeaderCompareStockOptions(leftSnapshot, rightSnapshot);
+      var selectedStock = stockOptions.filter(function (item) {
+        return String(item.key) === String(compareStockKey || "");
+      })[0] || stockOptions[0] || null;
+      var leftTradesByStock = buildLeaderTradeLookup(leftSnapshot && leftSnapshot.payload);
+      var rightTradesByStock = buildLeaderTradeLookup(rightSnapshot && rightSnapshot.payload);
+      var leftStockTrades = selectedStock ? ensureArray(leftTradesByStock[selectedStock.key]) : [];
+      var rightStockTrades = selectedStock ? ensureArray(rightTradesByStock[selectedStock.key]) : [];
+      var leftRecentRows = extractLeaderSellRows(leftSnapshot && leftSnapshot.payload && leftSnapshot.payload.rows).slice().sort(function (a, b) {
+        return String(b.sell_date || b.date || "").localeCompare(String(a.sell_date || a.date || ""));
+      }).slice(0, 20);
+      var rightRecentRows = extractLeaderSellRows(rightSnapshot && rightSnapshot.payload && rightSnapshot.payload.rows).slice().sort(function (a, b) {
+        return String(b.sell_date || b.date || "").localeCompare(String(a.sell_date || a.date || ""));
+      }).slice(0, 20);
+      function renderSnapshotSummaryColumn(title, snapshot) {
+        var payload = (snapshot && snapshot.payload) || {};
+        var localSummary = payload.summary || {};
+        return h(
+          "div",
+          { className: "mini-table-panel strategy-wide-table" },
+          h("div", { className: "subsection-title" }, title),
+          snapshot
+            ? h(
+                React.Fragment,
+                null,
+                h("div", { className: "summary-help", style: { marginBottom: "8px" } }, (snapshot.label || "-") + " · " + (snapshot.created_at || "-")),
+                h(
+                  "div",
+                  { className: "summary-grid summary-grid-small" },
+                  h(SummaryCard, { label: "수익률", value: formatPercent(localSummary.strategy_return_pct, 2) }),
+                  h(SummaryCard, { label: "알파", value: formatPercent(localSummary.excess_return_pct, 2) }),
+                  h(SummaryCard, { label: "MDD", value: formatPercent(localSummary.mdd_pct, 2) }),
+                  h(SummaryCard, { label: "승률", value: localSummary.win_rate_pct == null ? "-" : formatPercent(localSummary.win_rate_pct, 1) })
+                ),
+                h("div", { style: { marginTop: "8px", display: "flex", gap: "6px", flexWrap: "wrap" } },
+                  h("button", { type: "button", className: "mini-button", onClick: function () { loadLeaderSnapshot(snapshot.id); } }, "국내 주도주 탭에서 열기")
+                )
+              )
+            : h(EmptyState, { compact: true, message: "전략을 선택해 주세요." })
+        );
+      }
+      function comparePriceText(value) {
+        return value == null || !Number.isFinite(Number(value)) ? "-" : numberFormat(value, 0) + "원";
+      }
+      function renderTradeTableRows(rowsToRender) {
+        return h(DataTable, {
+          rows: rowsToRender,
+          emptyMessage: "해당 종목 거래가 없습니다.",
+          columns: [
+            { key: "stock_name", label: "종목", render: function (row) { return row.stock_name || row.stock_code || "-"; } },
+            { key: "buy_date", label: "매수일", render: function (row) { return row.buy_date || "-"; } },
+            { key: "buy_avg_price", label: "매수가", render: function (row) { return comparePriceText(row.buy_avg_price); } },
+            { key: "sell_date", label: "매도일", render: function (row) { return row.sell_date || row.date || "-"; } },
+            { key: "sell_avg_price", label: "매도가", render: function (row) { return comparePriceText(row.sell_avg_price); } },
+            { key: "reason", label: "매도 사유", render: function (row) { return row.reason || "-"; } },
+            { key: "sell_return_pct", label: "수익률", render: function (row) {
+              return row.sell_return_pct == null ? "-" : h("span", { className: pnlClass(row.sell_return_pct) }, formatPercent(row.sell_return_pct, 2));
+            } },
+          ],
+          compact: true,
+        });
+      }
+      return h(
+        "div",
+        { className: "panel strategy-panel" },
+        h(
+          "div",
+          { className: "section-toolbar" },
+          h("div", null,
+            h(SectionTitle, null, "국내 주도주 전략 비교"),
+            h("div", { className: "summary-help" }, "저장해둔 국내 주도주 백테스트를 좌우로 선택해 매매 결과를 비교합니다.")
+          ),
+          leaderSnapshotRequest.loading
+            ? h("span", { className: "telegram-status-pill" }, "목록 불러오는 중")
+            : h("span", { className: "telegram-status-pill" }, "저장 전략 " + numberFormat(savedLeaderSnapshots.length, 0) + "개")
+        ),
+        h(
+          "div",
+          { className: "strategy-control-grid" },
+          h("label", null,
+            h("span", null, "왼쪽 전략"),
+            h("select", {
+              className: "select-input",
+              value: compareLeftSnapshotId,
+              onChange: function (event) { setCompareLeftSnapshotId(event.target.value); },
+            },
+              h("option", { value: "" }, "선택"),
+              savedLeaderSnapshots.map(function (item) {
+                return h("option", { key: "left-" + item.id, value: String(item.id) }, item.label || ("저장 전략 #" + item.id));
+              })
+            )
+          ),
+          h("label", null,
+            h("span", null, "오른쪽 전략"),
+            h("select", {
+              className: "select-input",
+              value: compareRightSnapshotId,
+              onChange: function (event) { setCompareRightSnapshotId(event.target.value); },
+            },
+              h("option", { value: "" }, "선택"),
+              savedLeaderSnapshots.map(function (item) {
+                return h("option", { key: "right-" + item.id, value: String(item.id) }, item.label || ("저장 전략 #" + item.id));
+              })
+            )
+          ),
+          h("label", null,
+            h("span", null, "종목별 비교"),
+            h("select", {
+              className: "select-input",
+              value: compareStockKey,
+              onChange: function (event) { setCompareStockKey(event.target.value); },
+            },
+              h("option", { value: "" }, stockOptions.length ? "종목 선택" : "비교할 종목 없음"),
+              stockOptions.map(function (item) {
+                return h("option", { key: item.key, value: item.key }, item.stock_name + (item.stock_code ? " (" + item.stock_code + ")" : ""));
+              })
+            )
+          )
+        ),
+        h(
+          "div",
+          { className: "sector-rotation-table-grid advanced-detail-grid" },
+          renderSnapshotSummaryColumn("왼쪽 전략", leftSnapshot),
+          renderSnapshotSummaryColumn("오른쪽 전략", rightSnapshot)
+        ),
+        selectedStock
+          ? h(
+              "div",
+              { className: "sector-rotation-table-grid advanced-detail-grid" },
+              h(
+                "div",
+                { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
+                h("div", { className: "subsection-title" }, "왼쪽 전략 · " + selectedStock.stock_name),
+                renderTradeTableRows(leftStockTrades)
+              ),
+              h(
+                "div",
+                { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
+                h("div", { className: "subsection-title" }, "오른쪽 전략 · " + selectedStock.stock_name),
+                renderTradeTableRows(rightStockTrades)
+              )
+            )
+          : null,
+        h(
+          "div",
+          { className: "sector-rotation-table-grid advanced-detail-grid" },
+          h(
+            "div",
+            { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
+            h("div", { className: "subsection-title" }, "왼쪽 전략 최근 매도"),
+            renderTradeTableRows(leftRecentRows)
+          ),
+          h(
+            "div",
+            { className: "mini-table-panel strategy-wide-table strategy-scroll-panel" },
+            h("div", { className: "subsection-title" }, "오른쪽 전략 최근 매도"),
+            renderTradeTableRows(rightRecentRows)
+          )
+        )
+      );
     }
 
     function renderSectorControls() {
@@ -5947,17 +13318,28 @@
         h(
           "div",
           { className: "strategy-mode-tabs" },
-          renderModeButton("leader_top10", "\uc8fc\ub3c4\uc8fc Top10\u00b770\uc810"),
+          renderModeButton("leader_top10", "국내 주도주"),
+          renderModeButton("us_leader", "미국 주도주"),
+          renderModeButton("leader_compare", "전략 비교"),
           renderModeButton("advanced_sector", "고급 섹터 신호"),
           renderModeButton("sector_rotation", "주도주 섹터 로테이션"),
           renderModeButton("index", "지수 전략")
         ),
         strategyMode === "leader_top10"
-          ? renderLeaderControls()
+          ? renderLeaderControls("kr")
+          : strategyMode === "us_leader"
+            ? renderLeaderControls("us")
+          : strategyMode === "leader_compare"
+            ? null
           : strategyMode === "advanced_sector" ? renderAdvancedControls() : strategyMode === "sector_rotation" ? renderSectorControls() : renderIndexControls()
       ),
-      strategyMode === "leader_top10"
-        ? renderLeaderResult()
+      renderLeaderSavedSnapshotsPanel(),
+      strategyMode === "leader_top10" || strategyMode === "us_leader"
+        ? (leaderBacktestStarted || (strategyMode === "leader_top10" && activeLeaderSnapshot)
+          ? renderLeaderResult()
+          : h(EmptyState, { compact: true, message: "설정값을 확인한 뒤 백테스트 실행 버튼을 눌러 주세요." }))
+        : strategyMode === "leader_compare"
+          ? renderLeaderCompareResult()
         : strategyMode === "advanced_sector" ? renderAdvancedResult() : strategyMode === "sector_rotation" ? renderSectorResult() : renderIndexResult(),
       renderStrategyTradeChartPopup()
     );
@@ -6040,6 +13422,115 @@
     });
 
     return h("div", { className: "telegram-feed" }, nodes);
+  }
+
+  function GlobalEarningsCallPanel(props) {
+    const payload = props.payload || null;
+    const brief = payload && payload.brief ? payload.brief : {};
+    const call = payload && payload.call ? payload.call : {};
+    const metrics = ensureArray(brief.reported_metrics || (payload && payload.raw && payload.raw.reported_metrics));
+    const managementMessages = ensureArray(brief.management_messages);
+    const watchPoints = ensureArray(brief.watch_points);
+    const summaryPoints = ensureArray(brief.summary_points);
+    const links = [];
+    if (call.transcript_url) {
+      links.push({ label: "원문 transcript", href: call.transcript_url });
+    }
+    if (!payload) {
+      return EmptyState({ compact: true, message: props.emptyMessage || "표시할 어닝콜 데이터가 없습니다." });
+    }
+    function metricToneClass(value) {
+      const tone = String(value || "").toLowerCase();
+      if (tone === "beat" || tone === "positive") return "positive";
+      if (tone === "miss" || tone === "negative") return "negative";
+      if (tone === "inline" || tone === "neutral") return "neutral";
+      return "";
+    }
+    return h(
+      "div",
+      { className: "global-earnings-brief" },
+      h(
+        "div",
+        { className: "global-earnings-header" },
+        h("div", null,
+          h("strong", { className: "global-earnings-headline" }, brief.headline || call.title || "최근 earnings call"),
+          call.event_date_time ? h("div", { className: "global-earnings-date" }, formatDateTime(call.event_date_time)) : null
+        ),
+        links.length
+          ? h("div", { className: "global-earnings-links" }, links.map(function (item) {
+              return h("a", {
+                key: item.href,
+                href: item.href,
+                target: "_blank",
+                rel: "noreferrer",
+                onClick: function (event) {
+                  event.preventDefault();
+                  openUrlInDefaultBrowser(item.href);
+                },
+              }, item.label);
+            }))
+          : null
+      ),
+      brief.executive_summary ? h("p", { className: "global-earnings-summary" }, brief.executive_summary) : null,
+      metrics.length
+        ? h(
+            "div",
+            { className: "global-earnings-section" },
+            h("div", { className: "global-earnings-section-title" }, "실적 요약"),
+            h(
+              "div",
+              { className: "global-earnings-metric-list" },
+              metrics.map(function (item, index) {
+                return h(
+                  "article",
+                  { key: (item.metric || "metric") + index, className: "global-earnings-metric-card" },
+                  h("div", { className: "global-earnings-metric-top" },
+                    h("strong", { className: "global-earnings-metric-name" }, item.metric || "-"),
+                    item.beat_miss ? h("span", { className: "global-earnings-tone " + metricToneClass(item.beat_miss) }, item.beat_miss) : null
+                  ),
+                  h("div", { className: "global-earnings-metric-value" }, item.value || "-"),
+                  h("div", { className: "global-earnings-metric-meta" },
+                    item.consensus ? h("span", null, "컨센 " + item.consensus) : null,
+                    item.qoq ? h("span", null, "QoQ " + item.qoq) : null,
+                    item.yoy ? h("span", null, "YoY " + item.yoy) : null
+                  ),
+                  item.context ? h("div", { className: "global-earnings-metric-context" }, item.context) : null
+                );
+              })
+            )
+          )
+        : null,
+      summaryPoints.length
+        ? h(
+            "div",
+            { className: "global-earnings-section" },
+            h("div", { className: "global-earnings-section-title" }, "핵심 요약"),
+            h("ul", { className: "global-earnings-bullet-list" }, summaryPoints.map(function (item, index) {
+              return h("li", { key: "summary-" + index }, item);
+            }))
+          )
+        : null,
+      managementMessages.length
+        ? h(
+            "div",
+            { className: "global-earnings-section" },
+            h("div", { className: "global-earnings-section-title" }, "경영진 메시지"),
+            h("ul", { className: "global-earnings-bullet-list" }, managementMessages.map(function (item, index) {
+              return h("li", { key: "mgmt-" + index }, item);
+            }))
+          )
+        : null,
+      watchPoints.length
+        ? h(
+            "div",
+            { className: "global-earnings-section" },
+            h("div", { className: "global-earnings-section-title" }, "체크포인트"),
+            h("ul", { className: "global-earnings-bullet-list" }, watchPoints.map(function (item, index) {
+              return h("li", { key: "watch-" + index }, item);
+            }))
+          )
+        : null
+    );
   }
 
   function buildEarningsCopyText(row) {
@@ -6216,6 +13707,26 @@
       return null;
     }
     return h("span", { className: (className || "delta-badge") + " " + deltaClassName(value) }, label ? label + " " + value : value);
+  }
+
+  function earningsHeader(label, subLabel) {
+    return h(
+      "span",
+      { className: "earnings-header-label" },
+      h("strong", null, label),
+      subLabel ? h("small", null, subLabel) : null
+    );
+  }
+
+  function compactMarketEarningsReportLabel(report) {
+    const text = String(report || "").trim();
+    if (!text) {
+      return "-";
+    }
+    const statement = text.indexOf("연결") >= 0 ? "연결" : (text.indexOf("별도") >= 0 ? "별도" : "");
+    const status = text.indexOf("잠정") >= 0 ? "잠정" : "확정";
+    const compact = [statement, status].filter(Boolean).join(" ");
+    return compact || text;
   }
 
   function parsePercentNumber(value) {
@@ -6850,6 +14361,31 @@
     return numberFormat(rounded, 0) + "억";
   }
 
+  function openMarketEarningsCompanyInStockSearch(row) {
+    const stockName = String((row && (row.stock_name || row.company)) || "").trim();
+    if (!stockName) {
+      return;
+    }
+    const previousState = loadTelegramSearchState() || {};
+    persistTelegramSearchState(Object.assign({}, previousState, {
+      earningsQuery: stockName,
+      earningsResults: [],
+      earningsMessage: "",
+      disclosureCategory: "earnings",
+      disclosureNextOffsetId: 0,
+      disclosureHasMore: false,
+      financialTrend: null,
+      financialTrendMessage: "",
+      financialTrendExpanded: false,
+      businessSegments: null,
+      businessSegmentsMessage: "",
+      stockOverview: null,
+      stockOverviewMessage: "",
+    }));
+    stashTelegramStockNavigation(stockName);
+    requestPageNavigation("telegram", { stockQuery: stockName, source: "disclosure" });
+  }
+
   function MarketEarningsTable(props) {
     const rows = ensureArray(props.rows);
     if (!rows.length) {
@@ -6867,14 +14403,14 @@
           h(
             "tr",
             null,
-            h("th", null, "영익 예상"),
-            h("th", null, "영익 예상"),
-            h("th", null, "영익 예상"),
-            h("th", null, "영익 예상"),
-            h("th", null, "영익 예상"),
-            h("th", null, "영익 예상"),
-            h("th", null, "영익 예상"),
-            h("th", null, "OPM")
+            h("th", null, earningsHeader("일자")),
+            h("th", null, earningsHeader("종목")),
+            h("th", null, earningsHeader("공시")),
+            h("th", null, earningsHeader("매출", "QoQ · YoY")),
+            h("th", null, earningsHeader("매출 예상", "예상대비")),
+            h("th", null, earningsHeader("영업이익", "QoQ · YoY")),
+            h("th", null, earningsHeader("영익 예상", "예상대비")),
+            h("th", null, earningsHeader("OPM"))
           )
         ),
         h(
@@ -6885,39 +14421,271 @@
             const operating = earningsMetric(row, "operating_profit");
             const dateParts = formatMarketEarningsDateParts(row.date);
             const report = row.report_name || "-";
+            const reportCompact = compactMarketEarningsReportLabel(report);
             const companyMeta = [
               row.stock_code || row.company_code || "",
               formatMarketCap100m(row.market_cap_100m) ? "시총 " + formatMarketCap100m(row.market_cap_100m) : "",
             ].filter(Boolean).join(" · ");
             return h(
-              React.Fragment,
+              "tr",
               { key: row.chat_id + ":" + row.message_id },
+              h("td", { className: "market-earnings-date" }, h("strong", null, dateParts.date), dateParts.time ? h("span", null, dateParts.time) : null),
               h(
-                "tr",
-                { className: "market-earnings-delta-row" },
-                h("td", { colSpan: 3 }, "증감률"),
-                h("td", { className: "num-cell delta-strip" }, renderDeltaBadge("", sales.qoq), renderDeltaBadge("", sales.yoy)),
-                h("td", { className: "num-cell delta-strip" }, renderDeltaBadge("", sales.surprise, "surprise-text")),
-                h("td", { className: "num-cell delta-strip" }, renderDeltaBadge("", operating.qoq), renderDeltaBadge("", operating.yoy)),
-                h("td", { className: "num-cell delta-strip" }, renderDeltaBadge("", operating.surprise, "surprise-text")),
-                h("td", null)
+                "td",
+                { className: "market-earnings-company" },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "table-link-button market-earnings-company-button",
+                    title: "종목정보 검색기에서 " + (row.stock_name || row.company || "종목") + " 검색",
+                    onClick: function () { openMarketEarningsCompanyInStockSearch(row); },
+                  },
+                  h("strong", null, row.stock_name || row.company || "-")
+                ),
+                companyMeta ? h("span", null, companyMeta) : null
+              ),
+              h("td", { className: "market-earnings-report", title: report }, reportCompact),
+              h(
+                "td",
+                { className: "num-cell metric-with-deltas", title: [sales.qoq ? "QoQ " + sales.qoq : "", sales.yoy ? "YoY " + sales.yoy : ""].filter(Boolean).join(" / ") || "증감 정보 없음" },
+                h(
+                  "div",
+                  { className: "metric-stack" },
+                  h("strong", null, sales.actual || "-"),
+                  h(
+                    "div",
+                    { className: "metric-meta" },
+                    sales.qoq ? h("span", { className: "delta-badge " + deltaClassName(sales.qoq) }, sales.qoq) : h("span", { className: "metric-meta-empty" }, "-"),
+                    sales.yoy ? h("span", { className: "delta-badge " + deltaClassName(sales.yoy) }, sales.yoy) : h("span", { className: "metric-meta-empty" }, "-")
+                  )
+                )
               ),
               h(
-                "tr",
-                { className: "market-earnings-main-row" },
-                h("td", { className: "market-earnings-date" }, h("strong", null, dateParts.date), dateParts.time ? h("span", null, dateParts.time) : null),
-                h("td", { className: "market-earnings-company" }, h("strong", null, row.stock_name || row.company || "-"), companyMeta ? h("span", null, companyMeta) : null),
-                h("td", { className: "market-earnings-report", title: report }, report),
-                h("td", { className: "num-cell metric-with-deltas" }, h("div", { className: "metric-inline" }, h("strong", null, sales.actual || "-"))),
-                h("td", { className: "num-cell subtle-cell" }, sales.expected || "-"),
-                h("td", { className: "num-cell metric-with-deltas" }, h("div", { className: "metric-inline" }, h("strong", null, operating.actual || "-"))),
-                h("td", { className: "num-cell subtle-cell" }, operating.expected || "-"),
-                h("td", { className: "num-cell opm-cell" }, operating.opm || "-")
-              )
+                "td",
+                { className: "num-cell subtle-cell", title: sales.surprise ? "예상대비 " + sales.surprise : "" },
+                h(
+                  "div",
+                  { className: "metric-stack" },
+                  h("strong", null, sales.expected || "-"),
+                  h("div", { className: "metric-meta metric-meta-single" }, sales.surprise ? h("span", { className: "surprise-text " + deltaClassName(sales.surprise) }, sales.surprise) : h("span", { className: "metric-meta-empty" }, "-"))
+                )
+              ),
+              h(
+                "td",
+                { className: "num-cell metric-with-deltas", title: [operating.qoq ? "QoQ " + operating.qoq : "", operating.yoy ? "YoY " + operating.yoy : ""].filter(Boolean).join(" / ") || "증감 정보 없음" },
+                h(
+                  "div",
+                  { className: "metric-stack" },
+                  h("strong", null, operating.actual || "-"),
+                  h(
+                    "div",
+                    { className: "metric-meta" },
+                    operating.qoq ? h("span", { className: "delta-badge " + deltaClassName(operating.qoq) }, operating.qoq) : h("span", { className: "metric-meta-empty" }, "-"),
+                    operating.yoy ? h("span", { className: "delta-badge " + deltaClassName(operating.yoy) }, operating.yoy) : h("span", { className: "metric-meta-empty" }, "-")
+                  )
+                )
+              ),
+              h(
+                "td",
+                { className: "num-cell subtle-cell", title: operating.surprise ? "예상대비 " + operating.surprise : "" },
+                h(
+                  "div",
+                  { className: "metric-stack" },
+                  h("strong", null, operating.expected || "-"),
+                  h("div", { className: "metric-meta metric-meta-single" }, operating.surprise ? h("span", { className: "surprise-text " + deltaClassName(operating.surprise) }, operating.surprise) : h("span", { className: "metric-meta-empty" }, "-"))
+                )
+              ),
+              h("td", { className: "num-cell opm-cell" }, operating.opm || "-")
             );
           })
         )
       )
+    );
+  }
+
+  function formatEpsValue(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "-";
+    }
+    const digits = Math.abs(number) >= 100 ? 0 : (Math.abs(number) >= 10 ? 1 : 2);
+    return numberFormat(number, digits);
+  }
+
+  function formatSurprisePercent(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "-";
+    }
+    return (number > 0 ? "+" : "") + numberFormat(number, 1) + "%";
+  }
+
+  function ForeignReportedEarningsTable(props) {
+    const rows = ensureArray(props.rows);
+    if (!rows.length) {
+      return EmptyState({ message: props.emptyMessage || "표시할 해외 발표 실적이 없습니다." });
+    }
+    return h(
+      "div",
+      { className: "market-earnings-table-wrap" },
+      h(
+        "table",
+        { className: "market-earnings-table" },
+        h(
+          "thead",
+          null,
+          h(
+            "tr",
+            null,
+            h("th", null, earningsHeader("발표일")),
+            h("th", null, earningsHeader("종목")),
+            h("th", null, earningsHeader("분기")),
+            h("th", null, earningsHeader("실제 EPS")),
+            h("th", null, earningsHeader("예상 EPS")),
+            h("th", null, earningsHeader("서프라이즈")),
+            h("th", null, earningsHeader("발표 시점"))
+          )
+        ),
+        h(
+          "tbody",
+          null,
+          rows.map(function (row, index) {
+            const dateParts = formatMarketEarningsDateParts(row.date);
+            const companyMeta = [
+              row.symbol || row.stock_code || "",
+              formatMarketCap100m(row.market_cap_100m) ? "시총 " + formatMarketCap100m(row.market_cap_100m) : "",
+            ].filter(Boolean).join(" · ");
+            const surpriseText = formatSurprisePercent(row.eps_surprise_pct);
+            return h(
+              "tr",
+              { key: row.id || ((row.symbol || "foreign") + ":" + index) },
+              h("td", { className: "market-earnings-date" }, h("strong", null, dateParts.date), dateParts.time ? h("span", null, dateParts.time) : null),
+              h("td", { className: "market-earnings-company" },
+                h("strong", null, row.stock_name || row.company || "-"),
+                companyMeta ? h("span", null, companyMeta) : null
+              ),
+              h("td", { className: "market-earnings-report", title: row.report_name || "-" }, row.report_name || "-"),
+              h("td", { className: "num-cell" }, formatEpsValue(row.eps_actual)),
+              h("td", { className: "num-cell" }, formatEpsValue(row.eps_estimate)),
+              h("td", { className: "num-cell" }, h("span", { className: deltaClassName(surpriseText) }, surpriseText)),
+              h("td", { className: "num-cell" }, row.time || "-")
+            );
+          })
+        )
+      )
+    );
+  }
+
+  function upcomingEarningsDateLabel(value) {
+    if (!value) {
+      return "-";
+    }
+    const parsed = new Date(String(value) + "T00:00:00");
+    if (Number.isNaN(parsed.getTime())) {
+      return String(value || "-");
+    }
+    const weekdays = ["일", "월", "화", "수", "목", "금", "토"];
+    return (parsed.getMonth() + 1) + "." + parsed.getDate() + " (" + weekdays[parsed.getDay()] + ")";
+  }
+
+  function upcomingScopeLabel(value) {
+    if (value === "kr") return "국내";
+    if (value === "foreign") return "해외";
+    return "전체";
+  }
+
+  const UPCOMING_EARNINGS_TABS = [
+    { key: "kr", label: "국내", minMarketCap100m: 2000 },
+    { key: "foreign", label: "해외", minMarketCap100m: 10000 },
+  ];
+
+  const MARKET_EARNINGS_TABS = [
+    { key: "kr", label: "국내" },
+    { key: "foreign", label: "해외" },
+  ];
+
+  function UpcomingEarningsCalendarPanel(props) {
+    const payload = props.payload || {};
+    const dateGroups = ensureArray(payload.dates);
+    if (props.loading && !dateGroups.length) {
+      return h(LoadingBlock, { compact: true, title: "예정 실적 캘린더 불러오는 중", label: "KIND IR 일정과 Yahoo Finance 예정 실적을 합치는 중입니다." });
+    }
+    if (props.error) {
+      return h("div", { className: "notice-box error" }, props.error);
+    }
+    if (!dateGroups.length) {
+      return EmptyState({ message: "조건에 맞는 예정 실적 일정이 없습니다." });
+    }
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "div",
+        { className: "upcoming-earnings-scroll" },
+        dateGroups.map(function (group) {
+          const items = ensureArray(group.items);
+          return h(
+            "section",
+            { key: group.date, className: "upcoming-earnings-day" },
+            h(
+              "div",
+              { className: "upcoming-earnings-day-head" },
+              h("div", null,
+                h("strong", null, upcomingEarningsDateLabel(group.date)),
+                h("span", null, group.date || "")
+              ),
+              h("div", { className: "upcoming-earnings-day-stats" },
+                h("em", null, numberFormat(group.count, 0) + "개"),
+                group.kr_count ? h("span", null, "국내 " + numberFormat(group.kr_count, 0)) : null,
+                group.foreign_count ? h("span", null, "해외 " + numberFormat(group.foreign_count, 0)) : null
+              )
+            ),
+            h(
+              "div",
+              { className: "upcoming-earnings-list" },
+              items.map(function (item, index) {
+                const marketCapText = formatMarketCap100m(item.market_cap_100m);
+                const meta = [
+                  upcomingScopeLabel(item.scope),
+                  item.market === "US" ? (item.symbol || item.stock_code || "") : (item.stock_code || ""),
+                  marketCapText ? "시총 " + marketCapText : "",
+                  item.time || "",
+                ].filter(Boolean).join(" · ");
+                return h(
+                  "article",
+                  { key: item.id || (group.date + "-" + index), className: "upcoming-earnings-item" },
+                  h("div", { className: "upcoming-earnings-main" },
+                    h("div", { className: "upcoming-earnings-company-row" },
+                      h("strong", null, item.stock_name || item.company || "-"),
+                      h("span", { className: "upcoming-earnings-market upcoming-" + (item.scope || "all") }, upcomingScopeLabel(item.scope))
+                    ),
+                    h("div", { className: "upcoming-earnings-title" }, item.title || "-"),
+                    meta ? h("div", { className: "upcoming-earnings-meta" }, meta) : null,
+                    item.location ? h("div", { className: "upcoming-earnings-location" }, item.location) : null
+                  ),
+                  h("div", { className: "upcoming-earnings-side" },
+                    item.time ? h("strong", null, item.time) : h("strong", null, "-"),
+                    item.source_url ? h("a", { href: item.source_url, target: "_blank", rel: "noreferrer" }, item.scope === "kr" ? "KIND" : "Yahoo") : null
+                  )
+                );
+              })
+            )
+          );
+        })
+      ),
+      ensureArray(payload.sources).length
+        ? h("div", { className: "upcoming-earnings-source-row" },
+            ensureArray(payload.sources).map(function (source) {
+              return h(
+                "a",
+                { key: source.name, className: "upcoming-earnings-source-chip", href: source.url, target: "_blank", rel: "noreferrer" },
+                h("strong", null, source.name || "-"),
+                h("span", null, source.note || "")
+              );
+            })
+          )
+        : null
     );
   }
 
@@ -6996,15 +14764,29 @@
     const [marketPayload, setMarketPayload] = useState(savedState.marketPayload || null);
     const [marketLoading, setMarketLoading] = useState(false);
     const [marketMessage, setMarketMessage] = useState("");
+    const [marketScope, setMarketScope] = useState("kr");
     const [financialTrend, setFinancialTrend] = useState(savedState.financialTrend || null);
     const [financialTrendLoading, setFinancialTrendLoading] = useState(false);
     const [financialTrendMessage, setFinancialTrendMessage] = useState(savedState.financialTrendMessage || "");
+    const [upcomingScope, setUpcomingScope] = useState("kr");
     const earningsTimerRef = useRef(null);
     const earningsSuggestWrapRef = useRef(null);
     const marketLoadedRef = useRef(!!savedState.marketPayload);
     const marketScrollBoxRef = useRef(null);
     const marketScrollTopRef = useRef(Number(savedState.marketScrollTop || 0));
     const marketScrollSaveTimerRef = useRef(null);
+    const upcomingStart = shiftIsoDate(todayIsoDate(), 1);
+    const upcomingTabConfig = UPCOMING_EARNINGS_TABS.find(function (item) { return item.key === upcomingScope; }) || UPCOMING_EARNINGS_TABS[0];
+    const marketForeignRequest = useFetchJson(
+      "/api/disclosure/recent-foreign-earnings?days=" + encodeURIComponent(14)
+      + "&min_market_cap_100m=" + encodeURIComponent(10000)
+    );
+    const upcomingRequest = useFetchJson(
+      "/api/disclosure/upcoming-earnings?start=" + encodeURIComponent(upcomingStart)
+      + "&days=" + encodeURIComponent(14)
+      + "&scope=" + encodeURIComponent(upcomingScope)
+      + "&min_market_cap_100m=" + encodeURIComponent(upcomingTabConfig.minMarketCap100m || 0)
+    );
 
     useEffect(function () {
       return function () {
@@ -7234,6 +15016,46 @@
       }
     }
 
+    async function loadWiseTargetHistory(company) {
+      const target = String(company || "").trim();
+      if (!target) {
+        setWiseTargetHistory(null);
+        setWiseTargetHistoryMessage("");
+        return;
+      }
+      setWiseTargetHistoryLoading(true);
+      setWiseTargetHistoryMessage("");
+      try {
+        const payload = await fetchJson("/api/stocks/wisereport-targets?name=" + encodeURIComponent(target) + "&months=12", { noCache: true });
+        setWiseTargetHistory(payload);
+      } catch (err) {
+        setWiseTargetHistory(null);
+        setWiseTargetHistoryMessage(err.message || String(err));
+      } finally {
+        setWiseTargetHistoryLoading(false);
+      }
+    }
+
+    async function loadWiseConsensusHistory(company) {
+      const target = String(company || "").trim();
+      if (!target) {
+        setWiseConsensusHistory(null);
+        setWiseConsensusHistoryMessage("");
+        return;
+      }
+      setWiseConsensusHistoryLoading(true);
+      setWiseConsensusHistoryMessage("");
+      try {
+        const payload = await fetchJson("/api/stocks/wisereport-consensus?name=" + encodeURIComponent(target) + "&fin_gubun=MAIN", { noCache: true });
+        setWiseConsensusHistory(payload);
+      } catch (err) {
+        setWiseConsensusHistory(null);
+        setWiseConsensusHistoryMessage(err.message || String(err));
+      } finally {
+        setWiseConsensusHistoryLoading(false);
+      }
+    }
+
     async function toggleFinancialTrend() {
       const nextExpanded = !financialTrendExpanded;
       setFinancialTrendExpanded(nextExpanded);
@@ -7426,6 +15248,9 @@
           payload: stockOverview,
           loading: stockOverviewLoading,
           message: stockOverviewMessage,
+          consensus: wiseConsensusHistory,
+          targetHistory: wiseTargetHistory,
+          onOpenForwardConsensus: openWiseConsensusModal,
         }),
         h(
           "div",
@@ -7473,34 +15298,129 @@
           "div",
           { className: "section-toolbar" },
           h("div", null,
-            h(SectionTitle, null, "시총 2000억 이상 실적 공시"),
+            h(SectionTitle, null, marketScope === "kr" ? "시총 2000억 이상 실적 공시" : "시총 1조 이상 해외 실적 일정"),
             h("div", { className: "summary-help" },
-              marketPayload
-                ? "최근 " + numberFormat(marketPayload.days, 0) + "일 · " + numberFormat(marketPayload.result_count, 0) + "건 · 스캔 " + numberFormat(marketPayload.scanned_count, 0) + "개 메시지"
-                : "텔레그램 공시 채널에서 실적 공시를 날짜순으로 모읍니다."
+              marketScope === "kr"
+                ? (marketPayload
+                  ? "최근 " + numberFormat(marketPayload.days, 0) + "일 · " + numberFormat(marketPayload.result_count, 0) + "건 · 스캔 " + numberFormat(marketPayload.scanned_count, 0) + "개 메시지"
+                  : "텔레그램 공시 채널에서 실적 공시를 날짜순으로 모읍니다.")
+                : (marketForeignRequest.data
+                  ? (marketForeignRequest.data.start || "") + " ~ " + (marketForeignRequest.data.end || "") + " · 실적 " + numberFormat(marketForeignRequest.data.result_count, 0) + "개"
+                  : "최근 2주간 시총 1조 이상 해외 발표 실적을 보여줍니다.")
             )
           ),
           h("button", {
             className: "mini-button",
-            onClick: loadMarketEarnings,
-            disabled: marketLoading || !status.authorized,
-          }, marketLoading ? "불러오는 중..." : "새로고침")
+            onClick: function () {
+              if (marketScope === "kr") {
+                loadMarketEarnings();
+              } else {
+                marketForeignRequest.refresh(true);
+              }
+            },
+            disabled: marketScope === "kr" ? (marketLoading || !status.authorized) : marketForeignRequest.loading,
+          }, marketScope === "kr"
+            ? (marketLoading ? "불러오는 중..." : "새로고침")
+            : (marketForeignRequest.loading ? "새로고침 중..." : "새로고침"))
         ),
-        marketMessage ? h("div", { className: "notice-box compact" }, marketMessage) : null,
+        h(
+          "div",
+          { className: "disclosure-tabbar" },
+          MARKET_EARNINGS_TABS.map(function (tab) {
+            return h(
+              "button",
+              {
+                key: tab.key,
+                type: "button",
+                className: "disclosure-tab" + (marketScope === tab.key ? " active" : ""),
+                onClick: function () { setMarketScope(tab.key); },
+              },
+              tab.label
+            );
+          })
+        ),
+        marketScope === "kr" && marketMessage ? h("div", { className: "notice-box compact" }, marketMessage) : null,
+        marketScope === "foreign" && ensureArray(marketForeignRequest.data && marketForeignRequest.data.errors).length
+          ? h("div", { className: "notice-box compact warning" }, ensureArray(marketForeignRequest.data.errors).join(" / "))
+          : null,
         h(
           "div",
           { className: "earnings-scroll-box market-earnings-scroll-box", ref: marketScrollBoxRef, onScroll: rememberMarketScroll },
-          marketLoading && !marketPayload
-            ? h(LoadingBlock, { compact: true, title: "실적 공시 수집 중", label: "최근 메시지를 훑어 시총 2000억 이상 종목과 매칭합니다." })
-            : h(MarketEarningsTable, {
-                rows: ensureArray(marketPayload && marketPayload.results),
-                emptyMessage: status.authorized ? "조건에 맞는 실적 공시가 아직 없습니다." : "텔레그램 연결 후 확인할 수 있습니다.",
-              })
+          marketScope === "kr"
+            ? (
+              marketLoading && !marketPayload
+                ? h(LoadingBlock, { compact: true, title: "실적 공시 수집 중", label: "최근 메시지를 훑어 시총 2000억 이상 종목과 매칭합니다." })
+                : h(MarketEarningsTable, {
+                    rows: ensureArray(marketPayload && marketPayload.results),
+                    emptyMessage: status.authorized ? "조건에 맞는 실적 공시가 아직 없습니다." : "텔레그램 연결 후 확인할 수 있습니다.",
+                  })
+            )
+            : (
+              marketForeignRequest.loading && !ensureArray(marketForeignRequest.data && marketForeignRequest.data.rows).length
+                ? h(LoadingBlock, { compact: true, title: "해외 발표 실적 수집 중", label: "최근 2주간 Yahoo 발표 실적과 시총 데이터를 정리하고 있습니다." })
+                : h(ForeignReportedEarningsTable, {
+                    rows: ensureArray(marketForeignRequest.data && marketForeignRequest.data.rows),
+                    emptyMessage: "조건에 맞는 최근 해외 발표 실적이 없습니다.",
+                  })
+            )
         )
       ),
-      h(EarningsSurpriseRankList, {
+      marketScope === "kr" ? h(EarningsSurpriseRankList, {
         rows: ensureArray(marketPayload && marketPayload.results),
-      })
+      }) : null,
+      h(
+        "div",
+        { className: "panel upcoming-earnings-panel" },
+        h(
+          "div",
+          { className: "section-toolbar upcoming-earnings-toolbar" },
+          h("div", null,
+            h(SectionTitle, null, "예정 실적 달력"),
+            h("div", { className: "summary-help" },
+              upcomingRequest.data
+                ? (upcomingRequest.data.start || upcomingStart) + " ~ " + (upcomingRequest.data.end || "") + " · 날짜 " + numberFormat(upcomingRequest.data.date_count, 0) + "일 · 일정 " + numberFormat(upcomingRequest.data.result_count, 0) + "개"
+                : "다음날부터 국내 KIND IR 일정과 해외 Yahoo 실적 일정을 날짜별로 묶어 보여줍니다."
+            )
+          ),
+          h("div", { className: "upcoming-earnings-actions" },
+            h("button", {
+              className: "mini-button",
+              onClick: function () { upcomingRequest.refresh(true); },
+              disabled: upcomingRequest.loading,
+            }, upcomingRequest.loading ? "새로고침 중..." : "새로고침")
+          )
+        ),
+        h(
+          "div",
+          { className: "upcoming-earnings-tabbar" },
+          UPCOMING_EARNINGS_TABS.map(function (tab) {
+            return h(
+              "button",
+              {
+                key: tab.key,
+                type: "button",
+                className: "upcoming-earnings-tab" + (upcomingScope === tab.key ? " active" : ""),
+                onClick: function () { setUpcomingScope(tab.key); },
+              },
+              tab.label
+            );
+          }),
+          h("div", { className: "upcoming-earnings-filter-note" },
+            h("strong", null, upcomingScope === "kr" ? "국내 2주" : "해외 2주"),
+            h("span", null, upcomingScope === "kr"
+              ? "다음날부터 2주간, 시총 2000억 이상 국내 예정 실적만 표시합니다."
+              : "다음날부터 2주간, 시총 1조 이상 해외 예정 실적만 표시합니다.")
+          )
+        ),
+        ensureArray(upcomingRequest.data && upcomingRequest.data.errors).length
+          ? h("div", { className: "notice-box compact warning" }, ensureArray(upcomingRequest.data.errors).join(" / "))
+          : null,
+        h(UpcomingEarningsCalendarPanel, {
+          payload: upcomingRequest.data,
+          loading: upcomingRequest.loading,
+          error: upcomingRequest.error,
+        })
+      )
     );
   }
 
@@ -7548,7 +15468,18 @@
     const [stockOverview, setStockOverview] = useState(savedTelegramState.stockOverview || null);
     const [stockOverviewLoading, setStockOverviewLoading] = useState(false);
     const [stockOverviewMessage, setStockOverviewMessage] = useState(savedTelegramState.stockOverviewMessage || "");
+    const [stockNewsBrief, setStockNewsBrief] = useState(savedTelegramState.stockNewsBrief || null);
+    const [stockNewsBriefLoading, setStockNewsBriefLoading] = useState(false);
+    const [stockNewsBriefMessage, setStockNewsBriefMessage] = useState(savedTelegramState.stockNewsBriefMessage || "");
+    const [wiseConsensusHistory, setWiseConsensusHistory] = useState(savedTelegramState.wiseConsensusHistory || null);
+    const [wiseConsensusHistoryLoading, setWiseConsensusHistoryLoading] = useState(false);
+    const [wiseConsensusHistoryMessage, setWiseConsensusHistoryMessage] = useState(savedTelegramState.wiseConsensusHistoryMessage || "");
+    const [wiseTargetHistory, setWiseTargetHistory] = useState(savedTelegramState.wiseTargetHistory || null);
+    const [wiseTargetHistoryLoading, setWiseTargetHistoryLoading] = useState(false);
+    const [wiseTargetHistoryMessage, setWiseTargetHistoryMessage] = useState(savedTelegramState.wiseTargetHistoryMessage || "");
+    const [wiseConsensusModalOpen, setWiseConsensusModalOpen] = useState(false);
     const [companyLinkLoading, setCompanyLinkLoading] = useState("");
+    const [reportListModal, setReportListModal] = useState({ open: false, loading: false, error: "", payload: null });
     const [investorFlowModal, setInvestorFlowModal] = useState({ open: false, loading: false, error: "", payload: null });
     const pollRef = useRef(null);
     const earningsPollRef = useRef(null);
@@ -7559,6 +15490,32 @@
     const earningsSuggestWrapRef = useRef(null);
     const backendStateLoadedRef = useRef(false);
     const backendStateSaveTimerRef = useRef(null);
+    const overviewHydrationRefreshDoneRef = useRef(false);
+
+    async function loadStockNewsBrief(company, forceRefresh) {
+      const target = String(company || "").trim();
+      if (!target) {
+        setStockNewsBrief(null);
+        setStockNewsBriefMessage("");
+        return;
+      }
+      setStockNewsBriefLoading(true);
+      setStockNewsBriefMessage("");
+      try {
+        const payload = await fetchJson(
+          "/api/stocks/news-brief?q=" + encodeURIComponent(target) +
+            "&days=7&force_refresh=" + (forceRefresh ? "true" : "false"),
+          { noCache: !!forceRefresh }
+        );
+        setStockNewsBrief(payload);
+        setStockNewsBriefMessage(payload && payload.ai_error ? "Gemini 요약을 불러오지 못해 중요 기사 목록만 표시합니다." : "");
+      } catch (err) {
+        setStockNewsBrief(null);
+        setStockNewsBriefMessage(err.message || String(err));
+      } finally {
+        setStockNewsBriefLoading(false);
+      }
+    }
 
     useEffect(function () {
       const status = statusRequest.data;
@@ -7630,6 +15587,12 @@
       setBusinessSegmentsMessage(String(source.businessSegmentsMessage || ""));
       setStockOverview(source.stockOverview || null);
       setStockOverviewMessage(String(source.stockOverviewMessage || ""));
+      setStockNewsBrief(source.stockNewsBrief || null);
+      setStockNewsBriefMessage(String(source.stockNewsBriefMessage || ""));
+      setWiseConsensusHistory(source.wiseConsensusHistory || null);
+      setWiseConsensusHistoryMessage(String(source.wiseConsensusHistoryMessage || ""));
+      setWiseTargetHistory(source.wiseTargetHistory || null);
+      setWiseTargetHistoryMessage(String(source.wiseTargetHistoryMessage || ""));
     }
 
     function currentTelegramState() {
@@ -7659,7 +15622,44 @@
         businessSegmentsMessage: businessSegmentsMessage,
         stockOverview: stockOverview,
         stockOverviewMessage: stockOverviewMessage,
+        stockNewsBrief: stockNewsBrief,
+        stockNewsBriefMessage: stockNewsBriefMessage,
+        wiseConsensusHistory: wiseConsensusHistory,
+        wiseConsensusHistoryMessage: wiseConsensusHistoryMessage,
+        wiseTargetHistory: wiseTargetHistory,
+        wiseTargetHistoryMessage: wiseTargetHistoryMessage,
       };
+    }
+
+    function applyThemeStockSearch(nextCompany) {
+      const pendingCompany = String(nextCompany || "").trim();
+      if (!pendingCompany) {
+        return;
+      }
+      setEarningsQuery(pendingCompany);
+      setEarningsSuggestions([]);
+      setEarningsActiveIndex(0);
+      setEarningsResults([]);
+      setEarningsMessage("");
+      setDisclosureCategory("earnings");
+      setDisclosureNextOffsetId(0);
+      setDisclosureHasMore(false);
+      setFinancialTrend(null);
+      setFinancialTrendMessage("");
+      setFinancialTrendExpanded(false);
+      setBusinessSegments(null);
+      setBusinessSegmentsMessage("");
+      setStockOverview(null);
+      setStockOverviewMessage("");
+      setStockNewsBrief(null);
+      setStockNewsBriefMessage("");
+      setWiseConsensusHistory(null);
+      setWiseConsensusHistoryMessage("");
+      setWiseTargetHistory(null);
+      setWiseTargetHistoryMessage("");
+      setTimeout(function () {
+        runEarningsSearch(false, pendingCompany, "earnings", true);
+      }, 0);
     }
 
     useEffect(function () {
@@ -7683,24 +15683,7 @@
             const pendingThemeStock = consumeTelegramStockNavigation();
             const pendingCompany = String((pendingThemeStock && pendingThemeStock.query) || "").trim();
             if (pendingCompany) {
-              setEarningsQuery(pendingCompany);
-              setEarningsSuggestions([]);
-              setEarningsActiveIndex(0);
-              setEarningsResults([]);
-              setEarningsMessage("");
-              setDisclosureCategory("earnings");
-              setDisclosureNextOffsetId(0);
-              setDisclosureHasMore(false);
-              setFinancialTrend(null);
-              setFinancialTrendMessage("");
-              setFinancialTrendExpanded(false);
-              setBusinessSegments(null);
-              setBusinessSegmentsMessage("");
-              setStockOverview(null);
-              setStockOverviewMessage("");
-              setTimeout(function () {
-                runEarningsSearch(false, pendingCompany, "earnings");
-              }, 0);
+              applyThemeStockSearch(pendingCompany);
             }
             if (!appliedBackendState) {
               postJson("/api/telegram/ui_state", { state: currentTelegramState() }).catch(function () {});
@@ -7711,6 +15694,27 @@
         cancelled = true;
       };
     }, []);
+
+    useEffect(function () {
+      function handleThemeStockNavigation(event) {
+        const payload = (event && event.detail) || {};
+        if (payload.page !== "telegram") {
+          return;
+        }
+        const directQuery = String(payload.stockQuery || "").trim();
+        const stashed = consumeTelegramStockNavigation();
+        const stashedQuery = String((stashed && stashed.query) || "").trim();
+        const targetQuery = directQuery || stashedQuery;
+        if (!targetQuery) {
+          return;
+        }
+        applyThemeStockSearch(targetQuery);
+      }
+      window.addEventListener(PAGE_NAV_EVENT, handleThemeStockNavigation);
+      return function () {
+        window.removeEventListener(PAGE_NAV_EVENT, handleThemeStockNavigation);
+      };
+    }, [runEarningsSearch]);
 
     useEffect(function () {
       function closeOnOutsideClick(event) {
@@ -7737,6 +15741,29 @@
     }, []);
 
     useEffect(function () {
+      if (!backendStateLoadedRef.current) {
+        return;
+      }
+      const target = String(earningsQuery || "").trim();
+      if (!target || overviewHydrationRefreshDoneRef.current) {
+        return;
+      }
+      const overviewNeedsRefresh = !stockOverview || (!Number.isFinite(Number(stockOverview.forward_per)) && !Number.isFinite(Number(stockOverview.forward_pbr)));
+      const consensusNeedsRefresh = !wiseConsensusHistory || !wiseConsensusHistory.latest;
+      const targetHistoryNeedsRefresh = !wiseTargetHistory || !ensureArray(wiseTargetHistory.series).length;
+      const newsBriefNeedsRefresh = !stockNewsBrief;
+      if (!overviewNeedsRefresh && !consensusNeedsRefresh && !targetHistoryNeedsRefresh && !newsBriefNeedsRefresh) {
+        overviewHydrationRefreshDoneRef.current = true;
+        return;
+      }
+      overviewHydrationRefreshDoneRef.current = true;
+      loadStockOverview(target);
+      loadWiseConsensusHistory(target);
+      loadWiseTargetHistory(target);
+      loadStockNewsBrief(target, false);
+    }, [earningsQuery, stockOverview, wiseConsensusHistory, wiseTargetHistory, stockNewsBrief]);
+
+    useEffect(function () {
       const snapshot = currentTelegramState();
       persistTelegramSearchState(snapshot);
       if (!backendStateLoadedRef.current) {
@@ -7748,7 +15775,7 @@
       backendStateSaveTimerRef.current = setTimeout(function () {
         postJson("/api/telegram/ui_state", { state: snapshot }).catch(function () {});
       }, 350);
-    }, [keywords, matchMode, exactPhrase, hasFile, startDate, endDate, chatQuery, allRoomsSearch, selectedChats, favoriteChatGroups, results, jobState, earningsQuery, earningsResults, earningsMessage, disclosureCategory, disclosureNextOffsetId, disclosureHasMore, financialTrend, financialTrendMessage, businessSegments, businessSegmentsMessage]);
+    }, [keywords, matchMode, exactPhrase, hasFile, startDate, endDate, chatQuery, allRoomsSearch, selectedChats, favoriteChatGroups, results, jobState, earningsQuery, earningsResults, earningsMessage, disclosureCategory, disclosureNextOffsetId, disclosureHasMore, financialTrend, financialTrendMessage, businessSegments, businessSegmentsMessage, stockOverview, stockOverviewMessage, stockNewsBrief, stockNewsBriefMessage, wiseConsensusHistory, wiseConsensusHistoryMessage, wiseTargetHistory, wiseTargetHistoryMessage]);
 
     useEffect(function () {
       const categoryLabel = disclosureTabLabel(disclosureCategory);
@@ -8102,6 +16129,46 @@
       }
     }
 
+    async function loadWiseTargetHistory(company) {
+      const target = String(company || "").trim();
+      if (!target) {
+        setWiseTargetHistory(null);
+        setWiseTargetHistoryMessage("");
+        return;
+      }
+      setWiseTargetHistoryLoading(true);
+      setWiseTargetHistoryMessage("");
+      try {
+        const payload = await fetchJson("/api/stocks/wisereport-targets?name=" + encodeURIComponent(target) + "&months=12", { noCache: true });
+        setWiseTargetHistory(payload);
+      } catch (err) {
+        setWiseTargetHistory(null);
+        setWiseTargetHistoryMessage(err.message || String(err));
+      } finally {
+        setWiseTargetHistoryLoading(false);
+      }
+    }
+
+    async function loadWiseConsensusHistory(company) {
+      const target = String(company || "").trim();
+      if (!target) {
+        setWiseConsensusHistory(null);
+        setWiseConsensusHistoryMessage("");
+        return;
+      }
+      setWiseConsensusHistoryLoading(true);
+      setWiseConsensusHistoryMessage("");
+      try {
+        const payload = await fetchJson("/api/stocks/wisereport-consensus?name=" + encodeURIComponent(target) + "&fin_gubun=MAIN", { noCache: true });
+        setWiseConsensusHistory(payload);
+      } catch (err) {
+        setWiseConsensusHistory(null);
+        setWiseConsensusHistoryMessage(err.message || String(err));
+      } finally {
+        setWiseConsensusHistoryLoading(false);
+      }
+    }
+
     async function toggleFinancialTrend() {
       const nextExpanded = !financialTrendExpanded;
       setFinancialTrendExpanded(nextExpanded);
@@ -8125,12 +16192,13 @@
       requestPageNavigation("themes", { stockQuery: target || "" });
     }
 
-    async function runEarningsSearch(append, overrideCompany, overrideCategory) {
+    async function runEarningsSearch(append, overrideCompany, overrideCategory, forceLinkedMessageSearch) {
       const company = String(overrideCompany || earningsQuery || "").trim();
       if (!company) {
         setEarningsMessage("사업보고서를 열 기업명을 입력해 주세요.");
         return;
       }
+      overviewHydrationRefreshDoneRef.current = true;
       setEarningsSuggestions([]);
       const category = overrideCategory || disclosureCategory;
       setEarningsLoading(true);
@@ -8146,9 +16214,10 @@
         setDisclosureHasMore(false);
         setEarningsJobState(null);
         setKeywords(company);
+        const shouldRunLinkedMessageSearch = !!forceLinkedMessageSearch || !overrideCategory;
         linkedMessageSearchRef.current = {
-          pending: !overrideCategory,
-          company: !overrideCategory ? company : "",
+          pending: shouldRunLinkedMessageSearch,
+          company: shouldRunLinkedMessageSearch ? company : "",
         };
         setFinancialTrend(null);
         setFinancialTrendMessage("");
@@ -8157,7 +16226,14 @@
         setBusinessSegmentsMessage("");
         setStockOverview(null);
         setStockOverviewMessage("");
+        setStockNewsBrief(null);
+        setStockNewsBriefMessage("");
+        setWiseTargetHistory(null);
+        setWiseTargetHistoryMessage("");
         loadStockOverview(company);
+        loadStockNewsBrief(company, false);
+        loadWiseConsensusHistory(company);
+        loadWiseTargetHistory(company);
         if (jobState && jobState.job_id && !jobState.finished) {
           postJson("/api/telegram/search_jobs/" + jobState.job_id + "/cancel", {})
             .then(syncJob)
@@ -8218,24 +16294,54 @@
       }
     }
 
-    async function openLatestKindReport(reportScope) {
-      const scope = reportScope === "periodic" ? "periodic" : "business";
+    function closeReportListModal() {
+      setReportListModal({ open: false, loading: false, error: "", payload: null });
+    }
+
+    function openWiseConsensusModal() {
+      setWiseConsensusModalOpen(true);
+    }
+
+    function closeWiseConsensusModal() {
+      setWiseConsensusModalOpen(false);
+    }
+
+    async function openKindReportList(reportScope) {
+      const scope = reportScope === "business" ? "business" : "periodic";
       const company = String(earningsQuery || "").trim();
       if (!company) {
-        setEarningsMessage((scope === "periodic" ? "\uc815\uae30 \ubcf4\uace0\uc11c" : "\uc0ac\uc5c5\ubcf4\uace0\uc11c") + "\ub97c \uc5f4 \uc885\ubaa9\uba85\uc744 \uc785\ub825\ud574 \uc8fc\uc138\uc694.");
+        setEarningsMessage((scope === "periodic" ? "공시리스트" : "사업보고서 목록") + "를 열 종목명을 입력해 주세요.");
         return;
       }
-      setCompanyLinkLoading(scope === "periodic" ? "kind-periodic" : "kind-business");
+      setCompanyLinkLoading(scope === "periodic" ? "kind-report-list" : "kind-business-list");
       setEarningsMessage("");
+      setReportListModal({ open: true, loading: true, error: "", payload: null });
       try {
-        const endpoint = scope === "periodic" ? "/api/kind/latest-periodic-report" : "/api/kind/latest-business-report";
-        const payload = await fetchJson(endpoint + "?company=" + encodeURIComponent(company), { noCache: true });
-        await openUrlInDefaultBrowser(payload.url);
-        setEarningsMessage((payload.stock_name || company) + " " + (payload.title || (scope === "periodic" ? "정기보고서" : "사업보고서")) + "을 KIND에서 열었습니다.");
+        const payload = await fetchJson(
+          "/api/kind/report-list?company=" + encodeURIComponent(company) +
+          "&scope=" + encodeURIComponent(scope) +
+          "&years=3",
+          { noCache: true }
+        );
+        setReportListModal({ open: true, loading: false, error: "", payload: payload });
+        setEarningsMessage((payload.stock_name || company) + " 최근 3개년 공시 목록을 불러왔습니다.");
       } catch (err) {
-        setEarningsMessage(err.message || String(err));
+        const message = err.message || String(err);
+        setReportListModal({ open: true, loading: false, error: message, payload: null });
+        setEarningsMessage(message);
       } finally {
         setCompanyLinkLoading("");
+      }
+    }
+
+    async function openKindReportListItem(url) {
+      if (!url) {
+        return;
+      }
+      try {
+        await openUrlInDefaultBrowser(url);
+      } catch (err) {
+        setEarningsMessage(err.message || String(err));
       }
     }
 
@@ -8427,6 +16533,99 @@
       );
     }
 
+    function renderReportListModal() {
+      if (!reportListModal.open) {
+        return null;
+      }
+      const payload = reportListModal.payload || {};
+      const rows = ensureArray(payload.items);
+      const stockLabel = payload.stock_name
+        ? payload.stock_name + (payload.stock_code ? " (" + payload.stock_code + ")" : "")
+        : "공시리스트";
+      return h(
+        "div",
+        { className: "modal-backdrop", onClick: closeReportListModal },
+        h(
+          "div",
+          { className: "modal-panel investor-flow-modal", onClick: function (event) { event.stopPropagation(); } },
+          h(
+            "div",
+            { className: "modal-head investor-flow-head" },
+            h(
+              "div",
+              null,
+              h("span", { className: "eyebrow" }, "KIND REPORT LIST"),
+              h("h2", null, stockLabel)
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeReportListModal }, "닫기")
+          ),
+          reportListModal.loading
+            ? h("div", { className: "stock-chart-loading" }, "최근 3개년 공시 목록을 불러오는 중입니다.")
+            : reportListModal.error
+              ? h("div", { className: "stock-chart-error" }, reportListModal.error)
+              : h(
+                  React.Fragment,
+                  null,
+                  h(
+                    "div",
+                    { className: "investor-flow-summary" },
+                    h("span", null, stockLabel),
+                    h("span", null, "최근 " + numberFormat(Number(payload.years || 3), 0) + "개년"),
+                    h("span", null, payload.scope === "business" ? "사업보고서" : "정기공시")
+                  ),
+                  rows.length
+                    ? h(
+                        "div",
+                        { className: "earnings-scroll-box" },
+                        rows.map(function (row, index) {
+                          return h(
+                            "button",
+                            {
+                              key: (row.acpt_no || row.url || "") + index,
+                              type: "button",
+                              className: "autocomplete-item",
+                              style: { width: "100%", textAlign: "left", marginBottom: "8px" },
+                              onClick: function () { openKindReportListItem(row.url); },
+                            },
+                            h("strong", null, row.title || "공시"),
+                            h("span", null, [row.accepted_at, row.report_year ? row.report_year + "년" : "", row.report_type].filter(Boolean).join(" · "))
+                          );
+                        })
+                      )
+                    : h("div", { className: "empty-state" }, "최근 3개년 내 표시할 공시가 없습니다.")
+            )
+        )
+      );
+    }
+
+    function renderWiseConsensusModal() {
+      if (!wiseConsensusModalOpen) {
+        return null;
+      }
+      return h(
+        "div",
+        { className: "modal-backdrop", onClick: closeWiseConsensusModal },
+        h(
+          "div",
+          { className: "modal-panel investor-flow-modal", onClick: function (event) { event.stopPropagation(); } },
+          h(
+            "div",
+            { className: "modal-head investor-flow-head" },
+            h("div", null,
+              h("strong", null, "WiseReport 추정실적 컨센서스"),
+              h("div", { className: "summary-help" }, "Forward PER/PBR 클릭 시 열리는 상세 팝업입니다.")
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeWiseConsensusModal }, "닫기")
+          ),
+          h(WiseReportConsensusPanel, {
+            payload: wiseConsensusHistory,
+            loading: wiseConsensusHistoryLoading,
+            message: wiseConsensusHistoryMessage,
+          })
+        )
+      );
+    }
+
     function formatBusinessSegmentAmount(value) {
       const number = Number(value);
       if (!Number.isFinite(number)) {
@@ -8613,15 +16812,10 @@
               { className: "earnings-split-button-group", role: "group", "aria-label": "KIND \uacf5\uc2dc \ubc14\ub85c\uac00\uae30" },
               h("button", {
                 className: "earnings-action-button split-left",
-                onClick: function () { openLatestKindReport("business"); },
-                disabled: !!companyLinkLoading || !String(earningsQuery || "").trim(),
-              }, companyLinkLoading === "kind-business" ? "\ubd88\ub7ec\uc624\ub294 \uc911..." : "\uc0ac\uc5c5\ubcf4\uace0\uc11c"),
-              h("button", {
-                className: "earnings-action-button split-right",
-                onClick: function () { openLatestKindReport("periodic"); },
+                onClick: function () { openKindReportList("periodic"); },
                 disabled: !!companyLinkLoading || !String(earningsQuery || "").trim(),
                 title: "분기보고서, 반기보고서, 사업보고서 등 최신 정기 공시를 엽니다.",
-              }, companyLinkLoading === "kind-periodic" ? "조회 중..." : "정기보고서")
+              }, companyLinkLoading === "kind-report-list" ? "조회 중..." : "공시리스트")
             ),
             h("button", {
               className: "earnings-action-button",
@@ -8646,10 +16840,19 @@
           )
         ),
         earningsMessage ? h("div", { className: "notice-box compact" }, earningsMessage) : null,
+        h(StockNewsBriefPanel, {
+          payload: stockNewsBrief,
+          loading: stockNewsBriefLoading,
+          message: stockNewsBriefMessage,
+          onRefresh: function () { loadStockNewsBrief(earningsQuery, true); },
+        }),
         h(TelegramStockOverviewPanel, {
           payload: stockOverview,
           loading: stockOverviewLoading,
           message: stockOverviewMessage,
+          consensus: wiseConsensusHistory,
+          targetHistory: wiseTargetHistory,
+          onOpenForwardConsensus: openWiseConsensusModal,
         }),
         h(
           "div",
@@ -8710,6 +16913,8 @@
       React.Fragment,
       null,
       renderDisclosureSearchPanel(),
+      renderReportListModal(),
+      renderWiseConsensusModal(),
       renderInvestorFlowPopup(),
       h(
         "div",
@@ -9496,6 +17701,10 @@
   }
 
   function GlobalCompanyPage() {
+    const globalCompanyModule = getStockAppModule("globalCompanyPage");
+    const globalCompanyLabel = typeof globalCompanyModule.label === "function"
+      ? globalCompanyModule.label
+      : function (_path, fallback) { return fallback; };
     const savedGlobalCompanyState = loadGlobalCompanyState();
     const [query, setQuery] = useState(savedGlobalCompanyState.query || "");
     const [suggestions, setSuggestions] = useState([]);
@@ -9506,10 +17715,57 @@
     const [loadingSearch, setLoadingSearch] = useState(false);
     const [loadingDetail, setLoadingDetail] = useState(false);
     const [loadingAiBrief, setLoadingAiBrief] = useState(false);
+    const [loadingTelegramEarnings, setLoadingTelegramEarnings] = useState(false);
+    const [loadingGlobalNewsBrief, setLoadingGlobalNewsBrief] = useState(false);
     const [message, setMessage] = useState("");
     const [aiMessage, setAiMessage] = useState("");
+    const [globalNewsBriefMessage, setGlobalNewsBriefMessage] = useState("");
+    const [telegramEarningsMessage, setTelegramEarningsMessage] = useState("");
+    const [telegramEarningsRows, setTelegramEarningsRows] = useState([]);
+    const [telegramEarningsPayload, setTelegramEarningsPayload] = useState(null);
+    const [globalNewsBrief, setGlobalNewsBrief] = useState(null);
     const [statementMode, setStatementMode] = useState(savedGlobalCompanyState.statementMode || "quarter");
     const searchTimerRef = useRef(null);
+
+    function applyPendingGlobalStockNavigation() {
+      const pending = consumeGlobalStockNavigation();
+      const symbol = String((pending && pending.symbol) || "").trim().toUpperCase();
+      const name = String((pending && pending.name) || "").trim();
+      const nextQuery = String((pending && pending.query) || "").trim();
+      if (!symbol && !name && !nextQuery) {
+        return;
+      }
+      const target = {
+        symbol: symbol || nextQuery.toUpperCase(),
+        name: name || nextQuery,
+      };
+      const resolvedQuery = nextQuery || (target.name ? target.name + (target.symbol ? " (" + target.symbol + ")" : "") : target.symbol);
+      setQuery(resolvedQuery);
+      setSelected(target);
+      setSuggestions([]);
+      setMessage("");
+      setAiBrief(null);
+      setAiMessage("");
+      setLoadingDetail(true);
+      fetchJson("/api/global-stocks/detail?symbol=" + encodeURIComponent(target.symbol))
+        .then(function (payload) {
+          setDetail(payload);
+          persistGlobalCompanyState({
+            query: resolvedQuery,
+            selected: target,
+            detail: payload,
+            aiBrief: null,
+            statementMode: statementMode,
+          });
+        })
+        .catch(function (err) {
+          setDetail(null);
+          setMessage(err.message || String(err));
+        })
+        .finally(function () {
+          setLoadingDetail(false);
+        });
+    }
 
     useEffect(function () {
       return function () {
@@ -9533,6 +17789,21 @@
       const companyName = (detail && (detail.name || detail.symbol)) || (selected && (selected.name || selected.symbol)) || query || "";
       emitWindowTitleDetail("global-company", companyName);
     }, [query, selected, detail]);
+
+    useEffect(function () {
+      applyPendingGlobalStockNavigation();
+      function handleGlobalStockNavigation() {
+        applyPendingGlobalStockNavigation();
+      }
+      if (typeof window !== "undefined") {
+        window.addEventListener(GLOBAL_STOCK_NAV_EVENT, handleGlobalStockNavigation);
+      }
+      return function () {
+        if (typeof window !== "undefined") {
+          window.removeEventListener(GLOBAL_STOCK_NAV_EVENT, handleGlobalStockNavigation);
+        }
+      };
+    }, [statementMode]);
 
     function runSearch(value) {
       setQuery(value);
@@ -9595,6 +17866,17 @@
         });
     }
 
+    function fallbackGlobalCompanyFromQuery(value) {
+      const raw = String(value || "").trim();
+      if (!raw) {
+        return null;
+      }
+      const parenMatch = raw.match(/\(([A-Z0-9.\-=\^]{1,16})\)\s*$/i);
+      const symbol = parenMatch ? String(parenMatch[1] || "").toUpperCase() : raw.toUpperCase();
+      const name = parenMatch ? raw.replace(/\s*\([A-Z0-9.\-=\^]{1,16}\)\s*$/i, "").trim() : raw;
+      return { symbol: symbol, name: name || symbol };
+    }
+
     useEffect(function () {
       const symbol = detail && detail.symbol ? String(detail.symbol) : "";
       if (!symbol) {
@@ -9615,6 +17897,74 @@
         });
     }, [detail && detail.symbol]);
 
+    useEffect(function () {
+      const symbol = detail && detail.symbol ? String(detail.symbol) : "";
+      if (!symbol) {
+        setGlobalNewsBrief(null);
+        setGlobalNewsBriefMessage("");
+        return;
+      }
+      setLoadingGlobalNewsBrief(true);
+      setGlobalNewsBriefMessage("");
+      fetchJson("/api/global-stocks/news-brief?symbol=" + encodeURIComponent(symbol))
+        .then(function (payload) {
+          setGlobalNewsBrief(payload);
+        })
+        .catch(function (err) {
+          setGlobalNewsBrief(null);
+          setGlobalNewsBriefMessage(err.message || String(err));
+        })
+        .finally(function () {
+          setLoadingGlobalNewsBrief(false);
+        });
+    }, [detail && detail.symbol]);
+
+    useEffect(function () {
+      const symbol = detail && detail.symbol ? String(detail.symbol || "").trim().toUpperCase() : "";
+      let cancelled = false;
+      if (!symbol) {
+        setTelegramEarningsRows([]);
+        setTelegramEarningsPayload(null);
+        setTelegramEarningsMessage("");
+        return function () {
+          cancelled = true;
+        };
+      }
+      setLoadingTelegramEarnings(true);
+      setTelegramEarningsRows([]);
+      setTelegramEarningsPayload(null);
+      setTelegramEarningsMessage("");
+      fetchJson("/api/global-stocks/earnings-call?symbol=" + encodeURIComponent(symbol))
+        .then(function (payload) {
+          if (cancelled) {
+            return;
+          }
+          setTelegramEarningsPayload(payload || null);
+          const rows = ensureArray(payload && payload.rows).sort(function (a, b) {
+            return String(b && b.date || "").localeCompare(String(a && a.date || ""));
+          });
+          setTelegramEarningsRows(rows);
+          if (!rows.length) {
+            setTelegramEarningsMessage(symbol + " 종목의 최근 earnings call transcript를 찾지 못했습니다.");
+          }
+        })
+        .catch(function (error) {
+          if (cancelled) {
+            return;
+          }
+          setTelegramEarningsRows([]);
+          setTelegramEarningsMessage(error && error.message ? error.message : String(error));
+        })
+        .finally(function () {
+          if (!cancelled) {
+            setLoadingTelegramEarnings(false);
+          }
+        });
+      return function () {
+        cancelled = true;
+      };
+    }, [detail && detail.symbol]);
+
     function handleKeyDown(event) {
       const items = ensureArray(suggestions);
       if (event.key === "ArrowDown" && items.length) {
@@ -9628,7 +17978,7 @@
         if (items.length) {
           chooseCompany(items[activeIndex || 0]);
         } else if (query.trim()) {
-          chooseCompany({ symbol: query.trim().toUpperCase(), name: query.trim() });
+          chooseCompany(fallbackGlobalCompanyFromQuery(query));
         }
       } else if (event.key === "Escape") {
         setSuggestions([]);
@@ -9711,8 +18061,8 @@
         "div",
         { className: "panel hero-panel global-company-hero" },
         h("div", { className: "eyebrow" }, "Global Equity"),
-        h("h1", { className: "page-title" }, "섹터 진입 신호"),
-        h("p", { className: "page-copy" }, "한글명, 영문명, 티커로 미국 상장사를 검색하고 최근 분기 실적을 달러와 원화 환산으로 함께 확인합니다."),
+        h("h1", { className: "page-title" }, globalCompanyLabel("pageTitle", "해외기업 검색기")),
+        h("p", { className: "page-copy" }, globalCompanyLabel("pageCopy", "한글명, 영문명, 티커로 해외 상장사를 검색하고 최근 주가, 실적, 주요 투자지표를 함께 확인합니다.")),
         h(
           "div",
           { className: "global-search-wrap" },
@@ -9782,7 +18132,7 @@
                     src: tvUrl,
                     title: (detail.symbol || "해외기업") + " TradingView chart",
                   })
-                : h(EmptyState, { compact: true, message: "표시할 분기 실적 데이터가 없습니다." })
+                : h(EmptyState, { compact: true, message: globalCompanyLabel("empty.chart", "표시할 차트 정보가 없습니다.") })
             ),
             h(
               "div",
@@ -9803,15 +18153,27 @@
                   { className: "global-stat-grid" },
                   h(SummaryCard, { label: "현재가", value: formatGlobalPrice(detail.price) + " (" + formatKrwWon(detail.price, rate) + ")" }),
                   h(SummaryCard, { label: "시가총액", value: formatGlobalMarketCap(detail.market_cap, detail.market_cap_billion, rate) }),
-                  h(SummaryCard, { label: "최근 보고", value: latest.filed || "-" }),
-                  h(SummaryCard, { label: statementMode === "annual" ? "최근 연도" : "최근 분기", value: latest.label || "-" })
+                  h(SummaryCard, { className: "global-stat-card compact", label: "최근 보고", value: latest.filed || "-" }),
+                  h(SummaryCard, { className: "global-stat-card compact", label: statementMode === "annual" ? "최근 연도" : "최근 분기", value: latest.label || "-" })
                 )
               ),
               h(
                 "div",
                 { className: "panel global-earnings-card" },
-                h(SectionTitle, null, "최근 실적 요약"),
-                h("pre", { className: "global-earnings-note" }, buildGlobalEarningsText(detail, visibleStatements, latest, rate))
+                h(SectionTitle, null, "최근 실적 / 컨콜 메시지"),
+                h("div", { className: "summary-help" }, "earningscalls.dev · " + (detail.symbol || "") + " 최근 transcript"),
+                loadingTelegramEarnings
+                  ? h(LoadingBlock, { compact: true, title: "최근 실적/컨콜 메시지 불러오는 중", label: "earningscalls.dev 공개 transcript를 읽어 번역하고 있습니다." })
+                  : telegramEarningsPayload
+                    ? h(GlobalEarningsCallPanel, { payload: telegramEarningsPayload, emptyMessage: "검색 결과가 없습니다." })
+                    : telegramEarningsMessage
+                      ? h(
+                          React.Fragment,
+                          null,
+                          h("div", { className: "notice-box" }, telegramEarningsMessage),
+                          h("pre", { className: "global-earnings-note" }, buildGlobalEarningsText(detail, visibleStatements, latest, rate))
+                        )
+                      : h("pre", { className: "global-earnings-note" }, buildGlobalEarningsText(detail, visibleStatements, latest, rate))
               )
             ),
             h(
@@ -9869,7 +18231,7 @@
                                   h("span", null, item.event || "-")
                                 );
                               }))
-                            : h(EmptyState, { compact: true, message: "??? ??? ????." })
+                            : h(EmptyState, { compact: true, message: globalCompanyLabel("empty.history", "표시할 연혁 정보가 없습니다.") })
                         ),
                         h(
                           "div",
@@ -9885,7 +18247,7 @@
                                   h("p", null, item.description || "-")
                                 );
                               }))
-                            : h(EmptyState, { compact: true, message: "??? ????? ????." }),
+                            : h(EmptyState, { compact: true, message: globalCompanyLabel("empty.segments", "표시할 사업분야 정보가 없습니다.") }),
                           h("div", { className: "global-ai-brief-note" }, aiBriefPayload.revenue_mix_note || "사업분야는 AI 추정치입니다.")
                         ),
                         ensureArray(aiBriefPayload.risks).length
@@ -9899,7 +18261,38 @@
                             )
                           : null
                       )
-                    : h(EmptyState, { compact: true, message: "AI ???? ?? ???? ?????." })
+                    : h(EmptyState, { compact: true, message: globalCompanyLabel("empty.aiBrief", "AI 기업 브리프를 불러오지 못했습니다.") })
+            ),
+            h(
+              "div",
+              { className: "panel" },
+              h(StockNewsBriefPanel, {
+                payload: globalNewsBrief,
+                loading: loadingGlobalNewsBrief,
+                message: globalNewsBriefMessage,
+                title: "최근 1주 뉴스 / 상승·하락 이유",
+                description: "최근 1주 기사 기준으로 상승·하락 배경을 요약합니다.",
+                positiveLabel: "상승 이유",
+                riskLabel: "하락 이유",
+                eventsLabel: "체크 포인트",
+                onRefresh: detail && detail.symbol
+                  ? function () {
+                      setLoadingGlobalNewsBrief(true);
+                      setGlobalNewsBriefMessage("");
+                      fetchJson("/api/global-stocks/news-brief?symbol=" + encodeURIComponent(detail.symbol) + "&force_refresh=true", { noCache: true })
+                        .then(function (payload) {
+                          setGlobalNewsBrief(payload);
+                        })
+                        .catch(function (err) {
+                          setGlobalNewsBrief(null);
+                          setGlobalNewsBriefMessage(err.message || String(err));
+                        })
+                        .finally(function () {
+                          setLoadingGlobalNewsBrief(false);
+                        });
+                    }
+                  : null,
+              })
             ),
             h(
               "div",
@@ -9933,16 +18326,16 @@
                         { key: row.frame, className: "global-quarter-row" },
                         h("div", { className: "global-quarter-label" }, row.label),
                         h("div", { className: "global-quarter-metrics" },
-                          renderStatementMetric("??", row.revenue, revenueMax),
-                          renderStatementMetric("???", row.operating_income, opMax),
-                          renderStatementMetric("???", row.net_income, netMax),
+                          renderStatementMetric(globalCompanyLabel("statementMetrics.revenue", "매출"), row.revenue, revenueMax),
+                          renderStatementMetric(globalCompanyLabel("statementMetrics.operatingIncome", "영업이익"), row.operating_income, opMax),
+                          renderStatementMetric(globalCompanyLabel("statementMetrics.netIncome", "순이익"), row.net_income, netMax),
                           renderStatementMarginRow(row)
                         ),
                         h("div", { className: "global-quarter-filed" }, row.filed || row.form || "-")
                       );
                     })
                   )
-                : h(EmptyState, { compact: true, message: "??? ?? ?? ???? ????." })
+                : h(EmptyState, { compact: true, message: globalCompanyLabel("empty.statements", "표시할 재무 데이터가 없습니다.") })
             ),
             h(
               "div",
@@ -10395,6 +18788,882 @@
     );
   }
 
+  function correlationClassName(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "metric-flat";
+    if (number >= 0.7) return "metric-up";
+    if (number <= -0.7) return "metric-down";
+    return "metric-flat";
+  }
+
+  function describeCorrelation(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "-";
+    if (number >= 0.8) return "매우 강한 양의 상관";
+    if (number >= 0.5) return "강한 양의 상관";
+    if (number >= 0.2) return "약한 양의 상관";
+    if (number > -0.2) return "상관 약함";
+    if (number > -0.5) return "약한 음의 상관";
+    if (number > -0.8) return "강한 음의 상관";
+    return "매우 강한 음의 상관";
+  }
+
+  function formatCorrelationAssetLabel(item) {
+    if (!item) return "";
+    const name = String(item.name || "").trim();
+    const symbol = String(item.symbol || item.code || item.value || "").trim();
+    if (!name) return symbol;
+    if (!symbol || symbol === name) return name;
+    return name + " (" + symbol + ")";
+  }
+
+  function PairCorrelationChart(props) {
+    const rows = ensureArray(props.rows).filter(function (row) {
+      return Number.isFinite(Number(row.left_norm)) && Number.isFinite(Number(row.right_norm));
+    });
+    const left = props.left || {};
+    const right = props.right || {};
+    const { canvasRef } = useChartLifecycle(function (canvas) {
+      return new Chart(canvas, {
+        type: "line",
+        data: {
+          labels: rows.map(function (row) { return formatDateLabel(row.date); }),
+          datasets: [
+            {
+              label: formatCorrelationAssetLabel(left) || "왼쪽",
+              data: rows.map(function (row) { return Number(row.left_norm); }),
+              borderColor: "#2563eb",
+              backgroundColor: "rgba(37, 99, 235, 0.12)",
+              borderWidth: 2.4,
+              pointRadius: 0,
+              tension: 0.22,
+            },
+            {
+              label: formatCorrelationAssetLabel(right) || "오른쪽",
+              data: rows.map(function (row) { return Number(row.right_norm); }),
+              borderColor: "#ef4444",
+              backgroundColor: "rgba(239, 68, 68, 0.12)",
+              borderWidth: 2.4,
+              pointRadius: 0,
+              tension: 0.22,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { position: "top", labels: { boxWidth: 18, boxHeight: 6, useBorderRadius: true, borderRadius: 3 } },
+            tooltip: {
+              callbacks: {
+                label: function (context) {
+                  const row = rows[context.dataIndex] || {};
+                  if (context.datasetIndex === 0) {
+                    return (context.dataset.label || "왼쪽") + " " + numberFormat(row.left_norm, 2) + " / 종가 " + numberFormat(row.left_close, 2);
+                  }
+                  return (context.dataset.label || "오른쪽") + " " + numberFormat(row.right_norm, 2) + " / 종가 " + numberFormat(row.right_close, 2);
+                },
+              },
+            },
+          },
+          scales: {
+            y: {
+              title: { display: true, text: "기준값 100" },
+              ticks: { callback: function (value) { return numberFormat(value, 1); } },
+              grid: { color: "rgba(148, 163, 184, 0.18)" },
+            },
+            x: {
+              grid: { display: false },
+            },
+          },
+        },
+      });
+    }, [
+      rows.map(function (row) { return [row.date, row.left_norm, row.right_norm].join(":"); }).join("|"),
+      left.symbol || left.code || left.value || "",
+      right.symbol || right.code || right.value || "",
+    ]);
+    if (!rows.length) {
+      return h(EmptyState, { compact: true, message: "비교할 공통 가격 데이터가 없습니다." });
+    }
+    return h("div", { className: "pair-correlation-chart" }, h("canvas", { ref: canvasRef }));
+  }
+
+  function PairCorrelationPage() {
+    const [leftQuery, setLeftQuery] = useState("");
+    const [rightQuery, setRightQuery] = useState("");
+    const [leftSuggestions, setLeftSuggestions] = useState([]);
+    const [rightSuggestions, setRightSuggestions] = useState([]);
+    const [leftSelected, setLeftSelected] = useState(null);
+    const [rightSelected, setRightSelected] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
+    const [data, setData] = useState(null);
+    const leftTimerRef = useRef(null);
+    const rightTimerRef = useRef(null);
+    const requestSeqRef = useRef(0);
+    const autoRunRef = useRef(false);
+
+    useEffect(function () {
+      try {
+        const saved = JSON.parse(localStorage.getItem(PAIR_CORRELATION_KEY) || "{}");
+        if (saved && saved.left) {
+          setLeftSelected(saved.left);
+          setLeftQuery(formatCorrelationAssetLabel(saved.left));
+        }
+        if (saved && saved.right) {
+          setRightSelected(saved.right);
+          setRightQuery(formatCorrelationAssetLabel(saved.right));
+        }
+      } catch (error) {
+      }
+    }, []);
+
+    useEffect(function () {
+      try {
+        localStorage.setItem(PAIR_CORRELATION_KEY, JSON.stringify({
+          left: leftSelected || null,
+          right: rightSelected || null,
+        }));
+      } catch (error) {
+      }
+    }, [leftSelected, rightSelected]);
+
+    useEffect(function () {
+      if (leftSelected && rightSelected && !autoRunRef.current) {
+        autoRunRef.current = true;
+        runCorrelation();
+      }
+    }, [leftSelected, rightSelected]);
+
+    useEffect(function () {
+      return function () {
+        if (leftTimerRef.current) clearTimeout(leftTimerRef.current);
+        if (rightTimerRef.current) clearTimeout(rightTimerRef.current);
+      };
+    }, []);
+
+    function queueSearch(side, value) {
+      const trimmed = String(value || "").trim();
+      const setSuggestions = side === "left" ? setLeftSuggestions : setRightSuggestions;
+      const timerRef = side === "left" ? leftTimerRef : rightTimerRef;
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+      if (!trimmed) {
+        setSuggestions([]);
+        return;
+      }
+      timerRef.current = setTimeout(async function () {
+        try {
+          const payload = await fetchJson("/api/correlation/assets/search?q=" + encodeURIComponent(trimmed) + "&limit=12");
+          setSuggestions(ensureArray(payload.items));
+        } catch (fetchError) {
+          setSuggestions([]);
+        }
+      }, 160);
+    }
+
+    function handleLeftInput(value) {
+      setLeftQuery(value);
+      setLeftSelected(null);
+      setData(null);
+      setError("");
+      autoRunRef.current = true;
+      queueSearch("left", value);
+    }
+
+    function handleRightInput(value) {
+      setRightQuery(value);
+      setRightSelected(null);
+      setData(null);
+      setError("");
+      autoRunRef.current = true;
+      queueSearch("right", value);
+    }
+
+    function selectAsset(side, item) {
+      const normalized = {
+        id: item.id,
+        kind: item.kind,
+        value: item.value,
+        code: item.code || "",
+        symbol: item.symbol || item.value || "",
+        name: item.name || item.symbol || item.value || "",
+        market: item.market || "",
+        badge: item.badge || "",
+        source: item.source || "",
+      };
+      if (side === "left") {
+        setLeftSelected(normalized);
+        setLeftQuery(formatCorrelationAssetLabel(normalized));
+        setLeftSuggestions([]);
+      } else {
+        setRightSelected(normalized);
+        setRightQuery(formatCorrelationAssetLabel(normalized));
+        setRightSuggestions([]);
+      }
+      setData(null);
+      setError("");
+    }
+
+    async function runCorrelation() {
+      if (!leftSelected || !rightSelected) {
+        setError("좌우 자산을 모두 선택해 주세요.");
+        setData(null);
+        return;
+      }
+      const requestSeq = requestSeqRef.current + 1;
+      requestSeqRef.current = requestSeq;
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams({
+          left_kind: leftSelected.kind,
+          left_value: leftSelected.value,
+          left_name: leftSelected.name || "",
+          right_kind: rightSelected.kind,
+          right_value: rightSelected.value,
+          right_name: rightSelected.name || "",
+          window_days: "31",
+        });
+        const payload = await fetchJson("/api/correlation/pair?" + params.toString(), { noCache: true });
+        if (requestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setData(payload);
+        emitWindowTitleDetail("pair-correlation", (payload.left ? payload.left.name : "") + " vs " + (payload.right ? payload.right.name : ""));
+      } catch (fetchError) {
+        if (requestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setError(fetchError.message || String(fetchError));
+        setData(null);
+      } finally {
+        if (requestSeqRef.current === requestSeq) {
+          setLoading(false);
+        }
+      }
+    }
+
+    function renderSuggestionList(items, side) {
+      const rows = ensureArray(items);
+      if (!rows.length) return null;
+      return h(
+        "div",
+        { className: "autocomplete-list pair-correlation-suggestions" },
+        rows.map(function (item) {
+          return h(
+            "button",
+            {
+              key: side + ":" + (item.id || item.kind + ":" + item.value),
+              type: "button",
+              className: "autocomplete-item pair-correlation-item",
+              onClick: function () { selectAsset(side, item); },
+            },
+            h("strong", null, item.name || item.symbol || item.value || "-"),
+            h("span", null, [
+              item.symbol || item.code || item.value || "",
+              item.market || item.badge || "",
+              item.kind === "index" ? "지수" : (item.kind === "kr_stock" ? "국내" : "해외"),
+            ].filter(Boolean).join(" · "))
+          );
+        })
+      );
+    }
+
+    function renderSelectedMeta(item) {
+      if (!item) {
+        return h("div", { className: "summary-help" }, "국내/해외 종목 또는 지수를 검색해 선택하세요.");
+      }
+      return h(
+        "div",
+        { className: "pair-correlation-selected" },
+        h("strong", null, formatCorrelationAssetLabel(item)),
+        h("span", null, [item.market || item.badge || "", item.kind === "index" ? "지수" : (item.kind === "kr_stock" ? "국내 종목" : "해외 종목"), item.source || ""].filter(Boolean).join(" · "))
+      );
+    }
+
+    const payload = data || {};
+    const corrValue = Number(payload.correlation);
+    const priceCorrValue = Number(payload.price_correlation);
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "div",
+        { className: "panel hero-panel alt" },
+        h("div", { className: "eyebrow" }, "PAIR CORRELATION"),
+        h("h1", { className: "page-title" }, "최근 1개월 주가 상관관계"),
+        h("p", { className: "page-copy compact-copy" }, "국내/해외 종목과 주요 지수 두 개를 선택해 최근 1개월 공통 거래일 기준 상관관계를 계산합니다.")
+      ),
+      h(
+        "div",
+        { className: "pair-correlation-layout" },
+        h(
+          "div",
+          { className: "panel pair-correlation-search-panel" },
+          h(SectionTitle, null, "왼쪽 자산"),
+          h("label", { className: "form-field" },
+            h("input", {
+              value: leftQuery,
+              onChange: function (event) { handleLeftInput(event.target.value); },
+              placeholder: "종목명, 티커, 지수명 검색",
+              onFocus: selectTextOnFocus,
+            })
+          ),
+          renderSuggestionList(leftSuggestions, "left"),
+          renderSelectedMeta(leftSelected)
+        ),
+        h(
+          "div",
+          { className: "panel pair-correlation-search-panel" },
+          h(SectionTitle, null, "오른쪽 자산"),
+          h("label", { className: "form-field" },
+            h("input", {
+              value: rightQuery,
+              onChange: function (event) { handleRightInput(event.target.value); },
+              placeholder: "종목명, 티커, 지수명 검색",
+              onFocus: selectTextOnFocus,
+            })
+          ),
+          renderSuggestionList(rightSuggestions, "right"),
+          renderSelectedMeta(rightSelected)
+        )
+      ),
+      h(
+        "div",
+        { className: "panel pair-correlation-action-panel" },
+        h("div", { className: "summary-help" }, "상관계수는 최근 1개월 공통 거래일 종가의 일별 수익률 Pearson 기준입니다."),
+        h("button", { type: "button", className: "primary-button", onClick: runCorrelation, disabled: loading || !leftSelected || !rightSelected }, loading ? "계산 중..." : "상관관계 계산")
+      ),
+      error ? h("div", { className: "notice-box error" }, error) : null,
+      loading && !data ? LoadingPanel({ label: "주가 상관관계 계산" }) : null,
+      data
+        ? h(
+            React.Fragment,
+            null,
+            h(
+              "div",
+              { className: "summary-grid summary-grid-small" },
+              h(SummaryCard, { label: "상관계수", value: h("span", { className: correlationClassName(corrValue) }, numberFormat(corrValue, 4)) }),
+              h(SummaryCard, { label: "가격 동조화", value: h("span", { className: correlationClassName(priceCorrValue) }, numberFormat(priceCorrValue, 4)) }),
+              h(SummaryCard, { label: "공통 거래일", value: numberFormat(payload.observation_count, 0) + "일" }),
+              h(SummaryCard, { label: "해석", value: describeCorrelation(corrValue) })
+            ),
+            h(
+              "div",
+              { className: "pair-correlation-layout" },
+              h(
+                "div",
+                { className: "panel" },
+                h(SectionTitle, null, "정규화 주가 비교"),
+                h("div", { className: "summary-help" }, (payload.start_date || "-") + " ~ " + (payload.end_date || "-") + " · 기준값 100"),
+                h(PairCorrelationChart, { rows: payload.rows, left: payload.left, right: payload.right })
+              ),
+              h(
+                "div",
+                { className: "panel pair-correlation-summary-panel" },
+                h(SectionTitle, null, "자산 요약"),
+                h("div", { className: "pair-correlation-asset-card" },
+                  h("strong", null, formatCorrelationAssetLabel(payload.left)),
+                  h("span", null, [payload.left && payload.left.market, payload.left && payload.left.kind === "index" ? "지수" : payload.left && payload.left.kind === "kr_stock" ? "국내 종목" : "해외 종목"].filter(Boolean).join(" · ")),
+                  h("div", { className: "pair-correlation-asset-metrics" },
+                    h("span", null, "종가 " + numberFormat(payload.left && payload.left.last_close, 2)),
+                    h("span", { className: Number((payload.left && payload.left.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, "1개월 " + formatPercent(payload.left && payload.left.period_return_pct, 2))
+                  )
+                ),
+                h("div", { className: "pair-correlation-asset-card" },
+                  h("strong", null, formatCorrelationAssetLabel(payload.right)),
+                  h("span", null, [payload.right && payload.right.market, payload.right && payload.right.kind === "index" ? "지수" : payload.right && payload.right.kind === "kr_stock" ? "국내 종목" : "해외 종목"].filter(Boolean).join(" · ")),
+                  h("div", { className: "pair-correlation-asset-metrics" },
+                    h("span", null, "종가 " + numberFormat(payload.right && payload.right.last_close, 2)),
+                    h("span", { className: Number((payload.right && payload.right.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, "1개월 " + formatPercent(payload.right && payload.right.period_return_pct, 2))
+                  )
+                ),
+                h("div", { className: "summary-help" }, payload.method || "")
+              )
+            )
+          )
+        : null
+    );
+  }
+
+  function EtfFlowPage() {
+    const [query, setQuery] = useState("");
+    const [suggestions, setSuggestions] = useState([]);
+    const [selected, setSelected] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
+    const [data, setData] = useState(null);
+    const timerRef = useRef(null);
+    const requestSeqRef = useRef(0);
+
+    useEffect(function () {
+      try {
+        const saved = JSON.parse(localStorage.getItem(ETF_FLOW_PAGE_KEY) || "{}");
+        if (saved && saved.selected) {
+          setSelected(saved.selected);
+          setQuery(formatCorrelationAssetLabel(saved.selected));
+        }
+      } catch (error) {
+      }
+    }, []);
+
+    useEffect(function () {
+      try {
+        localStorage.setItem(ETF_FLOW_PAGE_KEY, JSON.stringify({ selected: selected || null }));
+      } catch (error) {
+      }
+    }, [selected]);
+
+    useEffect(function () {
+      return function () {
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+        }
+      };
+    }, []);
+
+    function queueSearch(value) {
+      const trimmed = String(value || "").trim();
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+      if (!trimmed) {
+        setSuggestions([]);
+        return;
+      }
+      timerRef.current = setTimeout(async function () {
+        try {
+          const payload = await fetchJson("/api/etf-flow/assets/search?q=" + encodeURIComponent(trimmed) + "&limit=12");
+          setSuggestions(ensureArray(payload.items));
+        } catch (fetchError) {
+          setSuggestions([]);
+        }
+      }, 160);
+    }
+
+    function handleInput(value) {
+      setQuery(value);
+      setSelected(null);
+      setSuggestions([]);
+      setData(null);
+      setError("");
+      queueSearch(value);
+    }
+
+    function selectAsset(item) {
+      const normalized = {
+        id: item.id,
+        kind: item.kind,
+        value: item.value,
+        code: item.code || "",
+        symbol: item.symbol || item.value || "",
+        name: item.name || item.symbol || item.value || "",
+        market: item.market || "",
+        label: item.label || "",
+      };
+      setSelected(normalized);
+      setQuery(formatCorrelationAssetLabel(normalized));
+      setSuggestions([]);
+      setData(null);
+      setError("");
+    }
+
+    async function runEstimate() {
+      if (!selected) {
+        setError("종목을 먼저 선택해 주세요.");
+        setData(null);
+        return;
+      }
+      const requestSeq = requestSeqRef.current + 1;
+      requestSeqRef.current = requestSeq;
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams({
+          kind: selected.kind,
+          value: selected.value,
+          name: selected.name || "",
+        });
+        const payload = await fetchJson("/api/etf-flow/estimate?" + params.toString(), { noCache: true });
+        if (requestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setData(payload);
+        emitWindowTitleDetail("etf-flow", payload && payload.asset ? payload.asset.name || payload.asset.symbol || "" : "");
+      } catch (fetchError) {
+        if (requestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setError(fetchError.message || String(fetchError));
+        setData(null);
+      } finally {
+        if (requestSeqRef.current === requestSeq) {
+          setLoading(false);
+        }
+      }
+    }
+
+    function renderSuggestionList() {
+      const rows = ensureArray(suggestions);
+      if (!rows.length) return null;
+      return h(
+        "div",
+        { className: "autocomplete-list pair-correlation-suggestions" },
+        rows.map(function (item) {
+          return h(
+            "button",
+            {
+              key: item.id || item.kind + ":" + item.value,
+              type: "button",
+              className: "autocomplete-item pair-correlation-item",
+              onClick: function () { selectAsset(item); },
+            },
+            h("strong", null, item.name || item.symbol || item.value || "-"),
+            h("span", null, [item.symbol || item.code || item.value || "", item.market || "", item.label || ""].filter(Boolean).join(" · "))
+          );
+        })
+      );
+    }
+
+    const payload = data || {};
+    const rows = ensureArray(payload.rows);
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "div",
+        { className: "panel hero-panel alt" },
+        h("div", { className: "eyebrow" }, "ETF FLOW"),
+        h("h1", { className: "page-title" }, "ETF 자금 추정"),
+        h("p", { className: "page-copy compact-copy" }, "국내 또는 미국 종목을 검색하면 추적 중인 대표 ETF 바스켓 기준으로 현재 편입 비중, 1년 ETF 순유입, 종목별 추정 유입 영향을 역산합니다.")
+      ),
+      h(
+        "div",
+        { className: "pair-correlation-layout" },
+        h(
+          "div",
+          { className: "panel pair-correlation-search-panel" },
+          h(SectionTitle, null, "종목 검색"),
+          h("label", { className: "form-field" },
+            h("input", {
+              value: query,
+              onChange: function (event) { handleInput(event.target.value); },
+              placeholder: "국내 종목명/코드 또는 미국 티커/기업명 검색",
+              onFocus: selectTextOnFocus,
+            })
+          ),
+          renderSuggestionList(),
+          selected
+            ? h("div", { className: "pair-correlation-selected" },
+                h("strong", null, formatCorrelationAssetLabel(selected)),
+                h("span", null, [selected.market || "", selected.kind === "kr_stock" ? "국내 종목" : "미국 종목"].filter(Boolean).join(" · "))
+              )
+            : h("div", { className: "summary-help" }, "국내 상장 종목과 미국 상장 종목을 대상으로 합니다.")
+        ),
+        h(
+          "div",
+          { className: "panel pair-correlation-action-panel" },
+          h(SectionTitle, null, "계산 방식"),
+          h("div", { className: "summary-help" }, "대표 ETF 바스켓 기준입니다. 1년 ETF 순유입 금액 × 편입 비중으로 종목별 추정 유입액을 계산하고, AUM × 편입 비중으로 현재 보유 노출액도 함께 보여줍니다."),
+          h("button", { type: "button", className: "primary-button", onClick: runEstimate, disabled: loading || !selected }, loading ? "계산 중..." : "ETF 자금 추정")
+        )
+      ),
+      error ? h("div", { className: "notice-box error" }, error) : null,
+      loading && !data ? LoadingPanel({ label: "ETF 자금 추정" }) : null,
+      data
+        ? h(
+            React.Fragment,
+            null,
+            h(
+              "div",
+              { className: "summary-grid summary-grid-small" },
+              h(SummaryCard, { label: "추적 ETF 수", value: numberFormat(payload.tracked_etf_count, 0) + "개" }),
+              h(SummaryCard, { label: "편입 ETF 수", value: numberFormat(payload.matched_etf_count, 0) + "개" }),
+              h(SummaryCard, { label: "1년 추정 순유입", value: formatMoneyByCurrency(payload.total_estimated_stock_flow_1y, payload.market_scope === "KR" ? "KRW" : "USD", true) }),
+              h(SummaryCard, { label: "현재 보유 노출액", value: formatMoneyByCurrency(payload.total_holding_exposure, payload.market_scope === "KR" ? "KRW" : "USD", true) })
+            ),
+            h("div", { className: "summary-help", style: { marginTop: "8px" } }, payload.coverage_note || ""),
+            rows.length
+              ? h(
+                  "div",
+                  { className: "panel", style: { marginTop: "14px" } },
+                  h(SectionTitle, null, "ETF별 추정 내역"),
+                  h("div", { className: "summary-help" }, (payload.asset && payload.asset.name ? payload.asset.name : "-") + " · 기준일 " + (payload.as_of || "-")),
+                  h(SortableDataTable, {
+                    rows: rows,
+                    compact: true,
+                    columns: [
+                      { key: "etf_symbol", label: "ETF", render: function (row) { return (row.etf_name || row.etf_symbol || "-") + " (" + (row.etf_symbol || "-") + ")"; } },
+                      { key: "theme", label: "분류", render: function (row) { return row.theme || "-"; } },
+                      { key: "weight_pct", label: "비중", render: function (row) { return formatPercent(row.weight_pct, 2); } },
+                      { key: "flow_1y", label: "ETF 1Y 순유입", render: function (row) { return formatMoneyByCurrency(row.flow_1y, row.currency, true); } },
+                      { key: "estimated_stock_flow_1y", label: "종목 1Y 추정 유입", render: function (row) { return formatMoneyByCurrency(row.estimated_stock_flow_1y, row.currency, true); } },
+                      { key: "holding_exposure", label: "현재 보유 노출액", render: function (row) { return formatMoneyByCurrency(row.holding_exposure, row.currency, true); } },
+                      { key: "holding_rank", label: "편입순위", render: function (row) { return row.holding_rank ? numberFormat(row.holding_rank, 0) + "위" : "-"; } },
+                    ],
+                    sortState: { key: "estimated_stock_flow_1y", direction: "desc" },
+                  })
+                )
+              : h(EmptyState, { message: "추적 중인 ETF 바스켓에서 이 종목을 찾지 못했습니다.", compact: true }),
+            ensureArray(payload.failures).length
+              ? h("div", { className: "summary-help", style: { marginTop: "10px" } }, "일부 ETF는 수집 실패가 있어 제외되었습니다.")
+              : null
+          )
+        : null
+    );
+  }
+
+  function InstitutionalRebalancePage() {
+    const request = useFetchJson("/api/institutional-rebalance");
+    const aiRequest = useFetchJson("/api/institutional-rebalance/ai-brief", { enabled: !!request.data });
+    function metricClass(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number === 0) return "";
+      return number > 0 ? "positive" : "negative";
+    }
+    function scoreText(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "-";
+      return (number > 0 ? "+" : "") + numberFormat(number, 1) + "점";
+    }
+    if (request.loading && !request.data) {
+      return LoadingPanel({ label: request.label });
+    }
+    if (request.error) {
+      return ErrorPanel({ message: request.error });
+    }
+    const data = request.data || {};
+    const aiData = aiRequest.data || {};
+    const aiBrief = aiData.brief || {};
+    const cards = ensureArray(data.cards);
+    const regionalRows = ensureArray(data.regional_rows);
+    const scheduleRows = ensureArray(data.schedule);
+    const assets = ensureArray(data.assets).filter(function (item) {
+      return item && item.category === "index";
+    });
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "div",
+        { className: "panel hero-panel alt" },
+        h("div", { className: "eyebrow" }, "INSTITUTIONAL REBALANCE"),
+        h("h1", { className: "page-title" }, "기관 리밸런싱 추정"),
+        h("p", { className: "page-copy compact-copy" }, data.subtitle || "공개 가격·일정 데이터 기반의 규칙형 추정입니다."),
+        h("div", { className: "summary-help" }, "기준일 " + (data.as_of || "-") + " · 생성 " + (data.generated_at || "-"))
+      ),
+      h(
+        "div",
+        { className: "panel institutional-ai-panel" },
+        h(
+          "div",
+          { className: "section-toolbar" },
+          h("div", null,
+            h("div", { className: "eyebrow" }, "Gemini Commentary"),
+            h(SectionTitle, null, aiBrief.title || "오늘의 기관 수급 해설"),
+            h("div", { className: "summary-help" }, aiBrief.market_regime || "기관 수급 관점 시장 해설")
+          ),
+          h("button", {
+            type: "button",
+            className: "mini-button",
+            onClick: function () { aiRequest.refresh(true); },
+            disabled: aiRequest.loading,
+          }, aiRequest.loading ? "AI 생성 중..." : "AI 새로고침")
+        ),
+        aiRequest.loading && !aiRequest.data
+          ? h(LoadingBlock, { compact: true, title: "Gemini 해설 생성 중", label: aiRequest.label })
+          : aiRequest.error
+            ? h("div", { className: "notice-box error" }, aiRequest.error)
+            : h(
+                React.Fragment,
+                null,
+                h("div", { className: "institutional-ai-one-liner" }, aiBrief.one_liner || "오늘 공개 데이터 기준으로 기관 리밸런싱 가능성을 요약합니다."),
+                h("p", { className: "institutional-ai-summary" }, aiBrief.executive_summary || ""),
+                h(
+                  "div",
+                  { className: "institutional-ai-grid" },
+                  h(
+                    "div",
+                    { className: "institutional-ai-card" },
+                    h("h3", null, "수급 해석"),
+                    ensureArray(aiBrief.flow_summary).length
+                      ? h("div", { className: "institutional-ai-flow-list" }, ensureArray(aiBrief.flow_summary).map(function (item, index) {
+                          return h("div", { key: "flow-" + index, className: "institutional-ai-flow-item" },
+                            h("strong", null, item.name || "-"),
+                            h("em", null, item.view || "-"),
+                            h("p", null, item.reason || "-")
+                          );
+                        }))
+                      : h(EmptyState, { compact: true, message: "AI 해설이 아직 없습니다." })
+                  ),
+                  h(
+                    "div",
+                    { className: "institutional-ai-card" },
+                    h("h3", null, "타이밍"),
+                    h("ul", { className: "institutional-rebalance-reasons" },
+                      ensureArray(aiBrief.timing_points).map(function (item, index) {
+                        return h("li", { key: "timing-" + index }, item);
+                      })
+                    ),
+                    h("h3", null, "액션 포인트"),
+                    h("ul", { className: "institutional-rebalance-reasons" },
+                      ensureArray(aiBrief.action_points).map(function (item, index) {
+                        return h("li", { key: "action-" + index }, item);
+                      })
+                    )
+                  ),
+                  h(
+                    "div",
+                    { className: "institutional-ai-card" },
+                    h("h3", null, "시나리오"),
+                    h("div", { className: "institutional-ai-scenario" },
+                      h("strong", null, "강세"),
+                      h("p", null, (aiBrief.scenarios || {}).bull || "-")
+                    ),
+                    h("div", { className: "institutional-ai-scenario" },
+                      h("strong", null, "기본"),
+                      h("p", null, (aiBrief.scenarios || {}).base || "-")
+                    ),
+                    h("div", { className: "institutional-ai-scenario" },
+                      h("strong", null, "약세"),
+                      h("p", null, (aiBrief.scenarios || {}).bear || "-")
+                    ),
+                    h("h3", null, "리스크"),
+                    h("ul", { className: "institutional-rebalance-reasons" },
+                      ensureArray(aiBrief.risks).map(function (item, index) {
+                        return h("li", { key: "risk-" + index }, item);
+                      })
+                    ),
+                    h("div", { className: "summary-help institutional-ai-footnote" }, (aiBrief.model || "") + (aiData.cached_at ? " · " + aiData.cached_at : ""))
+                  )
+                )
+              )
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(
+          "div",
+          { className: "section-toolbar" },
+          h("div", null, h(SectionTitle, null, "핵심 추정"), h("div", { className: "summary-help" }, "CTA, 옵션 만기, 패시브, 매크로 관점에서 리밸런싱 가능성을 요약합니다.")),
+          h("button", { type: "button", className: "mini-button", onClick: function () { request.refresh(true); } }, request.loading ? "새로고침 중..." : "새로고침")
+        ),
+        h(
+          "div",
+          { className: "summary-grid summary-grid-small" },
+          cards.map(function (card) {
+            return h(SummaryCard, {
+              key: card.key,
+              label: card.label,
+              value: scoreText(card.score),
+              help: (card.direction || "중립") + " · " + (card.window || "-"),
+            });
+          })
+        )
+      ),
+      h(
+        "div",
+        { className: "institutional-rebalance-card-grid" },
+        cards.map(function (card) {
+          return h(
+            "div",
+            { key: card.key, className: "panel institutional-rebalance-card" },
+            h("div", { className: "section-toolbar" },
+              h("div", null,
+                h("div", { className: "section-title" }, card.label || "-"),
+                h("div", { className: "summary-help" }, card.summary || "")
+              ),
+              h("strong", { className: metricClass(card.score) }, scoreText(card.score))
+            ),
+            h("div", { className: "summary-help" }, (card.direction || "중립") + " · " + (card.window || "-")),
+            h("ul", { className: "institutional-rebalance-reasons" },
+              ensureArray(card.reasons).map(function (reason, index) {
+                return h("li", { key: card.key + "-" + index }, reason);
+              })
+            )
+          );
+        })
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "시장별 추정"),
+        h(DataTable, {
+          compact: true,
+          rows: regionalRows,
+          columns: [
+            { key: "market", label: "시장" },
+            { key: "focus", label: "대상 자금" },
+            { key: "score", label: "점수", render: function (row) { return h("strong", { className: metricClass(row.score) }, scoreText(row.score)); } },
+            { key: "direction", label: "방향" },
+            { key: "window", label: "예상 시점" },
+            { key: "one_week", label: "1W", render: function (row) { return h("span", { className: metricClass(row.one_week) }, formatPercent(row.one_week, 2)); } },
+            { key: "one_month", label: "1M", render: function (row) { return h("span", { className: metricClass(row.one_month) }, formatPercent(row.one_month, 2)); } },
+            { key: "three_month", label: "3M", render: function (row) { return h("span", { className: metricClass(row.three_month) }, formatPercent(row.three_month, 2)); } },
+            { key: "summary", label: "근거" },
+          ],
+          emptyMessage: "표시할 시장별 추정 데이터가 없습니다.",
+        })
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "다가오는 일정"),
+        h(DataTable, {
+          compact: true,
+          rows: scheduleRows,
+          columns: [
+            { key: "date", label: "날짜" },
+            { key: "market", label: "시장" },
+            { key: "category", label: "분류" },
+            { key: "title", label: "이벤트" },
+            { key: "days_left", label: "D-Day", render: function (row) { return "D" + (Number(row.days_left) > 0 ? "-" + numberFormat(row.days_left, 0) : Number(row.days_left) === 0 ? "-0" : "+" + numberFormat(Math.abs(Number(row.days_left)), 0)); } },
+            { key: "note", label: "비고" },
+          ],
+          emptyMessage: "표시할 일정이 없습니다.",
+        })
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "지수 근거 데이터"),
+        h(DataTable, {
+          compact: true,
+          rows: assets,
+          columns: [
+            { key: "market", label: "시장" },
+            { key: "name", label: "지수" },
+            { key: "trend_score", label: "추세점수", render: function (row) { return h("strong", { className: metricClass(row.trend_score) }, scoreText(row.trend_score)); } },
+            { key: "return_1w_pct", label: "1W", render: function (row) { return h("span", { className: metricClass(row.return_1w_pct) }, formatPercent(row.return_1w_pct, 2)); } },
+            { key: "return_1m_pct", label: "1M", render: function (row) { return h("span", { className: metricClass(row.return_1m_pct) }, formatPercent(row.return_1m_pct, 2)); } },
+            { key: "return_3m_pct", label: "3M", render: function (row) { return h("span", { className: metricClass(row.return_3m_pct) }, formatPercent(row.return_3m_pct, 2)); } },
+            { key: "ma20_gap_pct", label: "20일선 괴리", render: function (row) { return h("span", { className: metricClass(row.ma20_gap_pct) }, formatPercent(row.ma20_gap_pct, 2)); } },
+            { key: "ma200_gap_pct", label: "200일선 괴리", render: function (row) { return h("span", { className: metricClass(row.ma200_gap_pct) }, formatPercent(row.ma200_gap_pct, 2)); } },
+            { key: "trend_direction", label: "판정" },
+          ],
+          emptyMessage: "표시할 지수 데이터가 없습니다.",
+        })
+      ),
+      h(
+        "div",
+        { className: "panel" },
+        h(SectionTitle, null, "판정 기준"),
+        h("ul", { className: "institutional-rebalance-reasons" },
+          ensureArray(data.method_notes).map(function (note, index) {
+            return h("li", { key: "note-" + index }, note);
+          })
+        ),
+        ensureArray(data.errors).length
+          ? h("div", { className: "notice-box compact" }, "일부 보조 데이터는 제외되었습니다: " + ensureArray(data.errors).slice(0, 4).join(" / "))
+          : null
+      )
+    );
+  }
+
   function SectorEntryLeaderChips(props) {
     const stocks = ensureArray(props.stocks);
     const betaLabel = props.betaLabel || "";
@@ -10546,7 +19815,7 @@
         h(
           "div",
           { className: "sector-entry-formula-code" },
-          "strength_score = ?? ???? + ?? ????0.18 + min(???,12)?1.4 + min(????/??%,30)"
+          "strength_score = 평균 점수 + 최고 점수×0.18 + min(종목수,12)×1.4 + min(거래대금/시총%,30)"
         ),
         h(
           "div",
@@ -11583,21 +20852,24 @@
   }
 
   function ThemesPageV2() {
+    const savedThemeState = loadThemeSectorState();
     const [selectedFileDate, setSelectedFileDate] = useState(function () {
-      const saved = loadThemeSectorState();
-      return saved.lastFileDate || "";
+      return "";
     });
+    const [universeMode, setUniverseMode] = useState(savedThemeState.universeMode === "etf" ? "etf" : "stock");
     const [sectorFilter, setSectorFilter] = useState("all");
     const [calendarMode, setCalendarMode] = useState("week");
     const [calendarScoreBasis, setCalendarScoreBasis] = useState("score");
     const [themeBoxExpanded, setThemeBoxExpanded] = useState(false);
+    const [calendarChartOpen, setCalendarChartOpen] = useState(false);
     const [calendarRefreshing, setCalendarRefreshing] = useState(false);
     const [sectorSaveState, setSectorSaveState] = useState({ status: "idle", message: "" });
     const [noteSaveState, setNoteSaveState] = useState({ status: "idle", message: "" });
     const [noteOverrides, setNoteOverrides] = useState({});
     const [sectorState, setSectorState] = useState({ stockMap: {}, sectors: [] });
     const [reloadingExcel, setReloadingExcel] = useState(false);
-    
+    const [rebuildingSelectedDate, setRebuildingSelectedDate] = useState(false);
+
     const [reloadMessage, setReloadMessage] = useState("");
     const [reloadStartedAt, setReloadStartedAt] = useState(0);
     const [reloadElapsedSec, setReloadElapsedSec] = useState(0);
@@ -11609,6 +20881,8 @@
     const scoreHistoryHoverCloseRef = useRef(null);
     const scoreHistoryCacheRef = useRef({});
     const scoreHistoryRequestSeqRef = useRef(0);
+    const tradingValueHistoryCacheRef = useRef({});
+    const tradingValueHistoryRequestSeqRef = useRef(0);
     const [calendarCopyState, setCalendarCopyState] = useState({ status: "", message: "" });
     const [manualSummaryCopyState, setManualSummaryCopyState] = useState({ status: "", message: "" });
     const [scoreTableCopyState, setScoreTableCopyState] = useState({ status: "", message: "" });
@@ -11619,6 +20893,7 @@
     const [stockSearchMessage, setStockSearchMessage] = useState("");
     const [highlightedStockKey, setHighlightedStockKey] = useState("");
     const [themeTableSortState, setThemeTableSortState] = useState({ key: "score", direction: "desc" });
+    const [rankFilterMode, setRankFilterMode] = useState("all");
     const stockRowRefs = useRef({});
     const pendingStockScrollKeyRef = useRef("");
     const themeTableScrollRef = useRef(null);
@@ -11628,11 +20903,45 @@
       open: false,
       mode: "modal",
       loading: false,
+      loadingMore: false,
+      hasMore: true,
       error: "",
       row: null,
       payload: null,
+      cacheKey: "",
       position: null,
+      activeTab: "trend",
     });
+    const scoreHistoryClickTimerRef = useRef(null);
+    const [tradingValueHistoryPopup, setTradingValueHistoryPopup] = useState({
+      open: false,
+      loading: false,
+      error: "",
+      row: null,
+      payload: null,
+    });
+    const [krEtfDetailPopup, setKrEtfDetailPopup] = useState({
+      open: false,
+      loading: false,
+      error: "",
+      row: null,
+      payload: null,
+    });
+    const krEtfDetailRequestSeqRef = useRef(0);
+    const [scoreFormulaModalOpen, setScoreFormulaModalOpen] = useState(false);
+    const [scoreFormulaDraft, setScoreFormulaDraft] = useState(null);
+    const [scoreFormulaStatus, setScoreFormulaStatus] = useState({ type: "", message: "" });
+    const [scoreFormulaSaving, setScoreFormulaSaving] = useState(false);
+    const [scoreFormulaRecalculating, setScoreFormulaRecalculating] = useState(false);
+    const [scoreFormulaSnapshotSaving, setScoreFormulaSnapshotSaving] = useState(false);
+    const [scoreFormulaOracleSyncing, setScoreFormulaOracleSyncing] = useState(false);
+    const [scoreFormulaJobState, setScoreFormulaJobState] = useState(null);
+    const scoreFormulaJobPollRef = useRef(null);
+    const scoreFormulaConfigRequest = useFetchJson("/api/themes/score-formula-config");
+    const scoreFormulaSnapshotsRequest = useFetchJson("/api/themes/score-formula-snapshots?market=kr&limit=20", {
+      enabled: scoreFormulaModalOpen,
+    });
+    const [scoreFormulaSnapshotLabel, setScoreFormulaSnapshotLabel] = useState("");
     const [tradingViewPopup, setTradingViewPopup] = useState({
       open: false,
       row: null,
@@ -11641,6 +20950,9 @@
       loading: false,
       error: "",
       data: null,
+      targetHistory: null,
+      openingExternal: false,
+      externalMessage: "",
     });
     const stockChartRequestSeqRef = useRef(0);
     const [sectorMarketCapPopup, setSectorMarketCapPopup] = useState({
@@ -11652,23 +20964,183 @@
     });
     const sectorMarketCapRequestSeqRef = useRef(0);
     const [datePickerMonth, setDatePickerMonth] = useState(function () {
-      const saved = loadThemeSectorState();
       const today = new Date();
       const fallback = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0");
-      return saved.lastFileDate ? String(saved.lastFileDate).slice(0, 7) : fallback;
+      return savedThemeState.lastFileDate ? String(savedThemeState.lastFileDate).slice(0, 7) : fallback;
     });
-    const themesUrl = "/api/themes/today?min_score=0&recent_limit=20" + (selectedFileDate ? "&file_date=" + encodeURIComponent(selectedFileDate) : "");
-    const themesRequest = useFetchJson(themesUrl, { refreshOnMount: true });
-    const sectorDbRequest = useFetchJson("/api/sector-db");
-    const calendarRequest = useFetchJson("/api/theme-sector-calendar?min_score=0&limit=60&score_basis=" + encodeURIComponent(calendarScoreBasis));
+    const [fullThemesPrimed, setFullThemesPrimed] = useState(false);
+    const [calendarPrimed, setCalendarPrimed] = useState(false);
+    const themesPageModule = getStockAppModule("themesPage");
+    const universeQuery = "&universe=" + encodeURIComponent(universeMode === "etf" ? "etf" : "stock");
+    const themesUrl = typeof themesPageModule.buildThemesTodayUrl === "function"
+      ? themesPageModule.buildThemesTodayUrl({ universeMode: universeMode, selectedFileDate: selectedFileDate, cacheOnly: true })
+      : "/api/themes/today?min_score=0&recent_limit=20&cache_only=1" + universeQuery + (selectedFileDate ? "&file_date=" + encodeURIComponent(selectedFileDate) : "");
+    const liteThemesUrl = typeof themesPageModule.buildThemesTodayUrl === "function"
+      ? themesPageModule.buildThemesTodayUrl({ universeMode: universeMode, selectedFileDate: selectedFileDate, lite: true })
+      : themesUrl + "&lite=1";
+    const calendarUrl = typeof themesPageModule.buildSectorCalendarUrl === "function"
+      ? themesPageModule.buildSectorCalendarUrl({ calendarScoreBasis: calendarScoreBasis, universeMode: universeMode })
+      : "/api/theme-sector-calendar?min_score=0&limit=60&score_basis=" + encodeURIComponent(calendarScoreBasis) + universeQuery;
+    const liteThemesRequest = useFetchJson(liteThemesUrl);
+    const fullThemesRequest = useFetchJson(themesUrl, {
+      enabled: !!liteThemesRequest.data && !!liteThemesRequest.data.runtime_cache_available && fullThemesPrimed,
+    });
+    function matchesSelectedThemeDate(payload) {
+      if (!payload) {
+        return false;
+      }
+      const requestedDate = String(selectedFileDate || "");
+      if (!requestedDate) {
+        return true;
+      }
+      if (String(payload.file_date || "") === requestedDate) {
+        return true;
+      }
+      return payload.fallback_reason === "requested_file_missing"
+        && String(payload.requested_file_date || "") === requestedDate;
+    }
+    const matchingLiteThemesData = matchesSelectedThemeDate(liteThemesRequest.data) ? liteThemesRequest.data : null;
+    const matchingFullThemesData = matchesSelectedThemeDate(fullThemesRequest.data) ? fullThemesRequest.data : null;
+    const themesData = matchingFullThemesData || matchingLiteThemesData || null;
+    const themesLoading = !themesData && liteThemesRequest.loading;
+    const themesError = themesData ? "" : (liteThemesRequest.error || fullThemesRequest.error || "");
+    const themesLabel = fullThemesRequest.loading && liteThemesRequest.loading
+      ? [liteThemesRequest.label, fullThemesRequest.label].filter(Boolean).join(" · ")
+      : (liteThemesRequest.loading ? liteThemesRequest.label : (fullThemesRequest.loading ? fullThemesRequest.label : liteThemesRequest.label));
+    const refreshThemesData = async function (forceRefresh) {
+      const litePayload = await liteThemesRequest.refresh(forceRefresh);
+      if (!litePayload) {
+        return null;
+      }
+      setFullThemesPrimed(true);
+      return fullThemesRequest.refresh(forceRefresh);
+    };
+    const sectorDbRequest = useFetchJson("/api/sector-db", {
+      enabled: themeBoxExpanded,
+    });
+    const calendarRequest = useFetchJson(calendarUrl, { enabled: !!themesData && calendarPrimed });
+    const calendarScoreHistoryUrl = "/api/theme-calendar-index-score?limit=3000&score_basis="
+      + encodeURIComponent(calendarScoreBasis)
+      + universeQuery
+      + "&chart_cache_rev=20260719-01";
+    const calendarScoreHistoryRequest = useFetchJson(calendarScoreHistoryUrl, {
+      enabled: !!themesData && themeBoxExpanded && calendarChartOpen,
+    });
 
     useEffect(function () {
       persistThemeSectorState({
         stockMap: {},
         sectors: [],
         lastFileDate: selectedFileDate,
+        universeMode: universeMode,
       });
-    }, [selectedFileDate]);
+    }, [selectedFileDate, universeMode]);
+
+    useEffect(function () {
+      setFullThemesPrimed(false);
+      setCalendarPrimed(false);
+    }, [themesUrl]);
+
+    useEffect(function () {
+      if (!liteThemesRequest.data || fullThemesPrimed) {
+        return;
+      }
+      let cancelled = false;
+      let idleHandle = null;
+      let timeoutHandle = null;
+      const prime = function () {
+        if (!cancelled) {
+          setFullThemesPrimed(true);
+        }
+      };
+      if (typeof window.requestIdleCallback === "function") {
+        idleHandle = window.requestIdleCallback(prime, { timeout: 900 });
+      } else {
+        timeoutHandle = window.setTimeout(prime, 450);
+      }
+      return function () {
+        cancelled = true;
+        if (idleHandle != null && typeof window.cancelIdleCallback === "function") {
+          window.cancelIdleCallback(idleHandle);
+        }
+        if (timeoutHandle != null) {
+          window.clearTimeout(timeoutHandle);
+        }
+      };
+    }, [liteThemesRequest.data, fullThemesPrimed, themesUrl]);
+
+    useEffect(function () {
+      const payload = liteThemesRequest.data;
+      const availableFiles = payload && Array.isArray(payload.available_files) ? payload.available_files : [];
+      if (!availableFiles.length) {
+        return;
+      }
+      const activeDate = String((payload && payload.file_date) || selectedFileDate || "");
+      const activeIndex = availableFiles.findIndex(function (item) {
+        return String((item && item.file_date) || "") === activeDate;
+      });
+      if (activeIndex < 0) {
+        return;
+      }
+      [activeIndex - 2, activeIndex - 1, activeIndex + 1, activeIndex + 2].forEach(function (index) {
+        const item = availableFiles[index];
+        const dateText = String((item && item.file_date) || "");
+        if (!dateText) {
+          return;
+        }
+        const prefetchUrl = typeof themesPageModule.buildThemesTodayUrl === "function"
+          ? themesPageModule.buildThemesTodayUrl({ universeMode: universeMode, selectedFileDate: dateText, lite: true })
+          : "/api/themes/today?min_score=0&recent_limit=20&lite=1" + universeQuery + "&file_date=" + encodeURIComponent(dateText);
+        prefetchJson(prefetchUrl);
+      });
+    }, [liteThemesRequest.data, selectedFileDate, universeMode]);
+
+    useEffect(function () {
+      function handleAutoDailyBuild(event) {
+        const detail = (event && event.detail) || {};
+        if (detail.market !== "kr") {
+          return;
+        }
+        refreshThemesData(true).catch(function () {
+        });
+        if (calendarPrimed) {
+          calendarRequest.refresh(true).catch(function () {
+          });
+        }
+      }
+      window.addEventListener(AUTO_DAILY_THEME_BUILD_EVENT, handleAutoDailyBuild);
+      return function () {
+        window.removeEventListener(AUTO_DAILY_THEME_BUILD_EVENT, handleAutoDailyBuild);
+      };
+    }, [refreshThemesData, calendarRequest, calendarPrimed]);
+
+    useEffect(function () {
+      if (!themesData || calendarPrimed) {
+        return undefined;
+      }
+      let cancelled = false;
+      let idleHandle = null;
+      let timeoutHandle = null;
+      const prime = function () {
+        if (!cancelled) {
+          setCalendarPrimed(true);
+        }
+      };
+      if (typeof window.requestIdleCallback === "function") {
+        idleHandle = window.requestIdleCallback(prime, { timeout: 1200 });
+      } else {
+        timeoutHandle = window.setTimeout(prime, 900);
+      }
+      return function () {
+        cancelled = true;
+        if (idleHandle != null && typeof window.cancelIdleCallback === "function") {
+          window.cancelIdleCallback(idleHandle);
+        }
+        if (timeoutHandle != null) {
+          window.clearTimeout(timeoutHandle);
+        }
+      };
+    }, [themesData, calendarPrimed, themesUrl, calendarScoreBasis, universeMode]);
 
     useEffect(function () {
       if (!sectorDbRequest.data) {
@@ -11691,16 +21163,26 @@
     }, [sectorDbRequest.data]);
 
     useEffect(function () {
-      if (!themesRequest.data || !themesRequest.data.file_date) {
+      if (!themesData || !themesData.file_date) {
         return;
       }
-      if (!selectedFileDate || themesRequest.data.fallback_reason === "requested_file_missing") {
-        setSelectedFileDate(themesRequest.data.file_date);
-        if (themesRequest.data.fallback_reason === "requested_file_missing") {
-          setReloadMessage("선택했던 " + (themesRequest.data.requested_file_date || "날짜") + " 파일이 없어 " + themesRequest.data.file_date + " 파일로 다시 불러왔습니다.");
+      if (!selectedFileDate || themesData.fallback_reason === "requested_file_missing") {
+        setSelectedFileDate(themesData.file_date);
+        if (themesData.fallback_reason === "requested_file_missing") {
+          setReloadMessage("선택했던 " + (themesData.requested_file_date || "날짜") + " 파일이 없어 " + themesData.file_date + " 파일로 다시 불러왔습니다.");
         }
       }
-    }, [selectedFileDate, themesRequest.data]);
+    }, [selectedFileDate, themesData]);
+
+    useEffect(function () {
+      const payload = scoreFormulaConfigRequest.data || null;
+      if (!payload || !payload.config) {
+        return;
+      }
+      setScoreFormulaDraft(function (current) {
+        return current || JSON.parse(JSON.stringify(payload.config));
+      });
+    }, [scoreFormulaConfigRequest.data]);
 
     useEffect(function () {
       if (selectedFileDate) {
@@ -11715,10 +21197,17 @@
       if (themeTableScrollRef.current) {
         themeTableScrollRef.current.scrollTop = 0;
       }
-    }, [selectedFileDate, sectorFilter, themeTableSortState.key, themeTableSortState.direction]);
+    }, [selectedFileDate, sectorFilter, themeTableSortState.key, themeTableSortState.direction, rankFilterMode, universeMode]);
+
+    useEffect(function () {
+      setSectorFilter("all");
+      setStockSearchMessage("");
+      setHighlightedStockKey("");
+    }, [universeMode]);
 
     useEffect(function () {
       return function () {
+        stopScoreFormulaJobPolling();
         if (scoreHistoryHoverOpenRef.current) {
           clearTimeout(scoreHistoryHoverOpenRef.current);
         }
@@ -11786,7 +21275,6 @@
     }, [sectorFilter, highlightedStockKey, selectedFileDate]);
 
     useEffect(function () {
-      const themesData = themesRequest.data || null;
       if (!themesData) {
         return;
       }
@@ -11818,15 +21306,12 @@
       } else {
         setStockSearchMessage("검색 대상 종목을 현재 날짜 데이터에서 찾지 못했습니다.");
       }
-    }, [themesRequest.data, selectedFileDate]);
-    if (themesRequest.loading && !themesRequest.data) {
-      return LoadingPanel({ label: themesRequest.label });
-    }
-    if (themesRequest.error) {
-      return ErrorPanel({ message: themesRequest.error });
-    }
-
-    const themes = themesRequest.data || {};
+    }, [themesData, selectedFileDate]);
+    const themes = themesData || {};
+    const isEtfUniverse = universeMode === "etf";
+    const themePageTitle = isEtfUniverse ? "오늘의 주도주 · 국내 ETF" : "오늘의 주도주";
+    const themeUniverseHelp = isEtfUniverse ? "국내 상장 ETF 전체" : "시총 2000억 이상 전체";
+    const themeUniverseCountLabel = isEtfUniverse ? "국내 상장 ETF" : "시총 2000억 이상";
     const calendar = calendarRequest.data || {};
     const anchorDate = selectedFileDate || themes.file_date || "";
     const selectedDateValue = selectedFileDate || themes.file_date || "";
@@ -11842,6 +21327,14 @@
       return String(a.date || "").localeCompare(String(b.date || ""));
     });
     const calendarDayScoreMap = {};
+    const chartScoreHistoryPayload = calendarScoreHistoryRequest.data || null;
+    ensureArray(chartScoreHistoryPayload && chartScoreHistoryPayload.rows).forEach(function (day) {
+      const key = String(day.date || "");
+      const score = Number(day.score);
+      if (key && Number.isFinite(score)) {
+        calendarDayScoreMap[key] = score;
+      }
+    });
     sortedCalendarDays.forEach(function (day) {
       const key = String(day.date || "");
       if (!key) return;
@@ -11850,6 +21343,19 @@
         calendarDayScoreMap[key] = score;
       }
     });
+    const chartScoreSeriesRows = ensureArray(chartScoreHistoryPayload && chartScoreHistoryPayload.rows).map(function (day) {
+      return {
+        date: String(day.date || ""),
+        score: Number(day.score),
+        kospi_close: day.kospi_close == null ? null : Number(day.kospi_close),
+        kospi_normalized: day.kospi_normalized == null ? null : Number(day.kospi_normalized),
+      };
+    }).filter(function (item) {
+      return item.date && Number.isFinite(item.score);
+    });
+    const chartDateRangeLabel = chartScoreSeriesRows.length
+      ? (chartScoreSeriesRows[0].date + " ~ " + chartScoreSeriesRows[chartScoreSeriesRows.length - 1].date)
+      : "";
     const visibleCalendarDays = filterCalendarDays(sortedCalendarDays, anchorDate, calendarMode);
     const calendarTopSectors = getCalendarTopSectors(visibleCalendarDays, 5);
     function noteKeyForRow(row) {
@@ -11866,7 +21372,37 @@
         manual_sector: String(localSector !== undefined ? localSector : (row.manual_sector || "")),
         note: hasNoteOverride ? noteOverrides[noteKey] : (row.note || ""),
       });
-    });
+    }).reduce(function (accumulator, row) {
+      const strictCode = strictKrStockCode(row.stock_code);
+      const normalizedName = normalizeStockSearchText(row.stock_name || row.resolved_name || "");
+      if (!strictCode && !normalizedName) {
+        accumulator.push(row);
+        return accumulator;
+      }
+      const existingIndex = accumulator.findIndex(function (item) {
+        const existingCode = strictKrStockCode(item.stock_code);
+        const existingName = normalizeStockSearchText(item.stock_name || item.resolved_name || "");
+        return (strictCode && existingCode && existingCode === strictCode)
+          || (normalizedName && existingName && existingName === normalizedName);
+      });
+      if (existingIndex < 0) {
+        accumulator.push(row);
+        return accumulator;
+      }
+      const existing = accumulator[existingIndex];
+      const existingCode = strictKrStockCode(existing.stock_code);
+      const currentCode = strictCode;
+      if (!existingCode && currentCode) {
+        accumulator[existingIndex] = row;
+        return accumulator;
+      }
+      const existingScore = Number(existing.score || 0);
+      const currentScore = Number(row.score || 0);
+      if (currentScore > existingScore) {
+        accumulator[existingIndex] = row;
+      }
+      return accumulator;
+    }, []);
     const usedSectorSet = new Set();
     Object.keys(sectorState.stockMap || {}).forEach(function (key) {
       const sector = String((sectorState.stockMap || {})[key] || "").trim();
@@ -11892,20 +21428,23 @@
         sectorIndexMap[sector] = {
           sector: sector,
           count: 0,
-          scoreTotal: 0,
+          changeTotal: 0,
           leaders: [],
           firstIndex: index,
         };
         sectorSummary.push(sectorIndexMap[sector]);
       }
       sectorIndexMap[sector].count += 1;
-      sectorIndexMap[sector].scoreTotal += Number(row.score || 0);
+      sectorIndexMap[sector].changeTotal += Number(row.change_pct || 0);
       if (sectorIndexMap[sector].leaders.length < 4) {
         sectorIndexMap[sector].leaders.push(row.stock_name);
       }
     });
     sectorSummary.forEach(function (item) {
-      item.avg_score = item.count ? item.scoreTotal / item.count : 0;
+      item.avg_change_pct = item.count ? item.changeTotal / item.count : 0;
+    });
+    sectorSummary.sort(function (a, b) {
+      return Number(b.avg_change_pct || 0) - Number(a.avg_change_pct || 0);
     });
 
 
@@ -11917,19 +21456,48 @@
       sector: function (row) { return String(row.manual_sector || "").trim(); },
       stock_name: function (row) { return String(row.stock_name || row.resolved_name || row.stock_code || ""); },
       sortino_norm: function (row) { return Number(row.sortino_norm || 0); },
+      atr_20: function (row) { return Number(row.atr_20_pct || row.atr_20 || 0); },
       score_o: function (row) { return Number(row.score_o || 0); },
       market_cap_100m: function (row) { return Number(row.market_cap_100m || 0); },
       trading_value_100m: function (row) { return Number(row.trading_value_100m || 0); },
+      high_drawdown_pct: function (row) {
+        const rawValue = Number(row && row.pct_to_52w_high);
+        const tradingValue = Number((row && row.trading_value_100m) || 0);
+        if (!Number.isFinite(rawValue) || tradingValue <= 0) {
+          return null;
+        }
+        return rawValue;
+      },
       change_pct: function (row) { return Number(row.change_pct || 0); },
       score: function (row) { return Number(row.score || 0); },
       note: function (row) { return String(row.note || ""); },
     };
     const sortKey = themeTableSortState.key || "score";
+    const isRank52Mode = sortKey === "rank" && rankFilterMode === "high52";
+    const isRankNear52Mode = sortKey === "rank" && rankFilterMode === "high20";
+    const preserveCompositeRank = sectorFilter !== "all" || isRank52Mode || isRankNear52Mode;
     const baseVisibleRows = sortKey === "rank"
-      ? visibleRows.filter(function (row) { return isTradableHigh52(row); })
+      ? visibleRows.filter(function (row) {
+          if (isRank52Mode) {
+            return isTradableHigh52(row);
+          }
+          if (isRankNear52Mode) {
+            return isTradableHigh20(row) && Number(row && row.pct_to_52w_high) <= 30;
+          }
+          return true;
+        })
       : visibleRows;
     const sortedVisibleRows = baseVisibleRows.slice().sort(function (left, right) {
       if (sortKey === "rank") {
+        const rankModeScoreKey = (isRank52Mode || isRankNear52Mode) ? "score" : "score_o";
+        const primaryGap = Number(right[rankModeScoreKey] || 0) - Number(left[rankModeScoreKey] || 0);
+        if (primaryGap !== 0) {
+          return primaryGap;
+        }
+        const secondaryGap = Number(right.score || 0) - Number(left.score || 0);
+        if (secondaryGap !== 0) {
+          return secondaryGap;
+        }
         const dailyGap = Number(right.score_o || 0) - Number(left.score_o || 0);
         if (dailyGap !== 0) {
           return dailyGap;
@@ -11942,7 +21510,19 @@
       const leftNumber = Number(leftValue);
       const rightNumber = Number(rightValue);
       var result = 0;
-      if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      if (sortKey === "high_drawdown_pct") {
+        const leftMissing = leftValue === null || leftValue === undefined || !Number.isFinite(leftNumber);
+        const rightMissing = rightValue === null || rightValue === undefined || !Number.isFinite(rightNumber);
+        if (leftMissing && rightMissing) {
+          result = 0;
+        } else if (leftMissing) {
+          result = 1;
+        } else if (rightMissing) {
+          result = -1;
+        } else {
+          result = leftNumber - rightNumber;
+        }
+      } else if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
         result = leftNumber - rightNumber;
       } else {
         result = String(leftValue || "").localeCompare(String(rightValue || ""), "ko");
@@ -11957,10 +21537,12 @@
       { key: "sector", label: "섹터" },
       { key: "stock_name", label: "종목명" },
       { key: "sortino_norm", label: "Sortino" },
-      { key: "score_o", label: "당일점수" },
+      { key: "atr_20", label: "% ATR(20)" },
       { key: "market_cap_100m", label: "시총(억)" },
       { key: "trading_value_100m", label: "거래대금(억)" },
+      { key: "high_drawdown_pct", label: "고점대비" },
       { key: "change_pct", label: "등락률" },
+      { key: "score_o", label: "당일점수" },
       { key: "score", label: "종합점수" },
       { key: "note", label: "비고" },
     ];
@@ -11981,27 +21563,45 @@
     sortedVisibleRows.forEach(function (row, index) {
       visibleRowIndexByKey[buildStockSearchKey(row)] = index;
     });
+    const displayFormulaConfig = (scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config && scoreFormulaConfigRequest.data.config.display_formula) || {};
+    const krCaptureScoreThreshold = Number(displayFormulaConfig.kr_capture_score_threshold || 100);
+    const dailyCaptureScoreThreshold = Number(
+      displayFormulaConfig.kr_daily_capture_score_threshold == null
+        ? 70
+        : displayFormulaConfig.kr_daily_capture_score_threshold
+    );
     const isRankSort = themeTableSortState.key === "rank";
     const isDailyScoreSort = themeTableSortState.key === "score_o";
     const captureTitle = isRankSort
-      ? "종목 추세 순위 · 52주 신고가"
-      : (isDailyScoreSort ? "종목 추세 순위 · 당일점수 100점 이상" : "종목 추세 순위 · 종합점수 50점 이상");
+      ? (isRankNear52Mode ? "종목 추세 순위 · 20일 신고가 · 52주 신고가 30% 이내" : (isRank52Mode ? "종목 추세 순위 · 52주 신고가" : "종목 추세 순위"))
+      : (isDailyScoreSort ? "종목 추세 순위 · 당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상" : "종목 추세 순위 · 종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상");
     const captureButtonLabel = isRankSort
-      ? "52주 신고가 캡쳐"
-      : (isDailyScoreSort ? "당일점수 100점 이상 캡쳐" : "종합점수 50점 이상 캡쳐");
+      ? (isRankNear52Mode ? "20일 신고가 · 52주 30% 이내 캡쳐" : (isRank52Mode ? "52주 신고가 캡쳐" : "전체 캡쳐"))
+      : (isDailyScoreSort ? "당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상 캡쳐" : "종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상 캡쳐");
     const captureSummaryLabel = isRankSort
-      ? "52주 신고가"
-      : (isDailyScoreSort ? "당일점수 100점 이상" : "종합점수 50점 이상");
+      ? (isRankNear52Mode ? "20일 신고가 · 52주 신고가 30% 이내" : (isRank52Mode ? "52주 신고가" : "전체"))
+      : (isDailyScoreSort ? "당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상" : "종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상");
     const captureEmptyMessage = isRankSort
-      ? "52주 신고가 종목이 없습니다."
-      : (isDailyScoreSort ? "당일점수 100점 이상 종목이 없습니다." : "종합점수 50점 이상 종목이 없습니다.");
+      ? (isRankNear52Mode ? "20일 신고가이면서 52주 신고가까지 30% 이내인 종목이 없습니다." : (isRank52Mode ? "52주 신고가 종목이 없습니다." : "표시할 종목이 없습니다."))
+      : (isDailyScoreSort ? "당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상 종목이 없습니다." : "종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상 종목이 없습니다.");
     const scoreCaptureRows = (isRankSort ? sortedVisibleRows : sortedVisibleRows
       .filter(function (row) {
-        return isDailyScoreSort ? Number(row.score_o || 0) >= 100 : Number(row.score || 0) >= 50;
+        return isDailyScoreSort ? Number(row.score_o || 0) >= dailyCaptureScoreThreshold : Number(row.score || 0) >= krCaptureScoreThreshold;
       }))
       .map(function (row, index) {
-        return Object.assign({}, row, { __display_rank: index + 1 });
+        const compositeRank = Number(row && row.rank);
+        const displayRank = preserveCompositeRank && Number.isFinite(compositeRank) && compositeRank > 0
+          ? compositeRank
+          : index + 1;
+        return Object.assign({}, row, { __display_rank: displayRank });
       });
+    const rankHighCountLabel = isRank52Mode
+      ? "52주 신고가 " + numberFormat(rows.filter(isTradableHigh52).length, 0) + "개"
+      : (isRankNear52Mode
+        ? "조건 종목 " + numberFormat(rows.filter(function (row) {
+            return isTradableHigh20(row) && Number(row && row.pct_to_52w_high) <= 30;
+          }).length, 0) + "개"
+        : "");
     const maxLeadCount = sortedVisibleRows.reduce(function (maxValue, row) {
       return Math.max(maxValue, Math.abs(Number(row.lead_count || 0)));
     }, 0);
@@ -12010,14 +21610,37 @@
     }, 0);
 
     function toggleThemeTableSort(sortKey) {
-      setThemeTableSortState(function (current) {
-        if (sortKey === "rank") {
-          return { key: "rank", direction: "desc" };
+      if (sortKey === "rank") {
+        if (themeTableSortState.key !== "rank") {
+          setRankFilterMode("high52");
+          setThemeTableSortState({ key: "rank", direction: "desc" });
+          return;
         }
+        if (rankFilterMode === "high52") {
+          setRankFilterMode("high20");
+          setThemeTableSortState({ key: "rank", direction: "desc" });
+          return;
+        }
+        if (rankFilterMode === "high20") {
+          setRankFilterMode("all");
+          setThemeTableSortState({ key: "score", direction: "desc" });
+          return;
+        }
+        setRankFilterMode("high52");
+        setThemeTableSortState({ key: "rank", direction: "desc" });
+        return;
+      }
+      setRankFilterMode("all");
+      setThemeTableSortState(function (current) {
         if (current && current.key === sortKey) {
           return { key: sortKey, direction: current.direction === "desc" ? "asc" : "desc" };
         }
-        return { key: sortKey, direction: sortKey === "stock_name" || sortKey === "sector" || sortKey === "note" ? "asc" : "desc" };
+        return {
+          key: sortKey,
+          direction: sortKey === "stock_name" || sortKey === "sector" || sortKey === "note" || sortKey === "high_drawdown_pct"
+            ? "asc"
+            : "desc"
+        };
       });
     }
 
@@ -12025,9 +21648,52 @@
       return String(value || "").toLowerCase().replace(/\s+/g, "");
     }
 
+    function strictKrStockCode(value) {
+      if (value == null) {
+        return "";
+      }
+      const text = String(value).trim();
+      if (/^\d{6}$/.test(text)) {
+        return text;
+      }
+      if (/^\d{5}$/.test(text)) {
+        return text.padStart(6, "0");
+      }
+      if (/^\d+\.0$/.test(text)) {
+        const normalized = text.split(".", 1)[0];
+        return /^\d{5,6}$/.test(normalized) ? normalized.padStart(6, "0") : "";
+      }
+      return "";
+    }
+
+    function displayStockCode(value) {
+      if (value == null) {
+        return "";
+      }
+      const text = String(value).trim();
+      if (!text) {
+        return "";
+      }
+      const strictCode = strictKrStockCode(text);
+      if (strictCode) {
+        return strictCode;
+      }
+      if (/^\d+\.0$/.test(text)) {
+        return text.split(".", 1)[0].toUpperCase();
+      }
+      return text.toUpperCase();
+    }
+
     function buildStockSearchKey(row) {
-      const code = String((row || {}).stock_code || "").replace(/\D/g, "").padStart(6, "0");
-      return code && code !== "000000" ? code : String((row || {}).stock_name || "");
+      const code = strictKrStockCode((row || {}).stock_code);
+      if (code) {
+        return code;
+      }
+      return [
+        String((row || {}).stock_name || ""),
+        String((row || {}).resolved_name || ""),
+        String((row || {}).stock_code || ""),
+      ].filter(Boolean).join("|");
     }
 
     function stockSearchHaystack(row) {
@@ -12035,7 +21701,7 @@
         row.stock_name,
         row.resolved_name,
         row.stock_code,
-        String(row.stock_code || "").replace(/\D/g, "").padStart(6, "0"),
+        strictKrStockCode(row.stock_code),
       ].filter(Boolean).join(" "));
     }
 
@@ -12077,6 +21743,436 @@
         themeTableScrollRafRef.current = null;
         setThemeTableScrollTop(nextTop);
       });
+    }
+
+    function openScoreFormulaModal() {
+      if (scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config) {
+        setScoreFormulaDraft(JSON.parse(JSON.stringify(scoreFormulaConfigRequest.data.config)));
+      }
+      setScoreFormulaStatus({ type: "", message: "" });
+      setScoreFormulaModalOpen(true);
+    }
+
+    function closeScoreFormulaModal() {
+      if (scoreFormulaSaving) {
+        return;
+      }
+      setScoreFormulaModalOpen(false);
+    }
+
+    function updateScoreFormulaDraft(sectionKey, itemKey, value) {
+      setScoreFormulaDraft(function (current) {
+        const next = JSON.parse(JSON.stringify(current || {}));
+        if (!next[sectionKey] || typeof next[sectionKey] !== "object") {
+          next[sectionKey] = {};
+        }
+        next[sectionKey][itemKey] = value;
+        return next;
+      });
+    }
+
+    function scoreFormulaSectionLabel(sectionKey) {
+      const labels = {
+        score_formula: "당일점수 산식",
+        final_score_formula: "종합점수 산식",
+        trend_adjustment_formula: "추세 보너스/패널티",
+        display_formula: "화면 표시 기준",
+      };
+      return labels[sectionKey] || sectionKey;
+    }
+
+    function scoreFormulaFieldLabel(fieldKey) {
+      const labels = {
+        amount_power: "거래대금 지수",
+        marcap_power: "시가총액 지수",
+        return_base: "등락률 기준값",
+        return_power: "등락률 지수",
+        log_base: "로그 기준값",
+        trading_value_surge_power: "거래대금 증가 강도",
+        trading_value_surge_cap: "거래대금 증가 상한",
+        bonus_if_52w_high: "52주 신고가 보너스",
+        bonus_if_20d_high: "20일 신고가 보너스",
+        bonus_if_not_52w_high: "비신고가 패널티",
+        offset: "당일점수 오프셋",
+        weight_today: "당일 비중",
+        weight_1w: "1주 비중",
+        weight_1m: "1개월 비중",
+        weight_3m: "3개월 비중",
+        sortino_power: "Sortino 강도",
+        sortino_floor: "Sortino 최소 배율",
+        sortino_tanh_scale: "Sortino tanh scale",
+        sortino_min_obs: "Sortino 최소 관측수",
+        sortino_insufficient_value: "Sortino 부족시 값",
+        enabled: "추세 보정 사용",
+        today_blend_weight: "당일 혼합 비중",
+        trend_floor: "추세 최저 기준",
+        acceleration_alignment_bonus: "가속 정렬 보너스",
+        acceleration_max_bonus: "가속 최대 보너스",
+        acceleration_cap_ratio: "가속 상한 비율",
+        break_base_penalty_today_below_1w: "당일<1주 패널티",
+        break_base_penalty_1w_below_1m: "1주<1개월 패널티",
+        break_base_penalty_1m_below_3m: "1개월<3개월 패널티",
+        break_max_penalty: "붕괴 최대 패널티",
+        break_cap_ratio: "붕괴 상한 비율",
+        kr_capture_score_threshold: "국내 종합점수 캡쳐 기준",
+        kr_daily_capture_score_threshold: "국내 당일점수 캡쳐 기준",
+        entry_signal_threshold: "진입 시그널 기준점수",
+        exit_signal_threshold: "편출 시그널 기준점수",
+      };
+      return labels[fieldKey] || fieldKey;
+    }
+
+    async function saveScoreFormulaConfig() {
+      if (!scoreFormulaDraft || scoreFormulaSaving || scoreFormulaRecalculating) {
+        return;
+      }
+      setScoreFormulaSaving(true);
+      setScoreFormulaStatus({ type: "", message: "" });
+      try {
+        const payload = await postJson("/api/themes/score-formula-config", { config: scoreFormulaDraft });
+        setScoreFormulaDraft(JSON.parse(JSON.stringify(payload.config || {})));
+        await Promise.all([
+          scoreFormulaConfigRequest.refresh(true),
+          scoreFormulaSnapshotsRequest.refresh(true),
+        ]);
+        setScoreFormulaStatus({ type: "success", message: "점수 설정을 저장했습니다. 점수 데이터는 재계산 전까지 그대로 유지됩니다." });
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+      } finally {
+        setScoreFormulaSaving(false);
+      }
+    }
+
+    async function saveScoreFormulaSnapshot() {
+      if (!scoreFormulaDraft || scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving) {
+        return;
+      }
+      setScoreFormulaSnapshotSaving(true);
+      setScoreFormulaStatus({ type: "", message: "" });
+      try {
+        const payload = await postJson("/api/themes/score-formula-snapshots", {
+          market: "kr",
+          label: scoreFormulaSnapshotLabel,
+          config: scoreFormulaDraft,
+        });
+        await scoreFormulaSnapshotsRequest.refresh(true);
+        setScoreFormulaSnapshotLabel("");
+        setScoreFormulaStatus({
+          type: "success",
+          message: "점수 설정 저장본을 DB에 기록했습니다. " + String((((payload || {}).snapshot || {}).created_at || "")),
+        });
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+      } finally {
+        setScoreFormulaSnapshotSaving(false);
+      }
+    }
+
+    function applyScoreFormulaSnapshot(snapshot) {
+      if (!snapshot || !snapshot.config) {
+        return;
+      }
+      setScoreFormulaDraft(JSON.parse(JSON.stringify(snapshot.config)));
+      setScoreFormulaStatus({ type: "success", message: "저장본을 불러왔습니다. 설정 저장 후 재계산하면 반영됩니다." });
+    }
+
+    function scoreFormulaMarketLabel(market) {
+      if (market === "us") return "미국";
+      if (market === "asia") return "아시아";
+      return "국내";
+    }
+
+    function stopScoreFormulaJobPolling() {
+      if (scoreFormulaJobPollRef.current) {
+        window.clearInterval(scoreFormulaJobPollRef.current);
+        scoreFormulaJobPollRef.current = null;
+      }
+    }
+
+    async function pollScoreFormulaJobStatus(market, scope, options) {
+      const normalizedMarket = market === "us" || market === "asia" ? market : "kr";
+      const normalizedScope = scope === "recent_1y" ? "recent_1y" : "full";
+      const marketLabel = scoreFormulaMarketLabel(normalizedMarket);
+      const payload = await fetchJson("/api/themes/recalculate-scores/status?market=" + encodeURIComponent(normalizedMarket), { silent: true, noCache: true });
+      setScoreFormulaJobState(payload || null);
+      const status = String((payload && payload.status) || "").toLowerCase();
+      const percent = Number(payload && payload.percent);
+      upsertBackgroundTask({
+        id: "score-formula-" + normalizedMarket,
+        label: marketLabel + " 점수 재계산",
+        market: normalizedMarket,
+        marketLabel: marketLabel,
+        scope: normalizedScope,
+        status: status || "running",
+        percent: Number.isFinite(percent) ? percent : 0,
+        message: (payload && payload.message) || "",
+        startedAt: normalizeTimestampMs((payload && payload.started_ts) || (payload && payload.updated_ts) || Date.now()),
+      });
+      const progressPrefix = Number.isFinite(percent) ? "[" + numberFormat(percent, 0) + "%] " : "";
+      if (status === "queued" || status === "running") {
+        setScoreFormulaStatus({
+          type: "success",
+          message: progressPrefix + (payload && payload.message ? payload.message : marketLabel + " 백그라운드 재계산 진행 중"),
+        });
+        return payload;
+      }
+      stopScoreFormulaJobPolling();
+      setScoreFormulaRecalculating(false);
+      if (status === "completed") {
+        await Promise.all([
+          scoreFormulaConfigRequest.refresh(true),
+          refreshThemesData(true),
+          calendarRequest.refresh(true),
+        ]);
+        const result = (payload && payload.result) || {};
+        const dateSuffix = result && result.recalculated_dates ? " / " + numberFormat(result.recalculated_dates, 0) + "일자" : "";
+        const completeMessage = marketLabel + " " + (normalizedScope === "recent_1y" ? "최근 1년 데이터 재계산" : "전체 과거 재계산") + dateSuffix + " 완료";
+        setScoreFormulaStatus({
+          type: "success",
+          message: completeMessage + (Number.isFinite(Number(result.duration_sec)) ? " (" + numberFormat(Number(result.duration_sec), 2) + "초)" : ""),
+        });
+        if (!(options && options.silentCompleteAlert)) {
+          window.alert(completeMessage);
+        }
+        return payload;
+      }
+      removeBackgroundTask("score-formula-" + normalizedMarket);
+      const errorMessage = (payload && (payload.error || payload.message)) || (marketLabel + " 점수 재계산 실패");
+      setScoreFormulaStatus({ type: "error", message: errorMessage });
+      return payload;
+    }
+
+    function startScoreFormulaJobPolling(market, scope) {
+      stopScoreFormulaJobPolling();
+      pollScoreFormulaJobStatus(market, scope).catch(function () {});
+      scoreFormulaJobPollRef.current = window.setInterval(function () {
+        pollScoreFormulaJobStatus(market, scope).catch(function () {});
+      }, 3000);
+    }
+
+    async function recalculateScoresFromFormula(scope, market) {
+      if (scoreFormulaSaving || scoreFormulaRecalculating) {
+        return;
+      }
+      const effectiveConfig = scoreFormulaDraft || (scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config) || null;
+      if (!effectiveConfig) {
+        setScoreFormulaStatus({ type: "error", message: "점수 지표 설정을 아직 불러오는 중입니다. 잠시 후 다시 시도해 주세요." });
+        return;
+      }
+      setScoreFormulaRecalculating(true);
+      setScoreFormulaStatus({ type: "", message: "" });
+      try {
+        const normalizedScope = scope === "recent_1y" ? "recent_1y" : "full";
+        const normalizedMarket = market === "us" || market === "asia" ? market : "kr";
+        const payload = await postJson("/api/themes/recalculate-scores/background", { config: effectiveConfig, scope: normalizedScope, market: normalizedMarket });
+        setScoreFormulaJobState(payload || null);
+        upsertBackgroundTask({
+          id: "score-formula-" + normalizedMarket,
+          label: scoreFormulaMarketLabel(normalizedMarket) + " 점수 재계산",
+          market: normalizedMarket,
+          marketLabel: scoreFormulaMarketLabel(normalizedMarket),
+          scope: normalizedScope,
+          status: String((payload && payload.status) || "queued").toLowerCase(),
+          percent: Number(payload && payload.percent) || 0,
+          message: (payload && payload.message) || "백그라운드 재계산 시작",
+          startedAt: normalizeTimestampMs((payload && payload.started_ts) || Date.now()),
+        });
+        setScoreFormulaStatus({
+          type: "success",
+          message: scoreFormulaMarketLabel(normalizedMarket) + " 점수 재계산을 백그라운드에서 시작했습니다. 다른 기능을 계속 사용할 수 있습니다.",
+        });
+        startScoreFormulaJobPolling(normalizedMarket, normalizedScope);
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+        setScoreFormulaRecalculating(false);
+      }
+    }
+
+    async function syncScoreFormulaToOracle() {
+      if (scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing) {
+        return;
+      }
+      setScoreFormulaOracleSyncing(true);
+      setScoreFormulaStatus({ type: "", message: "" });
+      try {
+        if (scoreFormulaDraft) {
+          await postJson("/api/themes/score-formula-config", { config: scoreFormulaDraft, market: "kr" });
+          await scoreFormulaConfigRequest.refresh(true);
+        }
+        const payload = await postJson("/api/oracle-sync/score-formula/push", { markets: ["kr"] });
+        const markets = ((payload && payload.markets) || []).join(", ");
+        setScoreFormulaStatus({
+          type: "success",
+          message: "Oracle 서버에 점수 공식을 업데이트했습니다." + (markets ? " (" + markets + ")" : ""),
+        });
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+      } finally {
+        setScoreFormulaOracleSyncing(false);
+      }
+    }
+
+    function renderScoreFormulaModal() {
+      if (!scoreFormulaModalOpen) {
+        return null;
+      }
+      const config = scoreFormulaDraft || (scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config) || {};
+      const snapshots = (scoreFormulaSnapshotsRequest.data && scoreFormulaSnapshotsRequest.data.snapshots) || [];
+      const jobStatus = String((scoreFormulaJobState && scoreFormulaJobState.status) || "").toLowerCase();
+      const jobPercent = Number(scoreFormulaJobState && scoreFormulaJobState.percent);
+      const jobRunning = scoreFormulaRecalculating || jobStatus === "queued" || jobStatus === "running";
+      const jobScopeLabel = String(scoreFormulaJobState && scoreFormulaJobState.scope || "") === "recent_1y" ? "최근 1년" : "전체";
+      return h(
+        "div",
+        { className: "modal-backdrop", onClick: closeScoreFormulaModal },
+        h(
+          "div",
+          { className: "modal-panel score-formula-modal", onClick: function (event) { event.stopPropagation(); } },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "Score Formula"),
+              h("h2", null, "점수 지표 수정")
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeScoreFormulaModal, disabled: scoreFormulaSaving }, "닫기")
+          ),
+          scoreFormulaConfigRequest.loading && !scoreFormulaDraft
+            ? h(LoadingBlock, { compact: true, title: "점수 설정 불러오는 중", label: scoreFormulaConfigRequest.label })
+            : h(
+                React.Fragment,
+                null,
+                h("div", { className: "summary-help" }, "아래 재계산 버튼들은 각 시장의 원천 점수(score_o, 평균, sortino, 종합점수)까지 다시 계산합니다. 최근 1년 버튼은 최근 1년 구간만 정확하게 다시 반영합니다."),
+                jobRunning
+                  ? h(
+                      "div",
+                      { className: "score-formula-progress-card" },
+                      h(
+                        "div",
+                        { className: "score-formula-progress-head" },
+                        h("strong", null, "백그라운드 재계산 진행 중"),
+                        h("span", null, Number.isFinite(jobPercent) ? (numberFormat(jobPercent, 0) + "%") : "-")
+                      ),
+                      h(
+                        "div",
+                        { className: "score-formula-progress-meta" },
+                        h("span", null, "시장: 국내"),
+                        h("span", null, "범위: " + jobScopeLabel),
+                        h("span", null, "상태: " + (scoreFormulaJobState && scoreFormulaJobState.message ? scoreFormulaJobState.message : "진행 중"))
+                      ),
+                      h("div", { className: "score-formula-progress-bar" }, h("span", { style: { width: (Number.isFinite(jobPercent) ? Math.max(4, Math.min(100, jobPercent)) : 8) + "%" } })),
+                      h("div", { className: "summary-help" }, "팝업을 닫아도 계산은 계속 진행됩니다. 왼쪽 하단 로딩 표시를 눌러 상세 진행 상황을 볼 수 있습니다.")
+                    )
+                  : null,
+                scoreFormulaStatus.message
+                  ? h("div", { className: "summary-help" + (scoreFormulaStatus.type === "error" ? " text-danger" : "") }, scoreFormulaStatus.message)
+                  : null,
+                h(
+                  "div",
+                  { className: "score-formula-section" },
+                  h("h3", { className: "score-formula-section-title" }, "점수 설정 저장본"),
+                  h(
+                    "div",
+                    { className: "form-grid score-formula-grid", style: { gridTemplateColumns: "2fr 1fr" } },
+                    h(
+                      "label",
+                      { className: "form-field" },
+                      h("span", null, "저장본 이름"),
+                      h("input", {
+                        type: "text",
+                        value: scoreFormulaSnapshotLabel,
+                        placeholder: "예: 국내 복구 전",
+                        onChange: function (event) { setScoreFormulaSnapshotLabel(event.target.value || ""); },
+                      })
+                    ),
+                    h(
+                      "div",
+                      { className: "form-field", style: { justifyContent: "flex-end" } },
+                      h("span", null, "DB 저장"),
+                      h("button", {
+                        type: "button",
+                        className: "secondary-button",
+                        onClick: saveScoreFormulaSnapshot,
+                        disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving,
+                      }, scoreFormulaSnapshotSaving ? "저장 중..." : "현재값 저장")
+                    )
+                  ),
+                  snapshots.length
+                    ? h(
+                        "div",
+                        { className: "data-table-wrap", style: { maxHeight: "220px", overflow: "auto" } },
+                        h(
+                          "table",
+                          { className: "data-table compact-table" },
+                          h("thead", null, h("tr", null, h("th", null, "저장시각"), h("th", null, "이름"), h("th", null, "구분"), h("th", null, ""))),
+                          h(
+                            "tbody",
+                            null,
+                            snapshots.map(function (snapshot) {
+                              return h(
+                                "tr",
+                                { key: "score-formula-snapshot-kr-" + String(snapshot.id || "") },
+                                h("td", null, String(snapshot.created_at || "").replace("T", " ")),
+                                h("td", null, snapshot.label || "-"),
+                                h("td", null, snapshot.source === "auto" ? "자동" : "수동"),
+                                h("td", null, h("button", { type: "button", className: "mini-button", onClick: function () { applyScoreFormulaSnapshot(snapshot); } }, "불러오기"))
+                              );
+                            })
+                          )
+                        )
+                      )
+                    : h("div", { className: "summary-help" }, "저장된 점수 설정 이력이 없습니다."),
+                ),
+                Object.keys(config).map(function (sectionKey) {
+                  const section = config[sectionKey];
+                  if (!section || typeof section !== "object") {
+                    return null;
+                  }
+                  return h(
+                    "div",
+                    { key: sectionKey, className: "score-formula-section" },
+                    h("h3", { className: "score-formula-section-title" }, scoreFormulaSectionLabel(sectionKey)),
+                    h(
+                      "div",
+                      { className: "form-grid score-formula-grid" },
+                      Object.keys(section).map(function (itemKey) {
+                        const rawValue = section[itemKey];
+                        const isBoolean = typeof rawValue === "boolean";
+                        return h(
+                          "label",
+                          { key: itemKey, className: "form-field" },
+                          h("span", null, scoreFormulaFieldLabel(itemKey)),
+                          isBoolean
+                            ? h("select", {
+                                value: String(rawValue),
+                                onChange: function (event) { updateScoreFormulaDraft(sectionKey, itemKey, event.target.value === "true"); },
+                              },
+                              h("option", { value: "true" }, "true"),
+                              h("option", { value: "false" }, "false")
+                            )
+                            : h("input", {
+                                type: "number",
+                                step: "any",
+                                value: rawValue,
+                                onChange: function (event) { updateScoreFormulaDraft(sectionKey, itemKey, event.target.value); },
+                              })
+                        );
+                      })
+                    )
+                  );
+                }),
+                h(
+                  "div",
+                  { className: "score-formula-actions" },
+                  h("button", { type: "button", className: "secondary-button", onClick: saveScoreFormulaConfig, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaOracleSyncing }, scoreFormulaSaving ? "저장 중..." : "설정 저장"),
+                  h("button", { type: "button", className: "secondary-button", onClick: saveScoreFormulaSnapshot, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing }, scoreFormulaSnapshotSaving ? "저장 중..." : "DB 저장본 만들기"),
+                  h("button", { type: "button", className: "secondary-button", onClick: syncScoreFormulaToOracle, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing }, scoreFormulaOracleSyncing ? "업데이트 중..." : "Oracle 공식 업데이트"),
+                  h("button", { type: "button", className: "secondary-button", onClick: function () { recalculateScoresFromFormula("recent_1y", "kr"); }, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaOracleSyncing }, scoreFormulaRecalculating ? "재계산 중..." : "국내 최근 1년 재계산"),
+                  h("button", { type: "button", className: "primary-button", onClick: function () { recalculateScoresFromFormula("full", "kr"); }, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaOracleSyncing }, scoreFormulaRecalculating ? "재계산 중..." : "국내 전체 재계산")
+                )
+              )
+        )
+      );
     }
 
     function submitStockSearch(event) {
@@ -12167,6 +22263,20 @@
       return h("span", { className: className }, formatPercent(number, 2));
     }
 
+    function renderHighDrawdownPercent(row) {
+      const rawDistance = row && row.pct_to_52w_high;
+      if (rawDistance === null || rawDistance === undefined || rawDistance === "") {
+        return "-";
+      }
+      const distance = Number(rawDistance);
+      const tradingValue = Number((row && row.trading_value_100m) || 0);
+      if (!Number.isFinite(distance) || tradingValue <= 0) {
+        return "-";
+      }
+      const drawdown = distance <= 0 ? 0 : -((distance / (100 + distance)) * 100);
+      return h("span", null, formatPercent(drawdown, 2));
+    }
+
     function isHigh52(value) {
       const normalized = String(value || "").trim().toUpperCase();
       return normalized === "O" || normalized === "Y" || normalized === "TRUE" || normalized === "1";
@@ -12178,26 +22288,47 @@
         && Number((row && row.score_o) || 0) > 0;
     }
 
+    function isHigh20(value) {
+      const normalized = String(value || "").trim().toUpperCase();
+      return normalized === "O" || normalized === "Y" || normalized === "TRUE" || normalized === "1";
+    }
+
+    function isTradableHigh20(row) {
+      return isHigh20(row && row.is_20d_high)
+        && Number((row && row.trading_value_100m) || 0) > 0
+        && Number((row && row.score_o) || 0) > 0;
+    }
+
     function renderRankCell(row, rankValue) {
       const high52 = isHigh52(row.is_52w_high);
+      const high20 = isHigh20(row.is_20d_high);
+      const near52 = high20 && Number(row && row.pct_to_52w_high) <= 30;
       const displayRank = Number(rankValue != null ? rankValue : (row && row.__display_rank != null ? row.__display_rank : row.rank));
       return h(
         "span",
         {
-          className: "rank-cell" + (high52 ? " high52" : ""),
-          title: high52 ? "52주 신고가" : "",
+          className: "rank-cell" + (high52 ? " high52" : "") + (!high52 && near52 ? " high20" : ""),
+          title: high52 ? "52주 신고가" : (near52 ? "20일 신고가 · 52주 신고가까지 30% 이내" : (high20 ? "20일 신고가" : "")),
         },
         numberFormat(displayRank, 0)
       );
     }
 
-    function renderNumberCell(value, digits) {
-      const number = Number(value);
-      if (!Number.isFinite(number)) {
-        return "-";
+    function resolveThemeTableRank(row, visibleIndex) {
+      const compositeRank = Number(row && row.rank);
+      if (preserveCompositeRank && Number.isFinite(compositeRank) && compositeRank > 0) {
+        return compositeRank;
       }
-      return numberFormat(number, digits == null ? 2 : digits);
+      return visibleIndex + 1;
     }
+
+  function renderNumberCell(value, digits) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "-";
+    }
+    return numberFormat(number, digits == null ? 2 : digits);
+  }
 
     function scoreHeatColor(value) {
       const number = Number(value);
@@ -12239,7 +22370,7 @@
     function buildScoreHistoryKey(row) {
       const code = String((row || {}).stock_code || "").replace(/\D/g, "").padStart(6, "0");
       const name = (row || {}).resolved_name || (row || {}).stock_name || "";
-      const endDate = themes.file_date || selectedDateValue || selectedFileDate || "";
+      const endDate = selectedDateValue || selectedFileDate || themes.file_date || "";
       const cacheLoadedAt = (themes && themes.cache_loaded_at) ? String(themes.cache_loaded_at) : "";
       return [code, name, endDate, cacheLoadedAt].join("|");
     }
@@ -12251,9 +22382,10 @@
       const openOptions = options || {};
       const mode = openOptions.mode || "modal";
       const position = openOptions.position || null;
+      const activeTab = openOptions.activeTab || "trend";
       const code = String(row.stock_code || "").replace(/\D/g, "").padStart(6, "0");
       const name = row.resolved_name || row.stock_name || "";
-      const endDate = themes.file_date || selectedDateValue || selectedFileDate || "";
+      const endDate = selectedDateValue || selectedFileDate || themes.file_date || "";
       const cacheKey = buildScoreHistoryKey(row);
       const cached = scoreHistoryCacheRef.current[cacheKey];
       scoreHistoryRequestSeqRef.current += 1;
@@ -12263,10 +22395,14 @@
           open: true,
           mode: mode,
           loading: false,
+          loadingMore: false,
+          hasMore: cached.hasMore !== false,
           error: "",
           row: row,
           payload: cached,
+          cacheKey: cacheKey,
           position: position,
+          activeTab: activeTab,
         });
         return;
       }
@@ -12274,10 +22410,14 @@
         open: true,
         mode: mode,
         loading: true,
+        loadingMore: false,
+        hasMore: true,
         error: "",
         row: row,
         payload: null,
+        cacheKey: cacheKey,
         position: position,
+        activeTab: activeTab,
       });
       const params = new URLSearchParams();
       if (code && code !== "000000") {
@@ -12289,9 +22429,10 @@
       if (endDate) {
         params.set("end_date", endDate);
       }
-      params.set("days", "62");
+      params.set("days", "365");
       fetchJson("/api/themes/score-history?" + params.toString(), { noCache: true })
         .then(function (payload) {
+          payload.hasMore = true;
           scoreHistoryCacheRef.current[cacheKey] = payload;
           if (scoreHistoryRequestSeqRef.current !== requestSeq) {
             return;
@@ -12300,10 +22441,14 @@
             open: true,
             mode: mode,
             loading: false,
+            loadingMore: false,
+            hasMore: true,
             error: "",
             row: row,
             payload: payload,
+            cacheKey: cacheKey,
             position: position,
+            activeTab: activeTab,
           });
         })
         .catch(function (error) {
@@ -12314,24 +22459,101 @@
             open: true,
             mode: mode,
             loading: false,
+            loadingMore: false,
+            hasMore: false,
             error: error.message || String(error),
             row: row,
             payload: null,
+            cacheKey: cacheKey,
             position: position,
+            activeTab: activeTab,
+          });
+        });
+    }
+
+    function loadMoreScoreHistory(beforeDate) {
+      const popup = scoreHistoryPopup;
+      if (!popup.open || popup.loading || popup.loadingMore || popup.hasMore === false) {
+        return;
+      }
+      const payload = popup.payload || {};
+      const historyRows = ensureArray(payload.rows);
+      if (!historyRows.length) {
+        return;
+      }
+      const earliestDate = beforeDate || String(historyRows[0].date || "");
+      const nextEndDate = shiftIsoDate(earliestDate, -1);
+      if (!nextEndDate) {
+        setScoreHistoryPopup(function (current) {
+          return Object.assign({}, current, { hasMore: false, loadingMore: false });
+        });
+        return;
+      }
+      setScoreHistoryPopup(function (current) {
+        return Object.assign({}, current, { loadingMore: true });
+      });
+      const row = popup.row || {};
+      const code = String(row.stock_code || "").replace(/\D/g, "").padStart(6, "0");
+      const name = row.resolved_name || row.stock_name || "";
+      const params = new URLSearchParams();
+      if (code && code !== "000000") {
+        params.set("code", code);
+      }
+      if (name) {
+        params.set("name", name);
+      }
+      params.set("end_date", nextEndDate);
+      params.set("days", "180");
+      fetchJson("/api/themes/score-history?" + params.toString(), { noCache: true })
+        .then(function (olderPayload) {
+          setScoreHistoryPopup(function (current) {
+            const currentPayload = current.payload || {};
+            const currentRows = ensureArray(currentPayload.rows);
+            const mergedPayload = mergeScoreHistoryPayloadRows(currentPayload, olderPayload || {});
+            const mergedRows = ensureArray(mergedPayload.rows);
+            const addedOlderRows = mergedRows.length > currentRows.length && mergedRows.length && String(mergedRows[0].date || "") < String(currentRows[0] && currentRows[0].date || "");
+            mergedPayload.hasMore = addedOlderRows;
+            if (current.cacheKey) {
+              scoreHistoryCacheRef.current[current.cacheKey] = mergedPayload;
+            }
+            return Object.assign({}, current, {
+              payload: mergedPayload,
+              loadingMore: false,
+              hasMore: addedOlderRows,
+            });
+          });
+        })
+        .catch(function () {
+          setScoreHistoryPopup(function (current) {
+            return Object.assign({}, current, { loadingMore: false, hasMore: false });
           });
         });
     }
 
     function closeScoreHistory() {
+      if (scoreHistoryClickTimerRef.current) {
+        clearTimeout(scoreHistoryClickTimerRef.current);
+        scoreHistoryClickTimerRef.current = null;
+      }
       scoreHistoryRequestSeqRef.current += 1;
       setScoreHistoryPopup({
         open: false,
         mode: "modal",
         loading: false,
+        loadingMore: false,
+        hasMore: true,
         error: "",
         row: null,
         payload: null,
+        cacheKey: "",
         position: null,
+        activeTab: "trend",
+      });
+    }
+
+    function setScoreHistoryActiveTab(nextTab) {
+      setScoreHistoryPopup(function (current) {
+        return Object.assign({}, current, { activeTab: nextTab === "breakdown" ? "breakdown" : "trend" });
       });
     }
 
@@ -12404,13 +22626,376 @@
           {
             type: "button",
             className: "today-score-cell today-score-button",
-            title: "최근 한 달 점수 변동 추이 보기",
-            onClick: function () { openScoreHistory(row, { mode: "modal" }); },
+            title: "한 번 클릭: 점수 추이 / 더블 클릭: 점수 분해",
+            onClick: function () {
+              if (scoreHistoryClickTimerRef.current) {
+                clearTimeout(scoreHistoryClickTimerRef.current);
+              }
+              scoreHistoryClickTimerRef.current = setTimeout(function () {
+                scoreHistoryClickTimerRef.current = null;
+                openScoreHistory(row, { mode: "modal", activeTab: "trend" });
+              }, 220);
+            },
+            onDoubleClick: function () {
+              if (scoreHistoryClickTimerRef.current) {
+                clearTimeout(scoreHistoryClickTimerRef.current);
+                scoreHistoryClickTimerRef.current = null;
+              }
+              openScoreHistory(row, { mode: "modal", activeTab: "breakdown" });
+            },
           },
           numberFormat(number, 2)
         );
       }
       return h("span", { className: "today-score-cell" }, numberFormat(number, 2));
+    }
+
+    function renderScoreBreakdownContent(breakdown, payload, popupRow) {
+      if (!breakdown) {
+        return EmptyState({ message: "선택 기준일 점수 분해 데이터가 없습니다.", compact: true });
+      }
+      const endDate = payload.end_date || "";
+      const stockName = payload.stock_name || popupRow.resolved_name || popupRow.stock_name || "종목";
+      const scoreFormulaParams = breakdown.score_formula_params || {};
+      const finalScoreFormulaParams = breakdown.final_score_formula_params || {};
+      function coerceNumber(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+      }
+      function formatBreakdownNumber(value, digits) {
+        const number = coerceNumber(value);
+        if (number == null) {
+          return "-";
+        }
+        const abs = Math.abs(number);
+        if ((abs >= 1e12) || (abs > 0 && abs < 1e-4)) {
+          return number.toExponential(Math.max(2, digits == null ? 4 : digits));
+        }
+        return numberFormat(number, digits == null ? 2 : digits);
+      }
+      const computedReturnTerm = coerceNumber(breakdown.return_term) != null
+        ? coerceNumber(breakdown.return_term)
+        : (function () {
+            const returnBase = coerceNumber(scoreFormulaParams.return_base);
+            const returnPower = coerceNumber(scoreFormulaParams.return_power);
+            const changePct = coerceNumber(breakdown.change_pct);
+            if (returnBase == null || returnPower == null || changePct == null) {
+              return null;
+            }
+            return Math.pow(returnBase + (changePct / 100), returnPower);
+          })();
+      const computedAmountTerm = coerceNumber(breakdown.amount_term) != null
+        ? coerceNumber(breakdown.amount_term)
+        : (function () {
+            const amountPower = coerceNumber(scoreFormulaParams.amount_power);
+            const tradingValue = coerceNumber(breakdown.today_trading_value_100m);
+            if (amountPower == null || tradingValue == null) {
+              return null;
+            }
+            return Math.pow(Math.max(tradingValue, 0), amountPower);
+          })();
+      const computedMarcapTerm = coerceNumber(breakdown.marcap_term) != null
+        ? coerceNumber(breakdown.marcap_term)
+        : (function () {
+            const marcapPower = coerceNumber(scoreFormulaParams.marcap_power);
+            const marketCap = coerceNumber(breakdown.market_cap_100m);
+            if (marcapPower == null || marketCap == null) {
+              return null;
+            }
+            return Math.pow(Math.max(marketCap, 0), marcapPower);
+          })();
+      const computedCoreValue = coerceNumber(breakdown.core_value) != null
+        ? coerceNumber(breakdown.core_value)
+        : (function () {
+            const amountTerm = computedAmountTerm;
+            const marcapTerm = computedMarcapTerm;
+            const surgeFactor = coerceNumber(breakdown.surge_factor);
+            if (amountTerm == null || marcapTerm == null || surgeFactor == null || !(marcapTerm > 0)) {
+              return null;
+            }
+            const returnTerm = computedReturnTerm;
+            if (returnTerm == null) {
+              return null;
+            }
+            return (amountTerm / marcapTerm) * returnTerm * surgeFactor;
+          })();
+      const computedLogTerm = coerceNumber(breakdown.log_term) != null
+        ? coerceNumber(breakdown.log_term)
+        : (function () {
+            const coreValue = computedCoreValue;
+            const logBase = coerceNumber(scoreFormulaParams.log_base);
+            if (coreValue == null || logBase == null || !(coreValue > 0) || !(logBase > 0) || logBase === 1) {
+              return null;
+            }
+            return Math.log(coreValue) / Math.log(logBase);
+          })();
+      function formatPoint(value, digits) {
+        return value != null ? numberFormat(value, digits == null ? 2 : digits) + "점" : "-";
+      }
+      function formatMultiplier(value, digits) {
+        return value != null ? numberFormat(value, digits == null ? 3 : digits) + "배" : "-";
+      }
+      function format100m(value) {
+        return value != null ? numberFormat(value, 1) + "억" : "-";
+      }
+      function formatFormulaValue(value, digits) {
+        return value != null ? numberFormat(value, digits == null ? 4 : digits) : "-";
+      }
+      function toScoreContributionPoint(value) {
+        const number = coerceNumber(value);
+        return number == null ? null : number;
+      }
+      const scoreLogBase = coerceNumber(scoreFormulaParams.log_base);
+      const amountContributionPoint = computedAmountTerm != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && computedAmountTerm > 0
+        ? Math.log(computedAmountTerm) / Math.log(scoreLogBase)
+        : null;
+      const marcapContributionPoint = computedMarcapTerm != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && computedMarcapTerm > 0
+        ? -Math.log(computedMarcapTerm) / Math.log(scoreLogBase)
+        : null;
+      const returnContributionPoint = computedReturnTerm != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && computedReturnTerm > 0
+        ? Math.log(computedReturnTerm) / Math.log(scoreLogBase)
+        : null;
+      const surgeContributionPoint = coerceNumber(breakdown.surge_factor) != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && coerceNumber(breakdown.surge_factor) > 0
+        ? Math.log(coerceNumber(breakdown.surge_factor)) / Math.log(scoreLogBase)
+        : null;
+      const highBonusPoint = toScoreContributionPoint(breakdown.high_bonus);
+      const scoreOContributionValues = [
+        Math.abs(Number(amountContributionPoint || 0)),
+        Math.abs(Number(marcapContributionPoint || 0)),
+        Math.abs(Number(returnContributionPoint || 0)),
+        Math.abs(Number(surgeContributionPoint || 0)),
+        Math.abs(Number(highBonusPoint || 0)),
+      ];
+      const scoreOContributionDenom = scoreOContributionValues.reduce(function (acc, value) { return acc + value; }, 0);
+      function scoreOContributionShare(value) {
+        if (!(scoreOContributionDenom > 0)) {
+          return "-";
+        }
+        return numberFormat((Math.abs(Number(value || 0)) / scoreOContributionDenom) * 100, 1) + "%";
+      }
+      const highStateText = breakdown.is_52w_high
+        ? "52주 신고가"
+        : (breakdown.is_20d_high ? "20일 신고가" : "신고가 아님");
+      const todayItems = [
+        { label: "당일 거래대금", value: format100m(breakdown.today_trading_value_100m), help: "해당 날짜 실제 거래대금" },
+        { label: "20일 평균 거래대금", value: format100m(breakdown.avg_value_20d_100m), help: "직전 20거래일 평균 거래대금" },
+        { label: "거래대금 증가 배수", value: formatMultiplier(breakdown.surge_ratio_raw, 2), help: "당일 거래대금 / 20일 평균 거래대금" },
+        { label: "거래대금 증가 상한 반영", value: formatMultiplier(breakdown.surge_ratio_capped, 2), help: "상한 적용 후 실제 사용된 증가 배수" },
+        { label: "거래대금 보정 계수", value: formatMultiplier(breakdown.surge_factor, 3), help: "증가 배수에 surge power를 적용한 today 점수 배수" },
+        { label: "등락률 보정값", value: formatBreakdownNumber(computedReturnTerm, 6), help: "(return_base + 등락률)^return_power" },
+        { label: "거래대금 항", value: formatBreakdownNumber(computedAmountTerm, 4), help: "거래대금^amount_power" },
+        { label: "시가총액 항", value: formatBreakdownNumber(computedMarcapTerm, 4), help: "시가총액^marcap_power" },
+        { label: "로그 전 원값", value: formatBreakdownNumber(computedCoreValue, 6), help: "(거래대금 항 / 시총 항) x 등락률 보정 x 거래대금 보정" },
+        { label: "로그 점수", value: formatBreakdownNumber(computedLogTerm, 4), help: "log_base 기준 로그 변환값" },
+        { label: "거래대금 점수 기여", value: formatPoint(amountContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(amountContributionPoint) },
+        { label: "시가총액 점수 기여", value: formatPoint(marcapContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(marcapContributionPoint) },
+        { label: "등락률 점수 기여", value: formatPoint(returnContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(returnContributionPoint) },
+        { label: "거래대금 증가 점수 기여", value: formatPoint(surgeContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(surgeContributionPoint) },
+        { label: "신고가 상태", value: highStateText, help: "52주 신고가 / 20일 신고가 / 비신고가 여부" },
+        {
+          label: "신고가 보너스/패널티",
+          value: formatPoint(breakdown.high_bonus, 2),
+          help: (breakdown.is_52w_high ? "52주 신고가 보너스 적용" : (breakdown.is_20d_high ? "20일 신고가 보너스 적용" : "비신고가 패널티 적용")) + " · score_o 내부 기여 비중 " + scoreOContributionShare(highBonusPoint),
+        },
+        { label: "최종 당일점수", value: formatPoint(breakdown.score_o, 2), help: "score_o" },
+      ];
+      const contributionValues = [
+        Math.abs(Number(breakdown.contrib_today || 0)),
+        Math.abs(Number(breakdown.contrib_1w || 0)),
+        Math.abs(Number(breakdown.contrib_1m || 0)),
+        Math.abs(Number(breakdown.contrib_3m || 0)),
+      ];
+      const contributionDenom = contributionValues.reduce(function (acc, value) { return acc + value; }, 0);
+      function contributionShare(value) {
+        if (!(contributionDenom > 0)) {
+          return "-";
+        }
+        return numberFormat((Math.abs(Number(value || 0)) / contributionDenom) * 100, 1) + "%";
+      }
+      const weightItems = [
+        {
+          label: "당일점수 가중 기여",
+          value: formatPoint(breakdown.contrib_today, 2),
+          help: "score_o " + formatPoint(breakdown.score_o, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_today, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_today),
+        },
+        {
+          label: "1주 평균 가중 기여",
+          value: formatPoint(breakdown.contrib_1w, 2),
+          help: "avg_1w " + formatPoint(breakdown.avg_1w, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_1w, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_1w),
+        },
+        {
+          label: "1개월 평균 가중 기여",
+          value: formatPoint(breakdown.contrib_1m, 2),
+          help: "avg_1m " + formatPoint(breakdown.avg_1m, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_1m, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_1m),
+        },
+        {
+          label: "3개월 평균 가중 기여",
+          value: formatPoint(breakdown.contrib_3m, 2),
+          help: "avg_3m " + formatPoint(breakdown.avg_3m, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_3m, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_3m),
+        },
+        { label: "가중합 기본점수", value: formatPoint(breakdown.composite, 2), help: "위 4개 가중 기여를 합친 composite" },
+      ];
+      const sortinoItems = [
+        { label: "Sortino 정규화값", value: breakdown.sortino_norm != null ? numberFormat(breakdown.sortino_norm, 4) : "-", help: "0~1 구간으로 정규화된 추세 안정성" },
+        { label: "Sortino 지수 강도", value: formatFormulaValue(breakdown.sortino_power, 4), help: "exp 계수로 쓰이는 sortino_power 파라미터" },
+        { label: "Sortino 지수 입력값", value: breakdown.sortino_adjustment != null ? numberFormat(breakdown.sortino_adjustment, 4) : "-", help: "sortino_power x (sortino_norm - 0.6)" },
+        { label: "Sortino 배수", value: formatMultiplier(breakdown.sortino_multiplier, 3), help: "composite에 곱하거나 나누는 최종 배수" },
+        { label: "Sortino 반영 점수", value: formatPoint(breakdown.base_score_s, 2), help: "추세 가속/훼손 보정 전 base score_s" },
+        { label: "추세 가속 보너스", value: formatPoint(breakdown.acceleration_bonus, 2), help: "짧은 구간 점수가 더 빠르게 강해질 때 가산" },
+        { label: "추세 훼손 패널티", value: formatPoint(breakdown.trend_break_penalty, 2), help: "추세가 꺾일 때 차감" },
+        { label: "최종 종합점수", value: formatPoint(breakdown.final_score, 2), help: "최종 score_s" },
+      ];
+      function buildParamItems(params, titlePrefix) {
+        const entries = Object.keys(params || {}).map(function (key) {
+          return {
+            label: key,
+            value: formatBreakdownNumber(params[key], 4),
+            help: titlePrefix + " 파라미터",
+          };
+        });
+        return entries;
+      }
+      function renderItems(title, items) {
+        return h(
+          "div",
+          { className: "score-breakdown-section" },
+          h("div", { className: "score-breakdown-title" }, title),
+          h(
+            "div",
+            { className: "score-breakdown-table" },
+            items.map(function (item) {
+              return h(
+                "div",
+                { key: title + "-" + item.label, className: "score-breakdown-row" },
+                h("div", { className: "score-breakdown-label" }, item.label),
+                h("div", { className: "score-breakdown-value" }, item.value),
+                h("div", { className: "score-breakdown-help" }, item.help)
+              );
+            })
+          )
+        );
+      }
+      return h(
+        React.Fragment,
+        null,
+        h("div", { className: "summary-help score-breakdown-headline" }, stockName + " · " + endDate + " 기준 점수 계산표"),
+        renderItems("1. 당일점수(score_o) 계산 요소", todayItems),
+        renderItems("2. 종합점수 가중 기여도", weightItems),
+        renderItems("3. Sortino 및 추세 보정", sortinoItems),
+        renderItems("4. Today 점수 파라미터", buildParamItems(breakdown.score_formula_params, "Today")),
+        renderItems("5. 종합점수 파라미터", buildParamItems(breakdown.final_score_formula_params, "종합점수")),
+        renderItems("6. 추세 보정 파라미터", buildParamItems(breakdown.trend_adjustment_params, "추세 보정"))
+      );
+    }
+
+    function buildTradingValueHistoryKey(row) {
+      const code = String((row || {}).stock_code || "").replace(/\D/g, "").padStart(6, "0");
+      const name = (row || {}).resolved_name || (row || {}).stock_name || "";
+      const endDate = themes.file_date || selectedDateValue || selectedFileDate || "";
+      const cacheLoadedAt = (themes && themes.cache_loaded_at) ? String(themes.cache_loaded_at) : "";
+      return [code, name, endDate, cacheLoadedAt, "trading"].join("|");
+    }
+
+    function closeTradingValueHistory() {
+      tradingValueHistoryRequestSeqRef.current += 1;
+      setTradingValueHistoryPopup({
+        open: false,
+        loading: false,
+        error: "",
+        row: null,
+        payload: null,
+      });
+    }
+
+    function openTradingValueHistory(row) {
+      if (!row) {
+        return;
+      }
+      const code = String(row.stock_code || "").replace(/\D/g, "").padStart(6, "0");
+      const name = row.resolved_name || row.stock_name || "";
+      const endDate = themes.file_date || selectedDateValue || selectedFileDate || "";
+      const cacheKey = buildTradingValueHistoryKey(row);
+      const cached = tradingValueHistoryCacheRef.current[cacheKey];
+      tradingValueHistoryRequestSeqRef.current += 1;
+      const requestSeq = tradingValueHistoryRequestSeqRef.current;
+      if (cached) {
+        setTradingValueHistoryPopup({
+          open: true,
+          loading: false,
+          error: "",
+          row: row,
+          payload: cached,
+        });
+        return;
+      }
+      setTradingValueHistoryPopup({
+        open: true,
+        loading: true,
+        error: "",
+        row: row,
+        payload: null,
+      });
+      const params = new URLSearchParams();
+      if (code && code !== "000000") {
+        params.set("code", code);
+      }
+      if (name) {
+        params.set("name", name);
+      }
+      if (endDate) {
+        params.set("end_date", endDate);
+      }
+      params.set("days", "92");
+      fetchJson("/api/themes/trading-value-history?" + params.toString(), { noCache: true })
+        .then(function (payload) {
+          tradingValueHistoryCacheRef.current[cacheKey] = payload;
+          if (tradingValueHistoryRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          setTradingValueHistoryPopup({
+            open: true,
+            loading: false,
+            error: "",
+            row: row,
+            payload: payload,
+          });
+        })
+        .catch(function (error) {
+          if (tradingValueHistoryRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          setTradingValueHistoryPopup({
+            open: true,
+            loading: false,
+            error: error.message || String(error),
+            row: row,
+            payload: null,
+          });
+        });
+    }
+
+    function renderTradingValueHistory(value, row) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return "-";
+      }
+      if (!row) {
+        return numberFormat(number, 0);
+      }
+      return h(
+        "button",
+        {
+          type: "button",
+          className: "today-score-cell today-score-button",
+          title: "최근 두 달 거래대금 추이 보기",
+          onClick: function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            openTradingValueHistory(row);
+          },
+        },
+        numberFormat(number, 0)
+      );
     }
 
     function marketClassName(market) {
@@ -12425,7 +23010,7 @@
     }
 
     function openStockInTelegramSearch(row) {
-      const stockName = String((row && row.stock_name) || "").trim();
+      const stockName = String((row && (row.stock_name || row.resolved_name || row.name)) || "").trim();
       if (!stockName) {
         return;
       }
@@ -12446,23 +23031,57 @@
         stockOverviewMessage: "",
       }));
       stashTelegramStockNavigation(stockName);
-      requestPageNavigation("telegram");
+      requestPageNavigation("telegram", { stockQuery: stockName, source: "themes" });
+    }
+
+    function closeKrEtfDetailPopup() {
+      setKrEtfDetailPopup({ open: false, loading: false, error: "", row: null, payload: null });
+    }
+
+    async function openKrEtfDetailPopup(row) {
+      const code = strictKrStockCode((row && row.stock_code) || "");
+      if (!code) {
+        return;
+      }
+      const requestSeq = krEtfDetailRequestSeqRef.current + 1;
+      krEtfDetailRequestSeqRef.current = requestSeq;
+      setKrEtfDetailPopup({ open: true, loading: true, error: "", row: row, payload: null });
+      try {
+        const payload = await fetchJson("/api/kr-etf/detail?code=" + encodeURIComponent(code), { noCache: true });
+        if (krEtfDetailRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setKrEtfDetailPopup({ open: true, loading: false, error: "", row: row, payload: payload });
+      } catch (err) {
+        if (krEtfDetailRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setKrEtfDetailPopup({ open: true, loading: false, error: err.message || String(err), row: row, payload: null });
+      }
     }
 
     function renderStockNameWithCode(row) {
       const stockEntryLabel = String((row || {}).entry_signal_label || "").trim();
       const signalType = String((row || {}).entry_signal_type || "").trim();
+      const marketWarningLevel = String((row || {}).market_warning_level || "").trim();
+      const marketWarningLabel = String((row || {}).market_warning_label || "").trim();
       const capturePlain = !!(row && row.__capture_plain);
-      const stockCode = String((row && row.stock_code) || "").replace(/\D/g, "").padStart(6, "0");
+      const stockCode = displayStockCode((row && row.stock_code) || "");
+      const titleParts = [];
+      if (stockEntryLabel) {
+        titleParts.push("종목 신호 상태 · " + stockEntryLabel);
+      }
+      if (marketWarningLabel) {
+        titleParts.push("시장 경고 상태 · " + marketWarningLabel);
+      }
       return h(
         "div",
         {
           className: "theme-stock-name-cell"
             + (!capturePlain && row.entry_signal_active ? " entry-signal-stock signal-no_leverage" : "")
+            + (!capturePlain && marketWarningLevel ? " market-warning-stock market-warning-" + marketWarningLevel : "")
             + (!capturePlain && signalType === "exit" ? " exit-signal-stock" : ""),
-          title: stockEntryLabel
-            ? ("종목 신호 상태 · " + stockEntryLabel)
-            : "",
+          title: titleParts.join("\n"),
         },
         h(
           React.Fragment,
@@ -12482,10 +23101,16 @@
                   {
                     type: "button",
                     className: "tradingview-stock-link inline-button",
-                    title: "종목정보 검색기에서 " + (row.stock_name || "-") + " 열기",
+                    title: isEtfUniverse
+                      ? "국내 ETF 상세 보기"
+                      : "종목정보 검색기에서 " + (row.stock_name || "-") + " 열기",
                     onClick: function (event) {
                       event.preventDefault();
                       event.stopPropagation();
+                      if (isEtfUniverse) {
+                        openKrEtfDetailPopup(row);
+                        return;
+                      }
                       openStockInTelegramSearch(row);
                     },
                   },
@@ -12508,6 +23133,69 @@
           style: { width: width + "%" },
         }),
         h("span", { className: "data-bar-value" }, numberFormat(number, digits))
+      );
+    }
+
+    function renderKrEtfDetailPopup() {
+      if (!krEtfDetailPopup.open) {
+        return null;
+      }
+      const row = krEtfDetailPopup.row || {};
+      const payload = krEtfDetailPopup.payload || {};
+      const holdings = ensureArray(payload.holdings).slice().sort(function (a, b) {
+        return Number(b.weight_pct || 0) - Number(a.weight_pct || 0);
+      });
+      const title = String(payload.name || row.stock_name || "-");
+      const code = strictKrStockCode(payload.symbol || row.stock_code || "");
+      const trackingIndex = String(payload.tracking_index_name || row.tracking_index_name || row.manual_sector || "").trim();
+      return h(
+        "div",
+        { className: "modal-backdrop score-history-backdrop", onClick: closeKrEtfDetailPopup },
+        h(
+          "div",
+          { className: "modal-panel score-history-modal", onClick: function (event) { event.stopPropagation(); } },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "ETF DETAIL"),
+              h("h2", null, title + (code ? " (" + code + ")" : ""))
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeKrEtfDetailPopup }, "닫기")
+          ),
+          krEtfDetailPopup.loading
+            ? h(LoadingBlock, { compact: true, title: "ETF 상세 로드 중", label: "AUM / 보유비중" })
+            : krEtfDetailPopup.error
+              ? h("div", { className: "notice-box error" }, krEtfDetailPopup.error)
+              : h(
+                  React.Fragment,
+                  null,
+                  h(
+                    "div",
+                    { className: "summary-grid summary-grid-small score-history-summary" },
+                    h(SummaryCard, { label: "추종 지수", value: trackingIndex || "-", help: payload.source || "" }),
+                    h(SummaryCard, { label: "AUM", value: payload.aum_text || formatMoneyByCurrency(payload.aum, payload.currency || "KRW", true), help: payload.currency || "KRW" }),
+                    h(SummaryCard, { label: "1년 순유입", value: formatMoneyByCurrency(payload.flow_1y, payload.currency || "KRW", true), help: payload.flow_1y_text || "-" }),
+                    h(SummaryCard, { label: "보유 종목 수", value: numberFormat(payload.holding_count, 0) + "개", help: "보유비중 상위 표시" })
+                  ),
+                  h(
+                    "div",
+                    { className: "score-history-list" },
+                    holdings.length
+                      ? holdings.slice(0, 20).map(function (item, index) {
+                          return h(
+                            "div",
+                            { key: (item.symbol || item.name || "") + "-" + index, className: "score-history-item" },
+                            h("strong", null, numberFormat(index + 1, 0) + ". " + (item.name || item.symbol || "-")),
+                            h("span", null, item.symbol || "-"),
+                            h("span", { className: "metric-up-light" }, formatPercent(item.weight_pct, 2)),
+                            h("span", null, item.shares ? numberFormat(item.shares, 0) + "주" : "")
+                          );
+                        })
+                      : h(EmptyState, { compact: true, message: "보유 종목 데이터를 찾지 못했습니다." })
+                  )
+                )
+        )
       );
     }
 
@@ -12644,7 +23332,7 @@
             status: "saved",
             message: "비고 SQL 저장 완료",
           });
-          themesRequest.refresh();
+          refreshThemesData();
           return payload;
         })
         .catch(function (err) {
@@ -12661,7 +23349,10 @@
       invalidateApiCache(function (key) {
         return key.indexOf("/api/theme-sector-calendar") === 0;
       });
-      fetchJson("/api/theme-sector-calendar?min_score=0&limit=60&score_basis=" + encodeURIComponent(calendarScoreBasis) + "&force_refresh=true&refresh=" + Date.now(), { noCache: true })
+      const refreshCalendarUrl = typeof themesPageModule.buildSectorCalendarUrl === "function"
+        ? themesPageModule.buildSectorCalendarUrl({ calendarScoreBasis: calendarScoreBasis, universeMode: universeMode, forceRefresh: true, refreshToken: Date.now() })
+        : "/api/theme-sector-calendar?min_score=0&limit=60&score_basis=" + encodeURIComponent(calendarScoreBasis) + universeQuery + "&force_refresh=true&refresh=" + Date.now();
+      fetchJson(refreshCalendarUrl, { noCache: true })
         .then(function (payload) {
           calendarRequest.refresh();
         })
@@ -12942,7 +23633,7 @@
         } else {
           setReloadMessage("SQL 데이터를 기준으로 화면을 새로고침했습니다.");
         }
-        return themesRequest.refresh();
+        return refreshThemesData();
       }).catch(function (error) {
         setReloadMessage(error.message || "오늘자 데이터 로드 중 문제가 발생했습니다.");
       }).finally(function () {
@@ -12971,12 +23662,42 @@
         } else {
           setReloadMessage("오늘자 데이터를 새로 계산하고 SQL과 캐시를 갱신했습니다.");
         }
-        return themesRequest.refresh();
+        return refreshThemesData();
       }).catch(function (error) {
         setReloadMessage(error.message || "오늘자 데이터 생성/로드 중 문제가 발생했습니다.");
       }).finally(function () {
         setReloadingExcel(false);
         setReloadStartedAt(0);
+      });
+    }
+
+    function rebuildSelectedThemeDate() {
+      const targetDate = String(selectedDateValue || "").trim();
+      if (!targetDate || reloadingExcel || rebuildingSelectedDate) {
+        return;
+      }
+      if (!window.confirm(targetDate + " 데이터를 원천에서 다시 받아 계산할까요?\n새 계산이 성공한 경우에만 기존 날짜 데이터가 교체됩니다.")) {
+        return;
+      }
+      setRebuildingSelectedDate(true);
+      setReloadMessage(targetDate + " 데이터를 다시 확인하고 있습니다.");
+      postJson("/api/themes/rebuild-date", {
+        file_date: targetDate,
+        min_score: 0,
+        recent_limit: 20,
+      }).then(function (payload) {
+        const rebuilt = payload && payload.selected_date_rebuild ? payload.selected_date_rebuild : {};
+        const rebuiltDate = rebuilt.date || payload.file_date || targetDate;
+        setSelectedFileDate(rebuiltDate);
+        setReloadMessage(
+          rebuiltDate + " 데이터를 다시 계산했습니다. "
+            + formatNumber(rebuilt.rows || 0, 0) + "개 종목을 SQL과 캐시에 반영했습니다."
+        );
+        return refreshThemesData(true);
+      }).catch(function (error) {
+        setReloadMessage(error.message || targetDate + " 데이터 재생성 중 문제가 발생했습니다.");
+      }).finally(function () {
+        setRebuildingSelectedDate(false);
       });
     }
 
@@ -12991,8 +23712,10 @@
       const stockName = payload.stock_name || popupRow.resolved_name || popupRow.stock_name || "종목";
       const stockCode = payload.stock_code || popupRow.stock_code || "";
       const isHover = scoreHistoryPopup.mode === "hover";
+      const activeTab = scoreHistoryPopup.activeTab === "breakdown" ? "breakdown" : "trend";
+      const latestBreakdown = summary.latest_breakdown || (historyRows.length ? historyRows[historyRows.length - 1].breakdown : null);
       const content = scoreHistoryPopup.loading
-        ? h(LoadingBlock, { compact: true, title: "점수 변동 추이 로드 중", label: "최근 한 달 주도주 파일 확인" })
+        ? h(LoadingBlock, { compact: true, title: "점수 변동 추이 로드 중", label: "최근 1년 주도주 파일 확인" })
         : scoreHistoryPopup.error
           ? h("div", { className: "notice-box error" }, scoreHistoryPopup.error)
           : historyRows.length
@@ -13005,35 +23728,48 @@
                       { className: "score-history-hover-summary" },
                       h("span", null, "최근 종합점수 " + numberFormat(summary.latest_score, 2)),
                       h("span", null, "평균 종합점수 " + numberFormat(summary.avg_score, 2)),
-                      h("span", null, numberFormat(summary.count, 0) + "ȸ")
+                      h("span", null, numberFormat(summary.count, 0) + "회")
                     )
-                  : h(
-                      "div",
-                      { className: "summary-grid summary-grid-small score-history-summary" },
-                      h(SummaryCard, { label: "기간", value: (payload.start_date || "").slice(5) + " ~ " + (payload.end_date || "").slice(5), help: "최근 한 달" }),
-                      h(SummaryCard, { label: "최근 점수", value: numberFormat(summary.latest_score, 2), help: "선택 기준일" }),
-                      h(SummaryCard, { label: "평균 점수", value: numberFormat(summary.avg_score, 2), help: numberFormat(summary.count, 0) + "회 등장" }),
-                      h(SummaryCard, { label: "최고 점수", value: numberFormat(summary.max_score, 2), help: "기간 내 최고" })
-                    ),
-                h(ScoreHistoryChart, { rows: historyRows }),
+                  : null,
                 isHover
                   ? null
                   : h(
                       "div",
-                      { className: "score-history-list" },
-                      historyRows.slice().reverse().map(function (item) {
-                        return h(
-                          "div",
-                          { key: item.date, className: "score-history-item" },
-                          h("strong", null, item.date),
-                          h("span", null, "점수 " + numberFormat(item.score, 2)),
-                          h("span", { className: Number(item.change_pct || 0) >= 0 ? "metric-up-light" : "metric-down-light" }, formatPercent(item.change_pct, 2)),
-                          h("span", null, numberFormat(item.rank, 0) + "위")
-                        );
-                      })
+                      { className: "segmented-control score-history-tabs" },
+                      h("button", { type: "button", className: activeTab === "trend" ? "active" : "", onClick: function () { setScoreHistoryActiveTab("trend"); } }, "점수 추이"),
+                      h("button", { type: "button", className: activeTab === "breakdown" ? "active" : "", onClick: function () { setScoreHistoryActiveTab("breakdown"); } }, "점수 분해")
+                    ),
+                activeTab === "breakdown" && !isHover
+                  ? renderScoreBreakdownContent(latestBreakdown, payload, popupRow)
+                  : h(
+                      React.Fragment,
+                      null,
+                      h(ScoreHistoryChart, {
+                        rows: historyRows,
+                        hasMore: scoreHistoryPopup.hasMore,
+                        loadingMore: scoreHistoryPopup.loadingMore,
+                        onNeedMore: loadMoreScoreHistory,
+                      }),
+                      scoreHistoryPopup.loadingMore
+                        ? h("div", { className: "summary-help score-history-subchart-label" }, "이전 구간 로드 중")
+                        : null,
+                      h(
+                        "div",
+                        { className: "score-history-list" },
+                        historyRows.slice().reverse().map(function (item) {
+                          return h(
+                            "div",
+                            { key: item.date, className: "score-history-item" },
+                            h("strong", null, item.date),
+                            h("span", null, "점수 " + numberFormat(item.score, 2)),
+                            h("span", { className: Number(item.change_pct || 0) >= 0 ? "metric-up-light" : "metric-down-light" }, formatPercent(item.change_pct, 2)),
+                            h("span", null, numberFormat(item.rank, 0) + "위")
+                          );
+                        })
+                      )
                     )
               )
-            : EmptyState({ message: "최근 한 달 안에 해당 종목의 점수 이력이 없습니다.", compact: true });
+            : EmptyState({ message: "최근 1년 안에 해당 종목의 점수 이력이 없습니다.", compact: true });
       if (isHover) {
         const position = scoreHistoryPopup.position || { left: 16, top: 16 };
         return h(
@@ -13050,7 +23786,7 @@
             h("strong", null, stockName),
             stockCode ? h("span", null, stockCode) : null
           ),
-          content
+          h("div", { className: "score-history-modal-body" }, content)
         );
       }
       return h(
@@ -13074,14 +23810,83 @@
             ),
             h("button", { type: "button", className: "mini-button", onClick: closeScoreHistory }, "닫기")
           ),
-          content
+          h("div", { className: "score-history-modal-body" }, content)
+        )
+      );
+    }
+
+    function renderTradingValueHistoryPopup() {
+      if (!tradingValueHistoryPopup.open) {
+        return null;
+      }
+      const payload = tradingValueHistoryPopup.payload || {};
+      const popupRow = tradingValueHistoryPopup.row || {};
+      const historyRows = ensureArray(payload.rows);
+      const summary = payload.summary || {};
+      const stockName = payload.stock_name || popupRow.resolved_name || popupRow.stock_name || "종목";
+      const stockCode = payload.stock_code || popupRow.stock_code || "";
+      const content = tradingValueHistoryPopup.loading
+        ? h(LoadingBlock, { compact: true, title: "거래대금 추이 로드 중", label: "최근 두 달 주도주 파일 확인" })
+        : tradingValueHistoryPopup.error
+          ? h("div", { className: "notice-box error" }, tradingValueHistoryPopup.error)
+          : historyRows.length
+            ? h(
+                React.Fragment,
+                null,
+                h(
+                  "div",
+                  { className: "summary-grid summary-grid-small score-history-summary" },
+                  h(SummaryCard, { label: "기간", value: (payload.start_date || "").slice(5) + " ~ " + (payload.end_date || "").slice(5), help: "최근 두 달" }),
+                  h(SummaryCard, { label: "최근 거래대금", value: numberFormat(summary.latest_trading_value_100m, 1) + "억", help: "선택 기준일" }),
+                  h(SummaryCard, { label: "평균 거래대금", value: numberFormat(summary.avg_trading_value_100m, 1) + "억", help: numberFormat(summary.count, 0) + "일" }),
+                  h(SummaryCard, { label: "최대 거래대금", value: numberFormat(summary.max_trading_value_100m, 1) + "억", help: "기간 내 최고" })
+                ),
+                h(TradingValueHistoryChart, { rows: historyRows }),
+                h(
+                  "div",
+                  { className: "score-history-list" },
+                  historyRows.slice().reverse().map(function (item) {
+                    return h(
+                      "div",
+                      { key: item.date, className: "score-history-item" },
+                      h("strong", null, item.date),
+                      h("span", null, "거래대금 " + numberFormat(item.trading_value_100m, 1) + "억"),
+                      h("span", { className: Number(item.change_pct || 0) >= 0 ? "metric-up-light" : "metric-down-light" }, formatPercent(item.change_pct, 2)),
+                      h("span", null, numberFormat(item.rank, 0) + "위")
+                    );
+                  })
+                )
+              )
+            : EmptyState({ message: "최근 두 달 안에 해당 종목의 거래대금 이력이 없습니다.", compact: true });
+      return h(
+        "div",
+        {
+          className: "modal-backdrop score-history-backdrop",
+          onClick: closeTradingValueHistory,
+        },
+        h(
+          "div",
+          {
+            className: "modal-panel score-history-modal",
+            onClick: function (event) { event.stopPropagation(); },
+          },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "TRADING VALUE TREND"),
+              h("h2", null, stockName + (stockCode ? " (" + stockCode + ")" : ""))
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeTradingValueHistory }, "닫기")
+          ),
+          h("div", { className: "score-history-modal-body" }, content)
         )
       );
     }
 
     function closeTradingViewPopup() {
       stockChartRequestSeqRef.current += 1;
-      setTradingViewPopup({ open: false, row: null, symbol: "", label: "", loading: false, error: "", data: null, openingExternal: false, externalMessage: "" });
+      setTradingViewPopup({ open: false, row: null, symbol: "", label: "", loading: false, error: "", data: null, targetHistory: null, openingExternal: false, externalMessage: "" });
     }
 
     function openStockChartPopup(row, symbol, label) {
@@ -13099,10 +23904,11 @@
         loading: true,
         error: "",
         data: null,
+        targetHistory: null,
         openingExternal: false,
         externalMessage: "",
       });
-      if (cacheKey && CHART_PREVIEW_CACHE[cacheKey]) {
+      if (cacheKey && CHART_PREVIEW_CACHE[cacheKey] && TARGET_HISTORY_CACHE[cacheKey]) {
         setTradingViewPopup({
           open: true,
           row: chartRow,
@@ -13111,6 +23917,7 @@
           loading: false,
           error: "",
           data: CHART_PREVIEW_CACHE[cacheKey],
+          targetHistory: TARGET_HISTORY_CACHE[cacheKey],
           openingExternal: false,
           externalMessage: "",
         });
@@ -13124,10 +23931,28 @@
         params.set("name", stockName);
       }
       params.set("months", "3");
-      fetchJson("/api/stocks/chart-preview?" + params.toString())
-        .then(function (payload) {
+      const targetParams = new URLSearchParams();
+      if (code && code !== "000000") {
+        targetParams.set("code", code);
+      }
+      if (stockName) {
+        targetParams.set("name", stockName);
+      }
+      targetParams.set("months", "12");
+      Promise.all([
+        (cacheKey && CHART_PREVIEW_CACHE[cacheKey])
+          ? Promise.resolve(CHART_PREVIEW_CACHE[cacheKey])
+          : fetchJson("/api/stocks/chart-preview?" + params.toString()),
+        (cacheKey && TARGET_HISTORY_CACHE[cacheKey])
+          ? Promise.resolve(TARGET_HISTORY_CACHE[cacheKey])
+          : fetchJson("/api/stocks/wisereport-targets?" + targetParams.toString()).catch(function () { return null; }),
+      ])
+        .then(function (results) {
+          const payload = results[0];
+          const targetHistory = results[1];
           if (cacheKey) {
             CHART_PREVIEW_CACHE[cacheKey] = payload;
+            TARGET_HISTORY_CACHE[cacheKey] = targetHistory;
           }
           if (stockChartRequestSeqRef.current !== requestSeq) {
             return;
@@ -13140,6 +23965,7 @@
             loading: false,
             error: "",
             data: payload,
+            targetHistory: targetHistory,
             openingExternal: false,
             externalMessage: "",
           });
@@ -13156,6 +23982,7 @@
             loading: false,
             error: error.message || String(error),
             data: null,
+            targetHistory: null,
             openingExternal: false,
             externalMessage: "",
           });
@@ -13196,6 +24023,9 @@
       const row = tradingViewPopup.row || {};
       const code = String(row.stock_code || row.code || "").replace(/\D/g, "").padStart(6, "0");
       const label = tradingViewPopup.label || row.stock_name || row.resolved_name || "-";
+      const targetHistory = tradingViewPopup.targetHistory || null;
+      const targetLatest = targetHistory && targetHistory.latest ? targetHistory.latest : null;
+      const latestReports = latestTargetReportRows(targetHistory);
       return h(
         "div",
         {
@@ -13230,11 +24060,34 @@
           tradingViewPopup.externalMessage
             ? h("div", { className: "summary-help theme-stock-chart-message" }, tradingViewPopup.externalMessage)
             : null,
+          targetLatest
+            ? h(
+                "div",
+                { className: "telegram-stock-overview-target-meta theme-stock-target-meta" },
+                Number.isFinite(Number(targetHistory && targetHistory.report_count))
+                  ? h("span", { className: "telegram-stock-overview-target-pill" }, "리포트 " + numberFormat(targetHistory.report_count, 0) + "건")
+                  : null,
+                Number.isFinite(Number(targetLatest.gap_pct))
+                  ? h("span", { className: "telegram-stock-overview-target-pill" }, "괴리율 " + formatPercent(targetLatest.gap_pct, 1))
+                  : null,
+                Number.isFinite(Number(targetLatest.avg_target_price))
+                  ? h(TargetReportHoverBadge, {
+                      className: "telegram-stock-overview-target-pill subtle",
+                      label: "평균 목표가 " + numberFormat(targetLatest.avg_target_price, 0),
+                      heading: (targetLatest.date || "최근") + " 리포트 상세",
+                      reports: latestReports,
+                    })
+                  : null
+              )
+            : null,
           h(StockChartPreview, {
             label: label,
             loading: tradingViewPopup.loading,
             error: tradingViewPopup.error,
             data: tradingViewPopup.data,
+            tradingView: true,
+            targetSeries: targetHistory ? targetHistory.series : null,
+            targetReports: targetHistory ? targetHistory.recent_reports : null,
           })
         )
       );
@@ -13280,6 +24133,8 @@
       React.Fragment,
       null,
       renderScoreHistoryPopup(),
+      renderTradingValueHistoryPopup(),
+      renderScoreFormulaModal(),
       renderTradingViewPopup(),
       renderSectorMarketCapPopup(),
       h(
@@ -13304,10 +24159,12 @@
               disabled: calendarRefreshing,
             }, calendarRefreshing ? "새로고침 중..." : "흐름 새로고침"),
             h("button", {
+              type: "button",
               className: "mini-button" + (calendarMode === "month" ? " active" : ""),
               onClick: function () { setCalendarMode("month"); },
             }, "월간"),
             h("button", {
+              type: "button",
               className: "mini-button" + (calendarMode === "week" ? " active" : ""),
               onClick: function () { setCalendarMode("week"); },
             }, "주간"),
@@ -13342,20 +24199,38 @@
           "div",
           { className: "themes-compact-titlebar" },
           h(
-            "button",
-            {
-              type: "button",
-              className: "theme-box-toggle",
-              onClick: function () { setThemeBoxExpanded(function (value) { return !value; }); },
-              "aria-expanded": themeBoxExpanded ? "true" : "false",
-            },
-            h("span", { className: "calendar-arrow", "aria-hidden": "true" }, themeBoxExpanded ? "?" : "?"),
-            h("span", { className: "theme-box-title-text" },
-              h("span", { className: "eyebrow" }, "Daily Theme Radar"),
-              h("span", { className: "page-title" }, "오늘의 주도주")
+            "div",
+            { className: "themes-compact-titlebar-main" },
+            h(
+              "button",
+              {
+                type: "button",
+                className: "theme-box-toggle",
+                onClick: function () { setThemeBoxExpanded(function (value) { return !value; }); },
+                "aria-expanded": themeBoxExpanded ? "true" : "false",
+              },
+              h("span", { className: "calendar-arrow", "aria-hidden": "true" }, themeBoxExpanded ? "?" : "?"),
+              h("span", { className: "theme-box-title-text" },
+                h("span", { className: "eyebrow" }, "Daily Theme Radar"),
+                h("span", { className: "page-title" }, themePageTitle)
+              )
+            ),
+            h(
+              "div",
+              { className: "toggle-group", "data-capture-ignore": "true" },
+              h("button", {
+                type: "button",
+                className: "mini-button" + (!isEtfUniverse ? " active" : ""),
+                onClick: function () { setUniverseMode("stock"); },
+              }, "주식"),
+              h("button", {
+                type: "button",
+                className: "mini-button" + (isEtfUniverse ? " active" : ""),
+                onClick: function () { setUniverseMode("etf"); },
+              }, "국내 ETF")
             )
           ),
-          h("div", { className: "summary-help" }, themeBoxExpanded ? "시총 2000억 이상 전체" : "접힘 · 화살표를 누르면 조회 파일과 요약을 볼 수 있습니다"),
+          h("div", { className: "summary-help" }, themeBoxExpanded ? themeUniverseHelp : "접힘 · 화살표를 누르면 조회 파일과 요약을 볼 수 있습니다"),
         ),
         themeBoxExpanded
           ? h(
@@ -13381,11 +24256,21 @@
                   {
                     type: "button",
                     className: "mini-button",
-                    onClick: reloadThemeExcel,
-                    disabled: reloadingExcel,
-                    title: "SQL에 저장된 최신 데이터를 기준으로 현재 화면만 다시 불러옵니다.",
+                    onClick: function () { setCalendarChartOpen(function (value) { return !value; }); },
+                    title: "상위 10개 평균 점수 흐름 차트를 열거나 닫습니다.",
                   },
-                  reloadingExcel ? "데이터 로드 중..." : "데이터 직접 로드"
+                  calendarChartOpen ? "차트 닫기" : "차트 열기"
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "mini-button",
+                    onClick: rebuildSelectedThemeDate,
+                    disabled: !selectedDateValue || reloadingExcel || rebuildingSelectedDate,
+                    title: "현재 선택한 날짜의 원천 데이터를 검증한 뒤 SQL과 캐시를 다시 생성합니다.",
+                  },
+                  rebuildingSelectedDate ? "선택일 재생성 중..." : "선택일 다시 로드"
                 ),
                 reloadingExcel
                   ? h(
@@ -13396,6 +24281,26 @@
                   : null,
                 reloadMessage ? h("div", { className: "summary-help" }, reloadMessage) : null
               ),
+              calendarChartOpen
+                ? h(
+                    "div",
+                    { className: "leader-calendar-score-block" },
+                    h("div", { className: "section-toolbar", style: { marginBottom: "10px" } },
+                      h("div", { className: "summary-help" }, calendarScoreBasis === "score_o" ? "일자별 상위 10개 평균 당일점수" : "일자별 상위 10개 평균 종합점수"),
+                      h("div", { className: "summary-help" }, chartDateRangeLabel)
+                    ),
+                    calendarScoreHistoryRequest.error
+                      ? h("div", { className: "notice-box error" }, "점수 흐름 차트를 불러오지 못했습니다: " + calendarScoreHistoryRequest.error)
+                      : calendarScoreHistoryRequest.loading && !chartScoreHistoryPayload
+                        ? h(LoadingBlock, { compact: true, title: "점수 흐름 차트 로드 중", label: calendarScoreHistoryRequest.label })
+                        : chartScoreSeriesRows.length
+                      ? h(LeaderCalendarScoreChart, {
+                          rows: chartScoreSeriesRows,
+                          scoreBasis: calendarScoreBasis,
+                        })
+                      : h(EmptyState, { message: "차트로 표시할 점수 데이터가 없습니다.", compact: true })
+                  )
+                : null,
               h(
                 "div",
                 { className: "theme-file-calendar" },
@@ -13456,7 +24361,7 @@
                 "div",
                 { className: "summary-grid themes-compact-summary" },
                 h(SummaryCard, { label: "기준 파일", value: themes.file_name || "-", help: themes.file_date || "" }),
-                h(SummaryCard, { label: "시총 2000억 이상", value: numberFormat(themes.qualified_count, 0) + "개", help: "점수와 관계없이 표시" }),
+                h(SummaryCard, { label: themeUniverseCountLabel, value: numberFormat(themes.qualified_count, 0) + "개", help: "점수와 관계없이 표시" }),
                 h(SummaryCard, { label: "지정된 섹터", value: numberFormat(sectorSummary.length, 0) + "개", help: "직접 입력 기준" })
               )
             )
@@ -13507,16 +24412,16 @@
                     key: item.sector,
                     type: "button",
                     className: "theme-sector-chip" + (sectorFilter === item.sector ? " active" : ""),
-                    title: "3개월 평균 점수가 높은 순으로 모인 대표 종목: " + item.leaders.join(", "),
+                    title: "평균 등락률이 높은 대표 종목: " + item.leaders.join(", "),
                     onClick: function () { openSectorMarketCapChart(item.sector); },
                   },
                   h("span", { className: "theme-sector-dot", style: { background: color } }),
                   h("span", { className: "theme-sector-chip-name" }, item.sector),
-                  h("span", { className: "theme-sector-chip-meta" }, numberFormat(item.count, 0) + "개 · " + numberFormat(item.avg_score, 1))
+                  h("span", { className: "theme-sector-chip-meta" }, numberFormat(item.count, 0) + "개 · " + formatPercent(item.avg_change_pct, 2))
                 );
               }))
             )
-          : EmptyState({ message: "섹터를 입력하면 평균 점수와 대표 종목이 여기에 모입니다." })
+          : EmptyState({ message: "섹터를 입력하면 평균 등락률과 대표 종목이 여기에 모입니다." })
       ),
       h(
         "div",
@@ -13524,16 +24429,24 @@
         h(
           "div",
           { className: "section-toolbar" },
-          h(SectionTitle, null, "종목 추세 순위"),
+          h(SectionTitle, null, "종목 추세 순위" + ((selectedDateValue || themes.file_date) ? " (" + (selectedDateValue || themes.file_date) + ")" : "")),
           h(
             "div",
             { className: "toggle-group" },
             h("div", { className: "summary-help" }, sectorFilter === "all" ? "전체 표시" : "선택 섹터: " + sectorFilter),
             h("button", {
+              className: "mini-button",
+              type: "button",
+              onClick: openScoreFormulaModal,
+            }, "점수 지표 수정"),
+            h("button", {
               className: "mini-button capture-button",
               onClick: copyScoreTableToClipboard,
               disabled: scoreTableCopyState.status === "working",
-            }, scoreTableCopyState.status === "working" ? "캡쳐 복사 중..." : captureButtonLabel)
+            }, scoreTableCopyState.status === "working" ? "캡쳐 복사 중..." : captureButtonLabel),
+            rankHighCountLabel
+              ? h("span", { className: "theme-high-count-badge" }, rankHighCountLabel)
+              : null
           )
         ),
         scoreTableCopyState.message
@@ -13617,7 +24530,7 @@
                       const active = themeTableSortState.key === column.key;
                       return h(
                         "th",
-                        { key: column.key },
+                        { key: column.key, className: column.key === "change_pct" ? "theme-col-change" : null },
                         h(
                           "button",
                           {
@@ -13637,7 +24550,7 @@
                   null,
                   [
                     themeTableTopSpacer
-                      ? h("tr", { key: "top-spacer", className: "virtual-spacer-row", "aria-hidden": "true" }, h("td", { colSpan: 10, style: { height: themeTableTopSpacer + "px", padding: 0, border: 0 } }))
+                      ? h("tr", { key: "top-spacer", className: "virtual-spacer-row", "aria-hidden": "true" }, h("td", { colSpan: 12, style: { height: themeTableTopSpacer + "px", padding: 0, border: 0 } }))
                       : null,
                   ].concat(renderedVisibleRows.map(function (row, rowIndex) {
                     const sector = String(row.manual_sector || "").trim();
@@ -13657,7 +24570,7 @@
                         "data-stock-search-key": stockKey,
                         className: highlightedStockKey === stockKey ? "stock-search-highlight" : "",
                       },
-                      h("td", null, renderRankCell(row, themeTableStartIndex + rowIndex + 1)),
+                      h("td", null, renderRankCell(row, resolveThemeTableRank(row, themeTableStartIndex + rowIndex))),
                       h(
                         "td",
                         { className: "theme-sector-cell", style: { borderLeft: "4px solid " + color } },
@@ -13677,10 +24590,12 @@
                       ),
                       h("td", null, renderStockNameWithCode(row)),
                       h("td", null, renderNumberCell(row.sortino_norm, 4)),
-                      h("td", null, renderNumberCell(row.score_o, 2)),
+                      h("td", null, formatPercent(row.atr_20_pct != null ? row.atr_20_pct : row.atr_20, 2)),
                       h("td", null, renderNumberCell(row.market_cap_100m, 0)),
-                      h("td", null, renderNumberCell(row.trading_value_100m, 0)),
-                      h("td", null, renderSignedPercent(row.change_pct)),
+                      h("td", null, renderTradingValueHistory(row.trading_value_100m, row)),
+                      h("td", null, renderHighDrawdownPercent(row)),
+                      h("td", { className: "theme-col-change" }, renderSignedPercent(row.change_pct)),
+                      h("td", null, renderNumberCell(row.score_o, 2)),
                       h("td", null, renderTodayScore(row.score, row)),
                       h("td", { className: "theme-note-cell" }, h(ThemeNoteInput, {
                         value: row.note || "",
@@ -13689,7 +24604,7 @@
                     );
                   })).concat([
                     themeTableBottomSpacer
-                      ? h("tr", { key: "bottom-spacer", className: "virtual-spacer-row", "aria-hidden": "true" }, h("td", { colSpan: 10, style: { height: themeTableBottomSpacer + "px", padding: 0, border: 0 } }))
+                      ? h("tr", { key: "bottom-spacer", className: "virtual-spacer-row", "aria-hidden": "true" }, h("td", { colSpan: 12, style: { height: themeTableBottomSpacer + "px", padding: 0, border: 0 } }))
                       : null,
                   ])
                 )
@@ -13731,8 +24646,12 @@
                       h("th", null, "섹터"),
                       h("th", null, "종목"),
                       h("th", null, "Sortino"),
-                      h("th", null, "당일점수"),
+                      h("th", null, "% ATR(20)"),
+                      h("th", null, "시총(억)"),
+                      h("th", null, "거래대금(억)"),
+                      h("th", null, "고점대비"),
                       h("th", null, "등락률"),
+                      h("th", null, "당일점수"),
                       h("th", null, "종합점수"),
                       h("th", null, "비고")
                     )
@@ -13751,8 +24670,12 @@
                         h("td", { className: "theme-sector-cell", style: { borderLeft: "4px solid " + color } }, sector || "-"),
                         h("td", null, renderStockNameWithCode(captureRow)),
                         h("td", null, renderNumberCell(row.sortino_norm, 4)),
+                        h("td", null, formatPercent(row.atr_20_pct != null ? row.atr_20_pct : row.atr_20, 2)),
+                        h("td", null, renderNumberCell(row.market_cap_100m, 0)),
+                        h("td", null, renderNumberCell(row.trading_value_100m, 0)),
+                        h("td", null, renderHighDrawdownPercent(row)),
+                        h("td", { className: "theme-col-change" }, renderSignedPercent(row.change_pct)),
                         h("td", null, renderNumberCell(row.score_o, 2)),
-                        h("td", null, renderSignedPercent(row.change_pct)),
                         h("td", null, renderTodayScore(row.score)),
                         h("td", null, row.note || "-")
                       );
@@ -13762,7 +24685,8 @@
               : EmptyState({ message: captureEmptyMessage, compact: true })
           )
         )
-      ) : null
+      ) : null,
+      renderKrEtfDetailPopup()
     );
   }
 
@@ -13794,12 +24718,65 @@
     const [reloading, setReloading] = useState(false);
     const [reloadMessage, setReloadMessage] = useState("");
     const [themeTableSortState, setThemeTableSortState] = useState({ key: "score", direction: "desc" });
+    const [rankFilterMode, setRankFilterMode] = useState("all");
     const [chartPopup, setChartPopup] = useState({ open: false, row: null, loading: false, error: "", data: null });
+    const scoreHistoryCacheRef = useRef({});
+    const scoreHistoryRequestSeqRef = useRef(0);
+    const [scoreHistoryPopup, setScoreHistoryPopup] = useState({
+      open: false,
+      loading: false,
+      loadingMore: false,
+      hasMore: true,
+      error: "",
+      row: null,
+      payload: null,
+      cacheKey: "",
+      activeTab: "trend",
+    });
+    const [stockSearchText, setStockSearchText] = useState("");
+    const [stockSearchOpen, setStockSearchOpen] = useState(false);
+    const [stockSearchActiveIndex, setStockSearchActiveIndex] = useState(0);
+    const [stockSearchMessage, setStockSearchMessage] = useState("");
+    const [highlightedStockKey, setHighlightedStockKey] = useState("");
+    const [scoreFormulaModalOpen, setScoreFormulaModalOpen] = useState(false);
+    const [scoreFormulaDraft, setScoreFormulaDraft] = useState(null);
+    const [scoreFormulaStatus, setScoreFormulaStatus] = useState({ type: "", message: "" });
+    const [scoreFormulaSaving, setScoreFormulaSaving] = useState(false);
+    const [scoreFormulaRecalculating, setScoreFormulaRecalculating] = useState(false);
+    const [scoreFormulaSnapshotSaving, setScoreFormulaSnapshotSaving] = useState(false);
+    const [scoreFormulaOracleSyncing, setScoreFormulaOracleSyncing] = useState(false);
+    const [scoreFormulaJobState, setScoreFormulaJobState] = useState(null);
+    const scoreFormulaJobPollRef = useRef(null);
+    const [scoreFormulaSnapshotLabel, setScoreFormulaSnapshotLabel] = useState("");
+    const [captureStageReady, setCaptureStageReady] = useState(false);
+    const [scoreTableCopyState, setScoreTableCopyState] = useState({ status: "", message: "" });
+    const stockRowRefs = useRef({});
+    const pendingStockScrollKeyRef = useRef("");
+    const themeTableScrollRef = useRef(null);
+    const scoreTableCaptureRef = useRef(null);
     const [datePickerMonth, setDatePickerMonth] = useState(function () {
       const today = new Date();
       return today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0");
     });
     const baseThemesParams = ["min_score=0", "recent_limit=20"];
+    const scoreFormulaMarket = config.pageKey === "global-themes" ? "us" : "asia";
+    const scoreFormulaMarketLabel = config.pageKey === "global-themes" ? "미국" : "아시아";
+    const scoreFormulaConfigRequest = useFetchJson("/api/themes/score-formula-config?market=" + encodeURIComponent(scoreFormulaMarket));
+    const scoreFormulaSnapshotsRequest = useFetchJson("/api/themes/score-formula-snapshots?market=" + encodeURIComponent(scoreFormulaMarket) + "&limit=20");
+    function ensureOwnMarketScoreFormulaConfig(rawConfig) {
+      const next = JSON.parse(JSON.stringify(rawConfig || {}));
+      if (!next.display_formula || typeof next.display_formula !== "object") {
+        next.display_formula = {};
+      }
+      if (config.pageKey === "global-themes") {
+        if (next.display_formula.us_capture_score_threshold == null || next.display_formula.us_capture_score_threshold === "") {
+          next.display_formula.us_capture_score_threshold = 15;
+        }
+      } else if (next.display_formula.asia_capture_score_threshold == null || next.display_formula.asia_capture_score_threshold === "") {
+        next.display_formula.asia_capture_score_threshold = 35;
+      }
+      return next;
+    }
     if (selectedFileDate) {
       baseThemesParams.push("file_date=" + encodeURIComponent(selectedFileDate));
     }
@@ -13832,6 +24809,40 @@
         setDatePickerMonth(String(selectedFileDate).slice(0, 7));
       }
     }, [selectedFileDate]);
+
+    useEffect(function () {
+      function handleAutoDailyBuild(event) {
+        const detail = (event && event.detail) || {};
+        if ((config.pageKey === "global-themes" && detail.market !== "us")
+          || (config.pageKey !== "global-themes" && detail.market !== "asia")) {
+          return;
+        }
+        themesRequest.refresh(true).catch(function () {
+        });
+        calendarRequest.refresh(true).catch(function () {
+        });
+      }
+      window.addEventListener(AUTO_DAILY_THEME_BUILD_EVENT, handleAutoDailyBuild);
+      return function () {
+        window.removeEventListener(AUTO_DAILY_THEME_BUILD_EVENT, handleAutoDailyBuild);
+      };
+    }, [config.pageKey, themesRequest, calendarRequest]);
+
+    useEffect(function () {
+      return function () {
+        stopOwnMarketScoreFormulaJobPolling();
+      };
+    }, []);
+
+    useEffect(function () {
+      const payload = scoreFormulaConfigRequest.data || null;
+      if (!payload || !payload.config) {
+        return;
+      }
+      setScoreFormulaDraft(function (current) {
+        return current || ensureOwnMarketScoreFormulaConfig(payload.config);
+      });
+    }, [scoreFormulaConfigRequest.data]);
 
     useEffect(function () {
       setSectorFilter("all");
@@ -13871,15 +24882,11 @@
         setStockSearchMessage("검색 대상 종목을 현재 날짜 데이터에서 찾지 못했습니다.");
       }
     }, [themesRequest.data, selectedFileDate]);
-    if (themesRequest.loading && !themesRequest.data) {
-      return LoadingPanel({ label: themesRequest.label });
-    }
-    if (themesRequest.error) {
-      return ErrorPanel({ message: themesRequest.error });
-    }
-
     const themes = themesRequest.data || {};
     const calendar = calendarRequest.data || {};
+    const themesLoading = !themesRequest.data && themesRequest.loading;
+    const themesError = themesRequest.data ? "" : (themesRequest.error || "");
+    const themesLabel = themesRequest.loading ? "해외 주도주 데이터 불러오는 중" : "해외 주도주 데이터 정리 중";
     const availableFiles = ensureArray(themes.available_files);
     const availableDateMap = {};
     availableFiles.forEach(function (item) {
@@ -13909,21 +24916,20 @@
     rows.forEach(function (row) {
       const sector = String(row.manual_sector || row.theme || "Other").trim() || "Other";
       if (!sectorMap[sector]) {
-        sectorMap[sector] = { sector: sector, count: 0, scoreTotal: 0, leaders: [] };
+        sectorMap[sector] = { sector: sector, count: 0, changeTotal: 0, leaders: [] };
         sectorSummary.push(sectorMap[sector]);
       }
       sectorMap[sector].count += 1;
-      sectorMap[sector].scoreTotal += Number(row.score || 0);
+      sectorMap[sector].changeTotal += Number(row.change_pct || 0);
       if (sectorMap[sector].leaders.length < 4) {
         sectorMap[sector].leaders.push(row.stock_name || row.stock_code || "-");
       }
     });
     sectorSummary.forEach(function (item) {
-      item.avg_score = item.count ? item.scoreTotal / item.count : 0;
+      item.avg_change_pct = item.count ? item.changeTotal / item.count : 0;
     });
     sectorSummary.sort(function (a, b) {
-      if (b.count !== a.count) return b.count - a.count;
-      return Number(b.avg_score || 0) - Number(a.avg_score || 0);
+      return Number(b.avg_change_pct || 0) - Number(a.avg_change_pct || 0);
     });
     const visibleRows = sectorFilter === "all"
       ? rows
@@ -13931,18 +24937,42 @@
     const sortColumns = {
       rank: function (row) { return Number(row.rank || 0); },
       sector: function (row) { return String(row.manual_sector || row.theme || ""); },
+      stock_code: function (row) { return String(row.stock_code || ""); },
       stock_name: function (row) { return String(row.stock_name || row.stock_code || ""); },
       sortino_norm: function (row) { return Number(row.sortino_norm || 0); },
+      atr_20: function (row) { return Number(row.atr_20_pct || row.atr_20 || 0); },
+      high_drawdown_pct: function (row) {
+        const rawValue = Number(row && row.pct_to_52w_high);
+        return Number.isFinite(rawValue) ? rawValue : Number.POSITIVE_INFINITY;
+      },
       score_o: function (row) { return Number(row.score_o || 0); },
       score: function (row) { return Number(row.score || 0); },
       change_pct: function (row) { return Number(row.change_pct || 0); },
       market_cap_100m: function (row) { return Number(row.market_cap_100m || 0); },
       trading_value_100m: function (row) { return Number(row.trading_value_100m || 0); },
+      is_adr: function (row) { return Number(row.is_adr ? 1 : 0); },
       industry: function (row) { return String(row.industry || ""); },
       note: function (row) { return String(row.note || ""); },
     };
-    const sortedVisibleRows = visibleRows.slice().sort(function (left, right) {
-      const sortKey = themeTableSortState.key || "score";
+    const sortKey = themeTableSortState.key || "score";
+    const isRank52Mode = sortKey === "rank" && rankFilterMode === "high52";
+    const baseVisibleRows = sortKey === "rank"
+      ? visibleRows.filter(function (row) {
+          return isRank52Mode ? isTradableHigh52(row) : true;
+        })
+      : visibleRows;
+    const sortedVisibleRows = baseVisibleRows.slice().sort(function (left, right) {
+      if (sortKey === "rank") {
+        const scoreGap = Number(right.score || 0) - Number(left.score || 0);
+        if (scoreGap !== 0) {
+          return scoreGap;
+        }
+        const dailyGap = Number(right.score_o || 0) - Number(left.score_o || 0);
+        if (dailyGap !== 0) {
+          return dailyGap;
+        }
+        return Number(left.rank || 0) - Number(right.rank || 0);
+      }
       const valueFactory = sortColumns[sortKey] || sortColumns.score;
       const leftValue = valueFactory(left);
       const rightValue = valueFactory(right);
@@ -13961,8 +24991,284 @@
     });
     const showMarketColumn = config.showMarketColumn !== false;
     const showTickerColumn = !!config.showTickerColumn;
+    const displayFormulaConfig = (scoreFormulaDraft && scoreFormulaDraft.display_formula) || ((scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config && scoreFormulaConfigRequest.data.config.display_formula) || {});
+    const captureScoreThreshold = config.pageKey === "global-themes"
+      ? Number(displayFormulaConfig.us_capture_score_threshold || 15)
+      : Number(displayFormulaConfig.asia_capture_score_threshold || 35);
+    const captureRegionLabel = config.pageKey === "asia-themes"
+      ? ((ensureArray(config.regionOptions).find(function (item) {
+          return String(item.code || "") === String(selectedRegion || "");
+        }) || {}).label || "아시아")
+      : "미국";
+    const captureTitle = captureRegionLabel + " 주도주 · 종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상";
+    const captureButtonLabel = captureRegionLabel + " 종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상 캡쳐";
+    const captureEmptyMessage = "종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상 종목이 없습니다.";
+    const captureRows = sortedVisibleRows.map(function (row, index) {
+      return Object.assign({ __display_rank: index + 1 }, row);
+    }).filter(function (row) {
+      return Number(row.score || 0) >= captureScoreThreshold;
+    });
+
+    function normalizeStockSearchText(value) {
+      return String(value || "").toLowerCase().replace(/\s+/g, "");
+    }
+
+    function buildStockSearchKey(row) {
+      const code = String((row || {}).stock_code || "").trim().toUpperCase();
+      return code || String((row || {}).stock_name || "").trim();
+    }
+
+    function stockSearchHaystack(row) {
+      return normalizeStockSearchText([
+        row.stock_name,
+        row.stock_code,
+        row.industry,
+        row.manual_sector,
+        row.theme,
+      ].filter(Boolean).join(" "));
+    }
+
+    const stockSearchQuery = normalizeStockSearchText(stockSearchText);
+    const stockSearchSuggestions = stockSearchOpen && stockSearchQuery
+      ? rows.filter(function (row) {
+          return stockSearchHaystack(row).indexOf(stockSearchQuery) >= 0;
+        }).slice().sort(function (a, b) {
+          const aName = normalizeStockSearchText(a.stock_name || "");
+          const bName = normalizeStockSearchText(b.stock_name || "");
+          const aStarts = aName.indexOf(stockSearchQuery) === 0 ? 0 : 1;
+          const bStarts = bName.indexOf(stockSearchQuery) === 0 ? 0 : 1;
+          if (aStarts !== bStarts) {
+            return aStarts - bStarts;
+          }
+          return Number(a.rank || 9999) - Number(b.rank || 9999);
+        }).slice(0, 10)
+      : [];
+
+    function scrollToStockRow(stockKey, delay) {
+      window.setTimeout(function () {
+        const rowElement = stockRowRefs.current[stockKey];
+        if (!rowElement) {
+          return;
+        }
+        if (rowElement.scrollIntoView) {
+          rowElement.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+        }
+        const scroller = themeTableScrollRef.current;
+        if (scroller && typeof rowElement.offsetTop === "number") {
+          const targetTop = Math.max(0, rowElement.offsetTop - (scroller.clientHeight / 2) + (rowElement.offsetHeight / 2));
+          scroller.scrollTo({ top: targetTop, behavior: "smooth" });
+        }
+      }, delay || 0);
+    }
+
+    function submitStockSearch(event) {
+      if (event && event.preventDefault) {
+        event.preventDefault();
+      }
+      const query = normalizeStockSearchText(stockSearchText);
+      if (!query) {
+        setStockSearchMessage("검색할 종목명을 입력해 주세요.");
+        return;
+      }
+      const matched = rows.find(function (row) {
+        return stockSearchHaystack(row).indexOf(query) >= 0;
+      });
+      if (!matched) {
+        setStockSearchMessage("조건에 맞는 종목을 찾지 못했습니다.");
+        setHighlightedStockKey("");
+        return;
+      }
+      chooseStockSearchRow(matched);
+    }
+
+    function chooseStockSearchRow(row) {
+      if (!row) {
+        return;
+      }
+      const stockKey = buildStockSearchKey(row);
+      const targetIndex = sortedVisibleRows.findIndex(function (item) {
+        return buildStockSearchKey(item) === stockKey;
+      });
+      setStockSearchText(row.stock_name || row.stock_code || "");
+      setStockSearchOpen(false);
+      setStockSearchActiveIndex(0);
+      setHighlightedStockKey(stockKey);
+      if (targetIndex < 0 && sectorFilter !== "all") {
+        pendingStockScrollKeyRef.current = stockKey;
+        setSectorFilter("all");
+        setStockSearchMessage((row.stock_name || "종목") + " 위치로 이동합니다.");
+        return;
+      }
+      const displayRank = targetIndex >= 0 ? targetIndex + 1 : Number(row.rank || 0);
+      setStockSearchMessage((row.stock_name || "종목") + " · " + numberFormat(displayRank, 0) + "번 위치로 이동합니다.");
+      scrollToStockRow(stockKey, 80);
+      scrollToStockRow(stockKey, 260);
+    }
+
+    function handleStockSearchKeyDown(event) {
+      if (!stockSearchOpen || !stockSearchSuggestions.length) {
+        if (event.key === "Enter") {
+          setStockSearchOpen(false);
+        }
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setStockSearchActiveIndex(function (current) {
+          return Math.min(current + 1, stockSearchSuggestions.length - 1);
+        });
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setStockSearchActiveIndex(function (current) {
+          return Math.max(current - 1, 0);
+        });
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        chooseStockSearchRow(stockSearchSuggestions[stockSearchActiveIndex] || stockSearchSuggestions[0]);
+      } else if (event.key === "Escape") {
+        setStockSearchOpen(false);
+      }
+    }
+
+    function copyElementToClipboard(target, setCopyState, options) {
+      const captureOptions = options || {};
+      function finishWithoutTarget() {
+        if (typeof captureOptions.afterFinish === "function") {
+          captureOptions.afterFinish();
+        }
+      }
+      if (!target) {
+        setCopyState({ status: "error", message: "캡쳐용 이미지를 만들지 못했습니다." });
+        finishWithoutTarget();
+        return;
+      }
+      if (!window.html2canvas) {
+        setCopyState({ status: "error", message: "캡쳐 이미지를 복사하지 못했습니다." });
+        finishWithoutTarget();
+        return;
+      }
+      setCopyState({ status: "working", message: "캡쳐 복사 중..." });
+      const scale = captureOptions.scale || Math.max(2, Math.min(3, window.devicePixelRatio || 2));
+      const temporaryClass = captureOptions.temporaryClass || "";
+      const settleMs = Number(captureOptions.settleMs || 0);
+      function finishCapture() {
+        if (temporaryClass) {
+          target.classList.remove(temporaryClass);
+        }
+        if (typeof captureOptions.afterFinish === "function") {
+          captureOptions.afterFinish();
+        }
+      }
+      if (temporaryClass) {
+        target.classList.add(temporaryClass);
+      }
+      new Promise(function (resolve) {
+        window.requestAnimationFrame(function () {
+          window.requestAnimationFrame(function () {
+            if (settleMs > 0) {
+              window.setTimeout(resolve, settleMs);
+            } else {
+              resolve();
+            }
+          });
+        });
+      }).then(function () {
+        return window.html2canvas(target, {
+          backgroundColor: "#ffffff",
+          scale: scale,
+          useCORS: true,
+          logging: false,
+          windowWidth: Math.max(document.documentElement.clientWidth || 0, target.scrollWidth || 0),
+          windowHeight: Math.max(document.documentElement.clientHeight || 0, target.scrollHeight || 0),
+          ignoreElements: function (element) {
+            return element && element.getAttribute && element.getAttribute("data-capture-ignore") === "true";
+          },
+        });
+      }).then(function (canvas) {
+        const pixelMessage = numberFormat(canvas.width, 0) + " x " + numberFormat(canvas.height, 0) + "px";
+        return new Promise(function (resolve, reject) {
+          canvas.toBlob(function (blob) {
+            if (!blob) {
+              reject(new Error("이미지 생성에 실패했습니다."));
+              return;
+            }
+            resolve({ blob: blob, pixelMessage: pixelMessage });
+          }, "image/png");
+        });
+      }).then(function (result) {
+        return copyImageBlobWithFallback(result.blob).then(function (copyResult) {
+          return { pixelMessage: result.pixelMessage, method: copyResult.method };
+        });
+      }).then(function (result) {
+        finishCapture();
+        setCopyState({ status: "saved", message: "클립보드에 복사 완료 · " + result.pixelMessage + (result.method === "system" ? " · 시스템 클립보드" : "") });
+        window.setTimeout(function () {
+          setCopyState(function (current) {
+            return current.status === "saved" ? { status: "", message: "" } : current;
+          });
+        }, 3200);
+      }).catch(function (error) {
+        finishCapture();
+        setCopyState({ status: "error", message: error.message || "캡쳐 복사에 실패했습니다." });
+      });
+    }
+
+    function copyScoreTableToClipboard() {
+      setCaptureStageReady(true);
+      window.setTimeout(function () {
+        if (!scoreTableCaptureRef.current) {
+          setCaptureStageReady(false);
+          setScoreTableCopyState({ status: "error", message: "캡쳐용 이미지를 만들지 못했습니다." });
+          return;
+        }
+        copyElementToClipboard(scoreTableCaptureRef.current, setScoreTableCopyState, {
+          scale: 4,
+          temporaryClass: "capture-ultra",
+          settleMs: 80,
+          afterFinish: function () {
+            window.setTimeout(function () { setCaptureStageReady(false); }, 300);
+          },
+        });
+      }, 80);
+    }
+
+    useEffect(function () {
+      if (!pendingStockScrollKeyRef.current) {
+        return;
+      }
+      const stockKey = pendingStockScrollKeyRef.current;
+      const matched = sortedVisibleRows.find(function (row) {
+        return buildStockSearchKey(row) === stockKey;
+      });
+      if (!matched) {
+        return;
+      }
+      pendingStockScrollKeyRef.current = "";
+      const displayRank = sortedVisibleRows.findIndex(function (row) {
+        return buildStockSearchKey(row) === stockKey;
+      }) + 1;
+      setStockSearchMessage((matched.stock_name || "종목") + " · " + numberFormat(displayRank, 0) + "번 위치로 이동합니다.");
+      scrollToStockRow(stockKey, 80);
+      scrollToStockRow(stockKey, 260);
+    }, [sortedVisibleRows]);
 
     function toggleTableSort(sortKey) {
+      if (sortKey === "rank") {
+        if (themeTableSortState.key !== "rank") {
+          setRankFilterMode("high52");
+          setThemeTableSortState({ key: "rank", direction: "desc" });
+          return;
+        }
+        if (rankFilterMode === "high52") {
+          setRankFilterMode("all");
+          setThemeTableSortState({ key: "score", direction: "desc" });
+          return;
+        }
+        setRankFilterMode("high52");
+        setThemeTableSortState({ key: "rank", direction: "desc" });
+        return;
+      }
+      setRankFilterMode("all");
       setThemeTableSortState(function (current) {
         if (current && current.key === sortKey) {
           return { key: sortKey, direction: current.direction === "desc" ? "asc" : "desc" };
@@ -14015,6 +25321,424 @@
         });
     }
 
+    function openScoreFormulaModal() {
+      if (scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config) {
+        setScoreFormulaDraft(ensureOwnMarketScoreFormulaConfig(scoreFormulaConfigRequest.data.config));
+      }
+      setScoreFormulaStatus({ type: "", message: "" });
+      setScoreFormulaModalOpen(true);
+    }
+
+    function closeScoreFormulaModal() {
+      if (scoreFormulaSaving || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing) {
+        return;
+      }
+      setScoreFormulaModalOpen(false);
+    }
+
+    function updateScoreFormulaDraft(sectionKey, itemKey, value) {
+      setScoreFormulaDraft(function (current) {
+        const next = JSON.parse(JSON.stringify(current || {}));
+        if (!next[sectionKey] || typeof next[sectionKey] !== "object") {
+          next[sectionKey] = {};
+        }
+        next[sectionKey][itemKey] = value;
+        return next;
+      });
+    }
+
+    function scoreFormulaSectionLabel(sectionKey) {
+      const labels = {
+        score_formula: "당일점수 산식",
+        final_score_formula: "종합점수 산식",
+        trend_adjustment_formula: "추세 보너스/패널티",
+        display_formula: "화면 표시 기준",
+      };
+      return labels[sectionKey] || sectionKey;
+    }
+
+    function scoreFormulaFieldLabel(fieldKey) {
+      const labels = {
+        amount_power: "거래대금 지수",
+        marcap_power: "시가총액 지수",
+        return_base: "등락률 기준값",
+        return_power: "등락률 지수",
+        log_base: "로그 기준값",
+        trading_value_surge_power: "거래대금 증가 강도",
+        trading_value_surge_cap: "거래대금 증가 상한",
+        bonus_if_52w_high: "52주 신고가 보너스",
+        bonus_if_20d_high: "20일 신고가 보너스",
+        bonus_if_not_52w_high: "비신고가 패널티",
+        offset: "당일점수 오프셋",
+        invalid_fill: "무효값 대체",
+        weight_today: "당일 비중",
+        weight_1w: "1주 비중",
+        weight_1m: "1개월 비중",
+        weight_3m: "3개월 비중",
+        sortino_power: "Sortino 강도",
+        sortino_floor: "Sortino 최소 배율",
+        sortino_tanh_scale: "Sortino tanh scale",
+        sortino_min_obs: "Sortino 최소 관측수",
+        sortino_insufficient_value: "Sortino 부족시 값",
+        enabled: "추세 보정 사용",
+        today_blend_weight: "당일 혼합 비중",
+        trend_floor: "추세 최저 기준",
+        acceleration_alignment_bonus: "가속 정렬 보너스",
+        acceleration_max_bonus: "가속 최대 보너스",
+        acceleration_cap_ratio: "가속 상한 비율",
+        break_base_penalty_today_below_1w: "당일<1주 패널티",
+        break_base_penalty_1w_below_1m: "1주<1개월 패널티",
+        break_base_penalty_1m_below_3m: "1개월<3개월 패널티",
+        break_max_penalty: "붕괴 최대 패널티",
+        break_cap_ratio: "붕괴 상한 비율",
+        kr_capture_score_threshold: "캡쳐 기준점수",
+        us_capture_score_threshold: "미국 종합점수 캡쳐 기준",
+        asia_capture_score_threshold: "아시아 종합점수 캡쳐 기준",
+        entry_signal_threshold: "진입 시그널 기준점수",
+        exit_signal_threshold: "편출 시그널 기준점수",
+      };
+      return labels[fieldKey] || fieldKey;
+    }
+
+    async function saveScoreFormulaConfig() {
+      if (!scoreFormulaDraft || scoreFormulaSaving || scoreFormulaRecalculating) {
+        return;
+      }
+      setScoreFormulaSaving(true);
+      setScoreFormulaStatus({ type: "", message: "" });
+      try {
+        const payload = await postJson("/api/themes/score-formula-config", { market: scoreFormulaMarket, config: scoreFormulaDraft });
+        setScoreFormulaDraft(JSON.parse(JSON.stringify(payload.config || {})));
+        await scoreFormulaConfigRequest.refresh(true);
+        setScoreFormulaStatus({ type: "success", message: scoreFormulaMarketLabel + " 점수 설정을 저장했습니다." });
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+      } finally {
+        setScoreFormulaSaving(false);
+      }
+    }
+
+    async function saveOwnMarketScoreFormulaSnapshot() {
+      if (!scoreFormulaDraft || scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving) {
+        return;
+      }
+      setScoreFormulaSnapshotSaving(true);
+      setScoreFormulaStatus({ type: "", message: "" });
+      try {
+        const payload = await postJson("/api/themes/score-formula-snapshots", {
+          market: scoreFormulaMarket,
+          label: scoreFormulaSnapshotLabel,
+          config: scoreFormulaDraft,
+        });
+        await scoreFormulaSnapshotsRequest.refresh(true);
+        setScoreFormulaSnapshotLabel("");
+        setScoreFormulaStatus({
+          type: "success",
+          message: scoreFormulaMarketLabel + " 점수 설정 저장본을 DB에 기록했습니다. " + String((((payload || {}).snapshot || {}).created_at || "")),
+        });
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+      } finally {
+        setScoreFormulaSnapshotSaving(false);
+      }
+    }
+
+    function applyOwnMarketScoreFormulaSnapshot(snapshot) {
+      if (!snapshot || !snapshot.config) {
+        return;
+      }
+      setScoreFormulaDraft(ensureOwnMarketScoreFormulaConfig(snapshot.config));
+      setScoreFormulaStatus({ type: "success", message: scoreFormulaMarketLabel + " 저장본을 불러왔습니다. 설정 저장 후 재계산하면 반영됩니다." });
+    }
+
+    function stopOwnMarketScoreFormulaJobPolling() {
+      if (scoreFormulaJobPollRef.current) {
+        window.clearInterval(scoreFormulaJobPollRef.current);
+        scoreFormulaJobPollRef.current = null;
+      }
+    }
+
+    async function pollOwnMarketScoreFormulaJobStatus(scope, options) {
+      const normalizedScope = scope === "recent_1y" ? "recent_1y" : "full";
+      const payload = await fetchJson("/api/themes/recalculate-scores/status?market=" + encodeURIComponent(scoreFormulaMarket), { silent: true, noCache: true });
+      setScoreFormulaJobState(payload || null);
+      const status = String((payload && payload.status) || "").toLowerCase();
+      const percent = Number(payload && payload.percent);
+      upsertBackgroundTask({
+        id: "score-formula-" + scoreFormulaMarket,
+        label: scoreFormulaMarketLabel + " 점수 재계산",
+        market: scoreFormulaMarket,
+        marketLabel: scoreFormulaMarketLabel,
+        scope: normalizedScope,
+        status: status || "running",
+        percent: Number.isFinite(percent) ? percent : 0,
+        message: (payload && payload.message) || "",
+        startedAt: normalizeTimestampMs((payload && payload.started_ts) || (payload && payload.updated_ts) || Date.now()),
+      });
+      const progressPrefix = Number.isFinite(percent) ? "[" + numberFormat(percent, 0) + "%] " : "";
+      if (status === "queued" || status === "running") {
+        setScoreFormulaStatus({
+          type: "success",
+          message: progressPrefix + (payload && payload.message ? payload.message : scoreFormulaMarketLabel + " 백그라운드 재계산 진행 중"),
+        });
+        return payload;
+      }
+      stopOwnMarketScoreFormulaJobPolling();
+      setScoreFormulaRecalculating(false);
+      if (status === "completed") {
+        await Promise.all([
+          scoreFormulaConfigRequest.refresh(true),
+          themesRequest.refresh(true),
+          calendarRequest.refresh(true),
+        ]);
+        const result = (payload && payload.result) || {};
+        const completeMessage = scoreFormulaMarketLabel + " " + (normalizedScope === "recent_1y" ? "최근 1년 재계산" : "전체 재계산")
+          + (result && result.recalculated_dates ? " / " + numberFormat(result.recalculated_dates, 0) + "일자" : "")
+          + " 완료";
+        setScoreFormulaStatus({
+          type: "success",
+          message: completeMessage + (Number.isFinite(Number(result.duration_sec)) ? " (" + numberFormat(Number(result.duration_sec), 2) + "초)" : ""),
+        });
+        if (!(options && options.silentCompleteAlert)) {
+          window.alert(completeMessage);
+        }
+        return payload;
+      }
+      removeBackgroundTask("score-formula-" + scoreFormulaMarket);
+      const errorMessage = (payload && (payload.error || payload.message)) || (scoreFormulaMarketLabel + " 점수 재계산 실패");
+      setScoreFormulaStatus({ type: "error", message: errorMessage });
+      return payload;
+    }
+
+    function startOwnMarketScoreFormulaJobPolling(scope) {
+      stopOwnMarketScoreFormulaJobPolling();
+      pollOwnMarketScoreFormulaJobStatus(scope).catch(function () {});
+      scoreFormulaJobPollRef.current = window.setInterval(function () {
+        pollOwnMarketScoreFormulaJobStatus(scope).catch(function () {});
+      }, 3000);
+    }
+
+    async function recalculateOwnMarketScores(scope) {
+      if (scoreFormulaSaving || scoreFormulaRecalculating) {
+        return;
+      }
+      const effectiveConfig = scoreFormulaDraft || (scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config) || null;
+      if (!effectiveConfig) {
+        setScoreFormulaStatus({ type: "error", message: "점수 지표 설정을 아직 불러오는 중입니다. 잠시 후 다시 시도해 주세요." });
+        return;
+      }
+      const scopeLabel = String(scope || "full") === "recent_1y" ? "최근 1년" : "전체";
+      setScoreFormulaStatus({ type: "", message: "" });
+      setScoreFormulaRecalculating(true);
+      try {
+        const payload = await postJson("/api/themes/recalculate-scores/background", { config: effectiveConfig, scope: scope, market: scoreFormulaMarket });
+        setScoreFormulaJobState(payload || null);
+        upsertBackgroundTask({
+          id: "score-formula-" + scoreFormulaMarket,
+          label: scoreFormulaMarketLabel + " 점수 재계산",
+          market: scoreFormulaMarket,
+          marketLabel: scoreFormulaMarketLabel,
+          scope: scope === "recent_1y" ? "recent_1y" : "full",
+          status: String((payload && payload.status) || "queued").toLowerCase(),
+          percent: Number(payload && payload.percent) || 0,
+          message: (payload && payload.message) || "백그라운드 재계산 시작",
+          startedAt: normalizeTimestampMs((payload && payload.started_ts) || Date.now()),
+        });
+        setScoreFormulaStatus({
+          type: "success",
+          message: scoreFormulaMarketLabel + " " + scopeLabel + " 재계산을 백그라운드에서 시작했습니다. 다른 기능을 계속 사용할 수 있습니다.",
+        });
+        startOwnMarketScoreFormulaJobPolling(scope === "recent_1y" ? "recent_1y" : "full");
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+        setScoreFormulaRecalculating(false);
+      }
+    }
+
+    async function syncOwnMarketScoreFormulaToOracle() {
+      if (!scoreFormulaDraft || scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing) {
+        return;
+      }
+      setScoreFormulaOracleSyncing(true);
+      setScoreFormulaStatus({ type: "", message: "" });
+      try {
+        await postJson("/api/themes/score-formula-config", { market: scoreFormulaMarket, config: scoreFormulaDraft });
+        await scoreFormulaConfigRequest.refresh(true);
+        const payload = await postJson("/api/oracle-sync/score-formula/push", { markets: [scoreFormulaMarket] });
+        const markets = ((payload && payload.markets) || []).join(", ");
+        setScoreFormulaStatus({
+          type: "success",
+          message: "Oracle 서버에 " + scoreFormulaMarketLabel + " 점수 공식을 업데이트했습니다." + (markets ? " (" + markets + ")" : ""),
+        });
+      } catch (error) {
+        setScoreFormulaStatus({ type: "error", message: error.message || String(error) });
+      } finally {
+        setScoreFormulaOracleSyncing(false);
+      }
+    }
+
+    function renderScoreFormulaModal() {
+      if (!scoreFormulaModalOpen) {
+        return null;
+      }
+      const modalConfig = scoreFormulaDraft || (scoreFormulaConfigRequest.data && scoreFormulaConfigRequest.data.config) || {};
+      const snapshots = (scoreFormulaSnapshotsRequest.data && scoreFormulaSnapshotsRequest.data.snapshots) || [];
+      const jobStatus = String((scoreFormulaJobState && scoreFormulaJobState.status) || "").toLowerCase();
+      const jobPercent = Number(scoreFormulaJobState && scoreFormulaJobState.percent);
+      const jobRunning = scoreFormulaRecalculating || jobStatus === "queued" || jobStatus === "running";
+      const jobScopeLabel = String(scoreFormulaJobState && scoreFormulaJobState.scope || "") === "recent_1y" ? "최근 1년" : "전체";
+      return h(
+        "div",
+        { className: "modal-backdrop", onClick: closeScoreFormulaModal },
+        h(
+          "div",
+          { className: "modal-panel score-formula-modal", onClick: function (event) { event.stopPropagation(); } },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, scoreFormulaMarketLabel + " Score Formula"),
+              h("h2", null, scoreFormulaMarketLabel + " 점수 지표 수정")
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeScoreFormulaModal, disabled: scoreFormulaSaving || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing }, "닫기")
+          ),
+          scoreFormulaConfigRequest.loading && !scoreFormulaDraft
+            ? h(LoadingBlock, { compact: true, title: scoreFormulaMarketLabel + " 점수 설정 불러오는 중", label: scoreFormulaConfigRequest.label })
+            : h(
+                React.Fragment,
+                null,
+                jobRunning
+                  ? h(
+                      "div",
+                      { className: "score-formula-progress-card" },
+                      h(
+                        "div",
+                        { className: "score-formula-progress-head" },
+                        h("strong", null, "백그라운드 재계산 진행 중"),
+                        h("span", null, Number.isFinite(jobPercent) ? (numberFormat(jobPercent, 0) + "%") : "-")
+                      ),
+                      h(
+                        "div",
+                        { className: "score-formula-progress-meta" },
+                        h("span", null, "시장: " + scoreFormulaMarketLabel),
+                        h("span", null, "범위: " + jobScopeLabel),
+                        h("span", null, "상태: " + (scoreFormulaJobState && scoreFormulaJobState.message ? scoreFormulaJobState.message : "진행 중"))
+                      ),
+                      h("div", { className: "score-formula-progress-bar" }, h("span", { style: { width: (Number.isFinite(jobPercent) ? Math.max(4, Math.min(100, jobPercent)) : 8) + "%" } })),
+                      h("div", { className: "summary-help" }, "팝업을 닫아도 계산은 계속 진행됩니다. 왼쪽 하단 로딩 표시를 눌러 상세 진행 상황을 볼 수 있습니다.")
+                    )
+                  : null,
+                scoreFormulaStatus.message
+                  ? h("div", { className: "summary-help" + (scoreFormulaStatus.type === "error" ? " text-danger" : "") }, scoreFormulaStatus.message)
+                  : null,
+                h(
+                  "div",
+                  { className: "score-formula-section" },
+                  h("h3", { className: "score-formula-section-title" }, scoreFormulaMarketLabel + " 점수 설정 저장본"),
+                  h(
+                    "div",
+                    { className: "form-grid score-formula-grid", style: { gridTemplateColumns: "2fr 1fr" } },
+                    h(
+                      "label",
+                      { className: "form-field" },
+                      h("span", null, "저장본 이름"),
+                      h("input", {
+                        type: "text",
+                        value: scoreFormulaSnapshotLabel,
+                        placeholder: scoreFormulaMarketLabel + " 복구 전",
+                        onChange: function (event) { setScoreFormulaSnapshotLabel(event.target.value || ""); },
+                      })
+                    ),
+                    h(
+                      "div",
+                      { className: "form-field", style: { justifyContent: "flex-end" } },
+                      h("span", null, "DB 저장"),
+                      h("button", {
+                        type: "button",
+                        className: "secondary-button",
+                        onClick: saveOwnMarketScoreFormulaSnapshot,
+                        disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving,
+                      }, scoreFormulaSnapshotSaving ? "저장 중..." : "현재값 저장")
+                    )
+                  ),
+                  snapshots.length
+                    ? h(
+                        "div",
+                        { className: "data-table-wrap", style: { maxHeight: "220px", overflow: "auto" } },
+                        h(
+                          "table",
+                          { className: "data-table compact-table" },
+                          h("thead", null, h("tr", null, h("th", null, "저장시각"), h("th", null, "이름"), h("th", null, "구분"), h("th", null, ""))),
+                          h(
+                            "tbody",
+                            null,
+                            snapshots.map(function (snapshot) {
+                              return h(
+                                "tr",
+                                { key: "score-formula-snapshot-" + scoreFormulaMarket + "-" + String(snapshot.id || "") },
+                                h("td", null, String(snapshot.created_at || "").replace("T", " ")),
+                                h("td", null, snapshot.label || "-"),
+                                h("td", null, snapshot.source === "auto" ? "자동" : "수동"),
+                                h("td", null, h("button", { type: "button", className: "mini-button", onClick: function () { applyOwnMarketScoreFormulaSnapshot(snapshot); } }, "불러오기"))
+                              );
+                            })
+                          )
+                        )
+                      )
+                    : h("div", { className: "summary-help" }, "저장된 점수 설정 이력이 없습니다."),
+                ),
+                Object.keys(modalConfig).map(function (sectionKey) {
+                  const section = modalConfig[sectionKey];
+                  if (!section || typeof section !== "object") {
+                    return null;
+                  }
+                  return h(
+                    "div",
+                    { key: sectionKey, className: "score-formula-section" },
+                    h("h3", { className: "score-formula-section-title" }, scoreFormulaSectionLabel(sectionKey)),
+                    h(
+                      "div",
+                      { className: "form-grid score-formula-grid" },
+                      Object.keys(section).map(function (itemKey) {
+                        const rawValue = section[itemKey];
+                        const isBoolean = typeof rawValue === "boolean";
+                        return h(
+                          "label",
+                          { key: itemKey, className: "form-field" },
+                          h("span", null, scoreFormulaFieldLabel(itemKey)),
+                          isBoolean
+                            ? h("select", {
+                                value: String(rawValue),
+                                onChange: function (event) { updateScoreFormulaDraft(sectionKey, itemKey, event.target.value === "true"); },
+                              },
+                              h("option", { value: "true" }, "true"),
+                              h("option", { value: "false" }, "false")
+                            )
+                            : h("input", {
+                                type: "number",
+                                step: "any",
+                                value: rawValue,
+                                onChange: function (event) { updateScoreFormulaDraft(sectionKey, itemKey, event.target.value); },
+                              })
+                        );
+                      })
+                    )
+                  );
+                }),
+                h(
+                  "div",
+                  { className: "score-formula-actions" },
+                  h("button", { type: "button", className: "secondary-button", onClick: saveScoreFormulaConfig, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaOracleSyncing }, scoreFormulaSaving ? "저장 중..." : "설정 저장"),
+                  h("button", { type: "button", className: "secondary-button", onClick: saveOwnMarketScoreFormulaSnapshot, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing }, scoreFormulaSnapshotSaving ? "저장 중..." : "DB 저장본 만들기"),
+                  h("button", { type: "button", className: "secondary-button", onClick: syncOwnMarketScoreFormulaToOracle, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaSnapshotSaving || scoreFormulaOracleSyncing }, scoreFormulaOracleSyncing ? "업데이트 중..." : "Oracle 공식 업데이트"),
+                  h("button", { type: "button", className: "secondary-button", onClick: function () { recalculateOwnMarketScores("recent_1y"); }, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaOracleSyncing }, scoreFormulaRecalculating ? "재계산 중..." : (scoreFormulaMarketLabel + " 최근 1년 재계산")),
+                  h("button", { type: "button", className: "primary-button", onClick: function () { recalculateOwnMarketScores("full"); }, disabled: scoreFormulaSaving || scoreFormulaRecalculating || scoreFormulaOracleSyncing }, scoreFormulaRecalculating ? "재계산 중..." : (scoreFormulaMarketLabel + " 전체 재계산"))
+                )
+              )
+        )
+      );
+    }
+
     function openChart(row) {
       setChartPopup({ open: true, row: row, loading: true, error: "", data: null });
       const params = new URLSearchParams();
@@ -14052,6 +25776,17 @@
       return numberFormat(number, digits == null ? 2 : digits);
     }
 
+    function renderMarketValueCell(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return "-";
+      }
+      if (config.pageKey === "global-themes") {
+        return numberFormat(number / 10, 2);
+      }
+      return numberFormat(number, 2);
+    }
+
     function renderSignedPercent(value) {
       const number = Number(value);
       let className = "metric-flat";
@@ -14060,19 +25795,268 @@
       return h("span", { className: className }, formatPercent(number, 2));
     }
 
-    function renderNameCell(row) {
+    function isHigh52(value) {
+      const normalized = String(value || "").trim().toUpperCase();
+      return normalized === "O" || normalized === "Y" || normalized === "TRUE" || normalized === "1";
+    }
+
+    function isTradableHigh52(row) {
+      return isHigh52(row && row.is_52w_high)
+        && Number((row && row.trading_value_100m) || 0) > 0
+        && Number((row && row.score_o) || 0) > 0;
+    }
+
+    function renderRankCell(row, rankValue) {
+      const high52 = isHigh52(row && row.is_52w_high);
+      const displayRank = Number(rankValue != null ? rankValue : (row && row.__display_rank != null ? row.__display_rank : row.rank));
+      return h(
+        "span",
+        {
+          className: "rank-cell" + (high52 ? " high52" : ""),
+          title: high52 ? "52주 신고가" : "",
+        },
+        numberFormat(displayRank, 0)
+      );
+    }
+
+    function buildScoreHistoryKey(row) {
+      const code = String((row || {}).stock_code || "").trim().toUpperCase();
+      const name = String((row || {}).stock_name || "").trim();
+      const endDate = selectedFileDate || themes.file_date || "";
+      return [
+        config.pageKey,
+        selectedRegion || "",
+        code,
+        name,
+        endDate,
+      ].join("|");
+    }
+
+    function closeScoreHistory() {
+      scoreHistoryRequestSeqRef.current += 1;
+      setScoreHistoryPopup({
+        open: false,
+        loading: false,
+        loadingMore: false,
+        hasMore: true,
+        error: "",
+        row: null,
+        payload: null,
+        cacheKey: "",
+        activeTab: "trend",
+      });
+    }
+
+    function openScoreHistory(row, options) {
+      if (!row) {
+        return;
+      }
+      const openOptions = options || {};
+      const activeTab = openOptions.activeTab || "trend";
+      const code = String(row.stock_code || "").trim().toUpperCase();
+      const name = String(row.stock_name || "").trim();
+      const endDate = selectedFileDate || themes.file_date || "";
+      const cacheKey = buildScoreHistoryKey(row);
+      const cached = scoreHistoryCacheRef.current[cacheKey];
+      scoreHistoryRequestSeqRef.current += 1;
+      const requestSeq = scoreHistoryRequestSeqRef.current;
+      if (cached) {
+        setScoreHistoryPopup({
+          open: true,
+          loading: false,
+          loadingMore: false,
+          hasMore: cached.hasMore !== false,
+          error: "",
+          row: row,
+          payload: cached,
+          cacheKey: cacheKey,
+          activeTab: activeTab,
+        });
+        return;
+      }
+      setScoreHistoryPopup({
+        open: true,
+        loading: true,
+        loadingMore: false,
+        hasMore: true,
+        error: "",
+        row: row,
+        payload: null,
+        cacheKey: cacheKey,
+        activeTab: activeTab,
+      });
+      const params = new URLSearchParams();
+      if (code) {
+        params.set("code", code);
+      }
+      if (name) {
+        params.set("name", name);
+      }
+      if (endDate) {
+        params.set("end_date", endDate);
+      }
+      params.set("days", "365");
+      if (config.pageKey === "global-themes") {
+        params.set("market", "us");
+      } else if (config.pageKey === "asia-themes") {
+        params.set("market", "asia");
+        params.set("region", selectedRegion || "jp");
+      }
+      fetchJson("/api/themes/score-history?" + params.toString(), { noCache: true })
+        .then(function (payload) {
+          payload.hasMore = true;
+          scoreHistoryCacheRef.current[cacheKey] = payload;
+          if (scoreHistoryRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          setScoreHistoryPopup({
+            open: true,
+            loading: false,
+            loadingMore: false,
+            hasMore: true,
+            error: "",
+            row: row,
+            payload: payload,
+            cacheKey: cacheKey,
+            activeTab: activeTab,
+          });
+        })
+        .catch(function (error) {
+          if (scoreHistoryRequestSeqRef.current !== requestSeq) {
+            return;
+          }
+          setScoreHistoryPopup({
+            open: true,
+            loading: false,
+            loadingMore: false,
+            hasMore: false,
+            error: error.message || String(error),
+            row: row,
+            payload: null,
+            cacheKey: cacheKey,
+            activeTab: activeTab,
+          });
+        });
+    }
+
+    function setScoreHistoryActiveTab(nextTab) {
+      setScoreHistoryPopup(function (current) {
+        return Object.assign({}, current, { activeTab: nextTab === "breakdown" ? "breakdown" : "trend" });
+      });
+    }
+
+    function loadMoreScoreHistory(beforeDate) {
+      const popup = scoreHistoryPopup;
+      if (!popup.open || popup.loading || popup.loadingMore || popup.hasMore === false) {
+        return;
+      }
+      const payload = popup.payload || {};
+      const historyRows = ensureArray(payload.rows);
+      if (!historyRows.length) {
+        return;
+      }
+      const earliestDate = beforeDate || String(historyRows[0].date || "");
+      const nextEndDate = shiftIsoDate(earliestDate, -1);
+      if (!nextEndDate) {
+        setScoreHistoryPopup(function (current) {
+          return Object.assign({}, current, { hasMore: false, loadingMore: false });
+        });
+        return;
+      }
+      setScoreHistoryPopup(function (current) {
+        return Object.assign({}, current, { loadingMore: true });
+      });
+      const row = popup.row || {};
+      const code = String(row.stock_code || "").trim().toUpperCase();
+      const name = String(row.stock_name || "").trim();
+      const params = new URLSearchParams();
+      if (code) {
+        params.set("code", code);
+      }
+      if (name) {
+        params.set("name", name);
+      }
+      params.set("end_date", nextEndDate);
+      params.set("days", "180");
+      if (config.pageKey === "global-themes") {
+        params.set("market", "us");
+      } else if (config.pageKey === "asia-themes") {
+        params.set("market", "asia");
+        params.set("region", selectedRegion || "jp");
+      }
+      fetchJson("/api/themes/score-history?" + params.toString(), { noCache: true })
+        .then(function (olderPayload) {
+          setScoreHistoryPopup(function (current) {
+            const currentPayload = current.payload || {};
+            const currentRows = ensureArray(currentPayload.rows);
+            const mergedPayload = mergeScoreHistoryPayloadRows(currentPayload, olderPayload || {});
+            const mergedRows = ensureArray(mergedPayload.rows);
+            const addedOlderRows = mergedRows.length > currentRows.length && mergedRows.length && String(mergedRows[0].date || "") < String(currentRows[0] && currentRows[0].date || "");
+            mergedPayload.hasMore = addedOlderRows;
+            if (current.cacheKey) {
+              scoreHistoryCacheRef.current[current.cacheKey] = mergedPayload;
+            }
+            return Object.assign({}, current, {
+              payload: mergedPayload,
+              loadingMore: false,
+              hasMore: addedOlderRows,
+            });
+          });
+        })
+        .catch(function () {
+          setScoreHistoryPopup(function (current) {
+            return Object.assign({}, current, { loadingMore: false, hasMore: false });
+          });
+        });
+    }
+
+    function renderTodayScore(value, row) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return "-";
+      }
+      if (!row) {
+        return h("span", { className: "today-score-cell" }, numberFormat(number, 2));
+      }
       return h(
         "button",
         {
           type: "button",
-          className: "tradingview-stock-link inline-button",
+          className: "today-score-cell today-score-button",
+          title: "종합점수 추이 보기",
           onClick: function (event) {
             event.preventDefault();
             event.stopPropagation();
-            openChart(row);
+            openScoreHistory(row);
           },
         },
-        row.stock_name || row.stock_code || "-"
+        numberFormat(number, 2)
+      );
+    }
+
+    function renderNameCell(row) {
+      const symbol = String((row && row.stock_code) || "").trim().toUpperCase();
+      const stockName = String((row && row.stock_name) || "").trim() || symbol || "-";
+      const tooltip = symbol && stockName !== symbol
+        ? stockName + " (" + symbol + ")"
+        : stockName;
+      return h(
+        "div",
+        { className: "theme-stock-name-cell theme-stock-name-cell-global", title: tooltip },
+        h(
+          "button",
+          {
+            type: "button",
+            className: "tradingview-stock-link inline-button",
+            title: tooltip,
+            onClick: function (event) {
+              event.preventDefault();
+              event.stopPropagation();
+              openStockInGlobalCompany(row);
+            },
+          },
+          stockName
+        )
       );
     }
 
@@ -14107,9 +26091,476 @@
       );
     }
 
+    function renderScoreBreakdownContent(breakdown, payload, popupRow) {
+      if (!breakdown) {
+        return EmptyState({ message: "선택 기준일 점수 분해 데이터가 없습니다.", compact: true });
+      }
+      const endDate = payload.end_date || "";
+      const stockName = payload.stock_name || popupRow.stock_name || "종목";
+      const scoreFormulaParams = breakdown.score_formula_params || {};
+      const finalScoreFormulaParams = breakdown.final_score_formula_params || {};
+      function coerceNumber(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+      }
+      function formatBreakdownNumber(value, digits) {
+        const number = coerceNumber(value);
+        if (number == null) {
+          return "-";
+        }
+        const abs = Math.abs(number);
+        if ((abs >= 1e12) || (abs > 0 && abs < 1e-4)) {
+          return number.toExponential(Math.max(2, digits == null ? 4 : digits));
+        }
+        return numberFormat(number, digits == null ? 2 : digits);
+      }
+      const computedReturnTerm = coerceNumber(breakdown.return_term) != null
+        ? coerceNumber(breakdown.return_term)
+        : (function () {
+            const returnBase = coerceNumber(scoreFormulaParams.return_base);
+            const returnPower = coerceNumber(scoreFormulaParams.return_power);
+            const changePct = coerceNumber(breakdown.change_pct);
+            if (returnBase == null || returnPower == null || changePct == null) {
+              return null;
+            }
+            return Math.pow(returnBase + (changePct / 100), returnPower);
+          })();
+      const computedAmountTerm = coerceNumber(breakdown.amount_term) != null
+        ? coerceNumber(breakdown.amount_term)
+        : (function () {
+            const amountPower = coerceNumber(scoreFormulaParams.amount_power);
+            const tradingValue = coerceNumber(breakdown.today_trading_value_100m);
+            if (amountPower == null || tradingValue == null) {
+              return null;
+            }
+            return Math.pow(Math.max(tradingValue, 0), amountPower);
+          })();
+      const computedMarcapTerm = coerceNumber(breakdown.marcap_term) != null
+        ? coerceNumber(breakdown.marcap_term)
+        : (function () {
+            const marcapPower = coerceNumber(scoreFormulaParams.marcap_power);
+            const marketCap = coerceNumber(breakdown.market_cap_100m);
+            if (marcapPower == null || marketCap == null) {
+              return null;
+            }
+            return Math.pow(Math.max(marketCap, 0), marcapPower);
+          })();
+      const computedCoreValue = coerceNumber(breakdown.core_value) != null
+        ? coerceNumber(breakdown.core_value)
+        : (function () {
+            const amountTerm = computedAmountTerm;
+            const marcapTerm = computedMarcapTerm;
+            const surgeFactor = coerceNumber(breakdown.surge_factor);
+            if (amountTerm == null || marcapTerm == null || surgeFactor == null || !(marcapTerm > 0)) {
+              return null;
+            }
+            const returnTerm = computedReturnTerm;
+            if (returnTerm == null) {
+              return null;
+            }
+            return (amountTerm / marcapTerm) * returnTerm * surgeFactor;
+          })();
+      const computedLogTerm = coerceNumber(breakdown.log_term) != null
+        ? coerceNumber(breakdown.log_term)
+        : (function () {
+            const coreValue = computedCoreValue;
+            const logBase = coerceNumber(scoreFormulaParams.log_base);
+            if (coreValue == null || logBase == null || !(coreValue > 0) || !(logBase > 0) || logBase === 1) {
+              return null;
+            }
+            return Math.log(coreValue) / Math.log(logBase);
+          })();
+      function formatPoint(value, digits) {
+        return value != null ? numberFormat(value, digits == null ? 2 : digits) + "점" : "-";
+      }
+      function formatMultiplier(value, digits) {
+        return value != null ? numberFormat(value, digits == null ? 3 : digits) + "배" : "-";
+      }
+      function format100m(value) {
+        return value != null ? numberFormat(value, 1) + "억" : "-";
+      }
+      function formatFormulaValue(value, digits) {
+        return value != null ? numberFormat(value, digits == null ? 4 : digits) : "-";
+      }
+      function toScoreContributionPoint(value) {
+        const number = coerceNumber(value);
+        return number == null ? null : number;
+      }
+      const scoreLogBase = coerceNumber(scoreFormulaParams.log_base);
+      const amountContributionPoint = computedAmountTerm != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && computedAmountTerm > 0
+        ? Math.log(computedAmountTerm) / Math.log(scoreLogBase)
+        : null;
+      const marcapContributionPoint = computedMarcapTerm != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && computedMarcapTerm > 0
+        ? -Math.log(computedMarcapTerm) / Math.log(scoreLogBase)
+        : null;
+      const returnContributionPoint = computedReturnTerm != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && computedReturnTerm > 0
+        ? Math.log(computedReturnTerm) / Math.log(scoreLogBase)
+        : null;
+      const surgeContributionPoint = coerceNumber(breakdown.surge_factor) != null && scoreLogBase != null && scoreLogBase > 0 && scoreLogBase !== 1 && coerceNumber(breakdown.surge_factor) > 0
+        ? Math.log(coerceNumber(breakdown.surge_factor)) / Math.log(scoreLogBase)
+        : null;
+      const highBonusPoint = toScoreContributionPoint(breakdown.high_bonus);
+      const scoreOContributionValues = [
+        Math.abs(Number(amountContributionPoint || 0)),
+        Math.abs(Number(marcapContributionPoint || 0)),
+        Math.abs(Number(returnContributionPoint || 0)),
+        Math.abs(Number(surgeContributionPoint || 0)),
+        Math.abs(Number(highBonusPoint || 0)),
+      ];
+      const scoreOContributionDenom = scoreOContributionValues.reduce(function (acc, value) { return acc + value; }, 0);
+      function scoreOContributionShare(value) {
+        if (!(scoreOContributionDenom > 0)) {
+          return "-";
+        }
+        return numberFormat((Math.abs(Number(value || 0)) / scoreOContributionDenom) * 100, 1) + "%";
+      }
+      const highStateText = breakdown.is_52w_high
+        ? "52주 신고가"
+        : (breakdown.is_20d_high ? "20일 신고가" : "신고가 아님");
+      const todayItems = [
+        { label: "당일 거래대금", value: format100m(breakdown.today_trading_value_100m), help: "해당 날짜 실제 거래대금" },
+        { label: "20일 평균 거래대금", value: format100m(breakdown.avg_value_20d_100m), help: "직전 20거래일 평균 거래대금" },
+        { label: "거래대금 증가 배수", value: formatMultiplier(breakdown.surge_ratio_raw, 2), help: "당일 거래대금 / 20일 평균 거래대금" },
+        { label: "거래대금 증가 상한 반영", value: formatMultiplier(breakdown.surge_ratio_capped, 2), help: "상한 적용 후 실제 사용된 증가 배수" },
+        { label: "거래대금 보정 계수", value: formatMultiplier(breakdown.surge_factor, 3), help: "증가 배수에 surge power를 적용한 today 점수 배수" },
+        { label: "등락률 보정값", value: formatBreakdownNumber(computedReturnTerm, 6), help: "(return_base + 등락률)^return_power" },
+        { label: "거래대금 항", value: formatBreakdownNumber(computedAmountTerm, 4), help: "거래대금^amount_power" },
+        { label: "시가총액 항", value: formatBreakdownNumber(computedMarcapTerm, 4), help: "시가총액^marcap_power" },
+        { label: "로그 전 원값", value: formatBreakdownNumber(computedCoreValue, 6), help: "(거래대금 항 / 시총 항) x 등락률 보정 x 거래대금 보정" },
+        { label: "로그 점수", value: formatBreakdownNumber(computedLogTerm, 4), help: "log_base 기준 로그 변환값" },
+        { label: "거래대금 점수 기여", value: formatPoint(amountContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(amountContributionPoint) },
+        { label: "시가총액 점수 기여", value: formatPoint(marcapContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(marcapContributionPoint) },
+        { label: "등락률 점수 기여", value: formatPoint(returnContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(returnContributionPoint) },
+        { label: "거래대금 증가 점수 기여", value: formatPoint(surgeContributionPoint, 2), help: "score_o 내부 기여 비중 " + scoreOContributionShare(surgeContributionPoint) },
+        { label: "신고가 상태", value: highStateText, help: "52주 신고가 / 20일 신고가 / 비신고가 여부" },
+        {
+          label: "신고가 보너스/패널티",
+          value: formatPoint(breakdown.high_bonus, 2),
+          help: (breakdown.is_52w_high ? "52주 신고가 보너스 적용" : (breakdown.is_20d_high ? "20일 신고가 보너스 적용" : "비신고가 패널티 적용")) + " · score_o 내부 기여 비중 " + scoreOContributionShare(highBonusPoint),
+        },
+        { label: "최종 당일점수", value: formatPoint(breakdown.score_o, 2), help: "score_o" },
+      ];
+      const contributionValues = [
+        Math.abs(Number(breakdown.contrib_today || 0)),
+        Math.abs(Number(breakdown.contrib_1w || 0)),
+        Math.abs(Number(breakdown.contrib_1m || 0)),
+        Math.abs(Number(breakdown.contrib_3m || 0)),
+      ];
+      const contributionDenom = contributionValues.reduce(function (acc, value) { return acc + value; }, 0);
+      function contributionShare(value) {
+        if (!(contributionDenom > 0)) {
+          return "-";
+        }
+        return numberFormat((Math.abs(Number(value || 0)) / contributionDenom) * 100, 1) + "%";
+      }
+      const weightItems = [
+        {
+          label: "당일점수 가중 기여",
+          value: formatPoint(breakdown.contrib_today, 2),
+          help: "score_o " + formatPoint(breakdown.score_o, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_today, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_today),
+        },
+        {
+          label: "1주 평균 가중 기여",
+          value: formatPoint(breakdown.contrib_1w, 2),
+          help: "avg_1w " + formatPoint(breakdown.avg_1w, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_1w, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_1w),
+        },
+        {
+          label: "1개월 평균 가중 기여",
+          value: formatPoint(breakdown.contrib_1m, 2),
+          help: "avg_1m " + formatPoint(breakdown.avg_1m, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_1m, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_1m),
+        },
+        {
+          label: "3개월 평균 가중 기여",
+          value: formatPoint(breakdown.contrib_3m, 2),
+          help: "avg_3m " + formatPoint(breakdown.avg_3m, 2) + " x 가중치 " + formatFormulaValue(breakdown.weight_3m, 4) + " = 절대기여 비중 " + contributionShare(breakdown.contrib_3m),
+        },
+        { label: "가중합 기본점수", value: formatPoint(breakdown.composite, 2), help: "위 4개 가중 기여를 합친 composite" },
+      ];
+      const sortinoItems = [
+        { label: "Sortino 정규화값", value: breakdown.sortino_norm != null ? numberFormat(breakdown.sortino_norm, 4) : "-", help: "0~1 구간으로 정규화된 추세 안정성" },
+        { label: "Sortino 지수 강도", value: formatFormulaValue(breakdown.sortino_power, 4), help: "exp 계수로 쓰이는 sortino_power 파라미터" },
+        { label: "Sortino 지수 입력값", value: breakdown.sortino_adjustment != null ? numberFormat(breakdown.sortino_adjustment, 4) : "-", help: "sortino_power x (sortino_norm - 0.6)" },
+        { label: "Sortino 배수", value: formatMultiplier(breakdown.sortino_multiplier, 3), help: "composite에 곱하거나 나누는 최종 배수" },
+        { label: "Sortino 반영 점수", value: formatPoint(breakdown.base_score_s, 2), help: "추세 가속/훼손 보정 전 base score_s" },
+        { label: "추세 가속 보너스", value: formatPoint(breakdown.acceleration_bonus, 2), help: "짧은 구간 점수가 더 빠르게 강해질 때 가산" },
+        { label: "추세 훼손 패널티", value: formatPoint(breakdown.trend_break_penalty, 2), help: "추세가 꺾일 때 차감" },
+        { label: "최종 종합점수", value: formatPoint(breakdown.final_score, 2), help: "최종 score_s" },
+      ];
+      function buildParamItems(params, titlePrefix) {
+        const entries = Object.keys(params || {}).map(function (key) {
+          return {
+            label: key,
+            value: formatBreakdownNumber(params[key], 4),
+            help: titlePrefix + " 파라미터",
+          };
+        });
+        return entries;
+      }
+      function renderItems(title, items) {
+        return h(
+          "div",
+          { className: "score-breakdown-section" },
+          h("div", { className: "score-breakdown-title" }, title),
+          h(
+            "div",
+            { className: "score-breakdown-table" },
+            items.map(function (item) {
+              return h(
+                "div",
+                { key: title + "-" + item.label, className: "score-breakdown-row" },
+                h("div", { className: "score-breakdown-label" }, item.label),
+                h("div", { className: "score-breakdown-value" }, item.value),
+                h("div", { className: "score-breakdown-help" }, item.help)
+              );
+            })
+          )
+        );
+      }
+      return h(
+        React.Fragment,
+        null,
+        h("div", { className: "summary-help score-breakdown-headline" }, stockName + " · " + endDate + " 기준 점수 계산표"),
+        renderItems("1. 당일점수(score_o) 계산 요소", todayItems),
+        renderItems("2. 종합점수 가중 기여도", weightItems),
+        renderItems("3. Sortino 및 추세 보정", sortinoItems),
+        renderItems("4. Today 점수 파라미터", buildParamItems(breakdown.score_formula_params, "Today")),
+        renderItems("5. 종합점수 파라미터", buildParamItems(breakdown.final_score_formula_params, "종합점수")),
+        renderItems("6. 추세 보정 파라미터", buildParamItems(breakdown.trend_adjustment_params, "추세 보정"))
+      );
+    }
+
+    function renderScoreHistoryPopup() {
+      if (!scoreHistoryPopup.open) {
+        return null;
+      }
+      const payload = scoreHistoryPopup.payload || {};
+      const popupRow = scoreHistoryPopup.row || {};
+      const historyRows = ensureArray(payload.rows);
+      const summary = payload.summary || {};
+      const stockName = payload.stock_name || popupRow.stock_name || "종목";
+      const stockCode = payload.stock_code || popupRow.stock_code || "";
+      const activeTab = scoreHistoryPopup.activeTab === "breakdown" ? "breakdown" : "trend";
+      const latestBreakdown = summary.latest_breakdown || (historyRows.length ? historyRows[historyRows.length - 1].breakdown : null);
+      const content = scoreHistoryPopup.loading
+        ? h(LoadingBlock, { compact: true, title: "점수 변동 추이 로드 중", label: "최근 1년 주도주 이력 확인" })
+        : scoreHistoryPopup.error
+          ? h("div", { className: "notice-box error" }, scoreHistoryPopup.error)
+          : historyRows.length
+            ? h(
+                React.Fragment,
+                null,
+                h(
+                  "div",
+                  { className: "segmented-control score-history-tabs" },
+                  h("button", { type: "button", className: activeTab === "trend" ? "active" : "", onClick: function () { setScoreHistoryActiveTab("trend"); } }, "점수 추이"),
+                  h("button", { type: "button", className: activeTab === "breakdown" ? "active" : "", onClick: function () { setScoreHistoryActiveTab("breakdown"); } }, "점수 분해")
+                ),
+                activeTab === "breakdown"
+                  ? renderScoreBreakdownContent(latestBreakdown, payload, popupRow)
+                  : h(
+                      React.Fragment,
+                      null,
+                      h(ScoreHistoryChart, {
+                        rows: historyRows,
+                        hasMore: scoreHistoryPopup.hasMore,
+                        loadingMore: scoreHistoryPopup.loadingMore,
+                        onNeedMore: loadMoreScoreHistory,
+                      }),
+                      scoreHistoryPopup.loadingMore
+                        ? h("div", { className: "summary-help score-history-subchart-label" }, "이전 구간 로드 중")
+                        : null,
+                      h(
+                        "div",
+                        { className: "score-history-list" },
+                        historyRows.slice().reverse().map(function (item) {
+                          return h(
+                            "div",
+                            { key: item.date, className: "score-history-item" },
+                            h("strong", null, item.date),
+                            h("span", null, "점수 " + numberFormat(item.score, 2)),
+                            h("span", { className: Number(item.change_pct || 0) >= 0 ? "metric-up-light" : "metric-down-light" }, formatPercent(item.change_pct, 2)),
+                            h("span", null, numberFormat(item.rank, 0) + "위")
+                          );
+                        })
+                      )
+                    )
+              )
+            : EmptyState({ message: "최근 1년 안에 해당 종목의 점수 이력이 없습니다.", compact: true });
+      return h(
+        "div",
+        {
+          className: "modal-backdrop score-history-backdrop",
+          onClick: closeScoreHistory,
+        },
+        h(
+          "div",
+          {
+            className: "modal-panel score-history-modal",
+            onClick: function (event) { event.stopPropagation(); },
+          },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "SCORE TREND"),
+              h("h2", null, stockName + (stockCode ? " (" + stockCode + ")" : ""))
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeScoreHistory }, "닫기")
+          ),
+          h("div", { className: "score-history-modal-body" }, content)
+        )
+      );
+    }
+
+    function renderTradingValueHistoryPopup() {
+      if (!tradingValueHistoryPopup.open) {
+        return null;
+      }
+      const payload = tradingValueHistoryPopup.payload || {};
+      const popupRow = tradingValueHistoryPopup.row || {};
+      const historyRows = ensureArray(payload.rows);
+      const summary = payload.summary || {};
+      const stockName = payload.stock_name || popupRow.resolved_name || popupRow.stock_name || "종목";
+      const stockCode = payload.stock_code || popupRow.stock_code || "";
+      const content = tradingValueHistoryPopup.loading
+        ? h(LoadingBlock, { compact: true, title: "거래대금 추이 로드 중", label: "최근 두 달 주도주 파일 확인" })
+        : tradingValueHistoryPopup.error
+          ? h("div", { className: "notice-box error" }, tradingValueHistoryPopup.error)
+          : historyRows.length
+            ? h(
+                React.Fragment,
+                null,
+                h(
+                  "div",
+                  { className: "summary-grid summary-grid-small score-history-summary" },
+                  h(SummaryCard, { label: "기간", value: (payload.start_date || "").slice(5) + " ~ " + (payload.end_date || "").slice(5), help: "최근 두 달" }),
+                  h(SummaryCard, { label: "최근 거래대금", value: numberFormat(summary.latest_trading_value_100m, 1) + "억", help: "선택 기준일" }),
+                  h(SummaryCard, { label: "평균 거래대금", value: numberFormat(summary.avg_trading_value_100m, 1) + "억", help: numberFormat(summary.count, 0) + "일" }),
+                  h(SummaryCard, { label: "최대 거래대금", value: numberFormat(summary.max_trading_value_100m, 1) + "억", help: "기간 내 최고" })
+                ),
+                h(TradingValueHistoryChart, { rows: historyRows }),
+                h(
+                  "div",
+                  { className: "score-history-list" },
+                  historyRows.slice().reverse().map(function (item) {
+                    return h(
+                      "div",
+                      { key: item.date, className: "score-history-item" },
+                      h("strong", null, item.date),
+                      h("span", null, "거래대금 " + numberFormat(item.trading_value_100m, 1) + "억"),
+                      h("span", { className: Number(item.change_pct || 0) >= 0 ? "metric-up-light" : "metric-down-light" }, formatPercent(item.change_pct, 2)),
+                      h("span", null, numberFormat(item.rank, 0) + "위")
+                    );
+                  })
+                )
+              )
+            : EmptyState({ message: "최근 두 달 안에 해당 종목의 거래대금 이력이 없습니다.", compact: true });
+      return h(
+        "div",
+        {
+          className: "modal-backdrop score-history-backdrop",
+          onClick: closeTradingValueHistory,
+        },
+        h(
+          "div",
+          {
+            className: "modal-panel score-history-modal",
+            onClick: function (event) { event.stopPropagation(); },
+          },
+          h(
+            "div",
+            { className: "modal-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "TRADING VALUE TREND"),
+              h("h2", null, stockName + (stockCode ? " (" + stockCode + ")" : ""))
+            ),
+            h("button", { type: "button", className: "mini-button", onClick: closeTradingValueHistory }, "닫기")
+          ),
+          h("div", { className: "score-history-modal-body" }, content)
+        )
+      );
+    }
+
+    if (themesLoading) {
+      return LoadingPanel({ label: themesLabel });
+    }
+    if (themesError) {
+      return ErrorPanel({ message: themesError });
+    }
+
     return h(
       React.Fragment,
       null,
+      captureStageReady ? h(
+        "div",
+        { className: "capture-hidden-stage" },
+        h(
+          "div",
+          { className: "theme-score-capture-bundle", ref: scoreTableCaptureRef },
+          h(
+            "div",
+            { className: "panel theme-score-capture-panel" },
+            h(SectionTitle, null, captureTitle),
+            h("div", { className: "summary-help" }, (selectedFileDate || themes.file_date || "") + " · " + captureRegionLabel + " · " + numberFormat(captureRows.length, 0) + "개"),
+            captureRows.length
+              ? h(
+                  "div",
+                  { className: "table-wrap" },
+                  h(
+                    "table",
+                    { className: "data-table compact theme-edit-table theme-capture-table" },
+                    h(
+                      "thead",
+                      null,
+                      h(
+                        "tr",
+                        null,
+                        h("th", null, "순위"),
+                        h("th", null, "섹터"),
+                        showTickerColumn ? h("th", null, config.codeLabel || "티커") : null,
+                        h("th", null, "종목"),
+                        h("th", null, config.marketCapLabel),
+                        h("th", null, config.tradingValueLabel),
+                        h("th", null, "등락률"),
+                        h("th", null, "당일점수"),
+                        h("th", null, "종합점수"),
+                        h("th", null, "Sortino"),
+                        showMarketColumn ? h("th", null, config.marketColumnLabel) : null
+                      )
+                    ),
+                    h(
+                      "tbody",
+                      null,
+                      captureRows.map(function (row) {
+                        const sector = String(row.manual_sector || row.theme || "").trim() || "Other";
+                        const color = colorForKey(sector);
+                        const captureRow = Object.assign({}, row, { __capture_plain: true });
+                        return h(
+                          "tr",
+                          { key: "capture-" + (row.stock_code || row.stock_name || row.__display_rank) },
+                          h("td", null, numberFormat(row.__display_rank, 0)),
+                          h("td", { className: "theme-sector-cell", style: { borderLeft: "4px solid " + color } }, sector),
+                          showTickerColumn ? h("td", null, row.stock_code || "-") : null,
+                          showAdrColumn ? h("td", null, row.is_adr ? (config.adrLabel || "ADR") : "-") : null,
+                          h("td", null, renderNameCell(captureRow)),
+                          h("td", null, renderMarketValueCell(row.market_cap_100m)),
+                          h("td", null, renderMarketValueCell(row.trading_value_100m)),
+                          h("td", null, renderSignedPercent(row.change_pct)),
+                          h("td", null, renderNumberCell(row.score_o, 2)),
+                          h("td", null, renderNumberCell(row.score, 2)),
+                          h("td", null, renderNumberCell(row.sortino_norm, 4)),
+                          showMarketColumn ? h("td", null, row.industry || "-") : null
+                        );
+                      })
+                    )
+                  )
+                )
+              : EmptyState({ message: captureEmptyMessage, compact: true })
+          )
+        )
+      ) : null,
+      renderScoreHistoryPopup(),
+      renderScoreFormulaModal(),
       renderChartPopup(),
       ensureArray(config.regionOptions).length
         ? h(
@@ -14370,7 +26821,7 @@
                 },
                   h("span", { className: "theme-sector-dot", style: { background: colorForKey(item.sector) } }),
                   h("span", { className: "theme-sector-chip-name" }, item.sector),
-                  h("span", { className: "theme-sector-chip-meta" }, numberFormat(item.count, 0) + "개 · " + numberFormat(item.avg_score, 1))
+                  h("span", { className: "theme-sector-chip-meta" }, numberFormat(item.count, 0) + "개 · " + formatPercent(item.avg_change_pct, 2))
                 );
               }))
             )
@@ -14379,17 +26830,90 @@
       h(
         "div",
         { className: "panel" },
-        h("div", { className: "section-toolbar" },
+        h("div", { className: "section-toolbar international-score-toolbar" },
           h(SectionTitle, null, config.tableTitle),
-          h("div", { className: "summary-help" }, "행을 누르거나 종목명을 눌러 3개월 차트를 엽니다."),
+          h("div", { className: "summary-help international-score-toolbar-copy" }, "행을 누르면 3개월 차트가 열리고, 종목명을 누르면 해외기업 검색기로 이동합니다."),
+          h("div", { className: "toggle-group international-score-toolbar-actions" },
+            h("button", {
+              type: "button",
+              className: "mini-button",
+              onClick: openScoreFormulaModal,
+            }, "점수 지표 수정"),
+            h("button", {
+              type: "button",
+              className: "mini-button capture-button",
+              onClick: copyScoreTableToClipboard,
+              disabled: scoreTableCopyState.status === "working",
+            }, scoreTableCopyState.status === "working" ? "캡쳐 복사 중..." : captureButtonLabel)
+          )
+        ),
+        scoreTableCopyState.message
+          ? h("div", { className: "summary-help" + (scoreTableCopyState.status === "error" ? " text-danger" : "") }, scoreTableCopyState.message)
+          : null,
+        h(
+          "form",
+          { className: "theme-stock-search-bar", onSubmit: submitStockSearch },
+          h(
+            "div",
+            { className: "theme-stock-search-wrap" },
+            h("input", {
+              type: "search",
+              value: stockSearchText,
+              onFocus: function (event) {
+                selectTextOnFocus(event);
+                setStockSearchOpen(true);
+              },
+              onBlur: function () {
+                setTimeout(function () { setStockSearchOpen(false); }, 120);
+              },
+              onKeyDown: handleStockSearchKeyDown,
+              onChange: function (event) {
+                setStockSearchText(event.target.value);
+                setStockSearchActiveIndex(0);
+                setStockSearchOpen(true);
+                if (stockSearchMessage) {
+                  setStockSearchMessage("");
+                }
+              },
+              placeholder: config.pageKey === "global-themes" ? "기업명 또는 티커 검색" : "기업명 또는 티커/코드 검색",
+              "aria-label": config.title + " 종목 검색 입력",
+            }),
+            stockSearchOpen && stockSearchSuggestions.length
+              ? h(
+                  "div",
+                  { className: "autocomplete-list inline theme-stock-search-suggestions" },
+                  stockSearchSuggestions.map(function (item, index) {
+                    return h(
+                      "button",
+                      {
+                        key: buildStockSearchKey(item) + ":" + index,
+                        type: "button",
+                        className: "autocomplete-item" + (index === stockSearchActiveIndex ? " active" : ""),
+                        onMouseDown: function (event) { event.preventDefault(); },
+                        onMouseEnter: function () { setStockSearchActiveIndex(index); },
+                        onClick: function () { chooseStockSearchRow(item); },
+                      },
+                      h("strong", null, item.stock_name || "-"),
+                      h("span", null, [
+                        item.stock_code,
+                        item.manual_sector || item.theme || item.industry,
+                        item.rank ? numberFormat(item.rank, 0) + "위" : "",
+                      ].filter(Boolean).join(" · "))
+                    );
+                  })
+                )
+              : null
+          ),
+          h("button", { type: "submit", className: "mini-button" }, "검색"),
+          stockSearchMessage ? h("span", { className: "summary-help" }, stockSearchMessage) : null
         ),
         sortedVisibleRows.length
           ? h(
               "div",
-              { className: "table-wrap" },
+              { className: "table-wrap", ref: themeTableScrollRef },
               h(
                 "table",
-                { className: "data-table compact theme-edit-table" },
+                { className: "data-table compact theme-edit-table international-theme-table" + (config.pageKey === "global-themes" ? " us-theme-score-table" : "") },
                 h(
                   "thead",
                   null,
@@ -14398,22 +26922,31 @@
                     null,
                     [
                       ["rank", "순위"],
-                      ["sector", "섹터"],
-                      showTickerColumn ? ["stock_code", config.codeLabel || "ƼĿ"] : null,
+                      ["sector", config.sectorLabel || "섹터"],
+                      showTickerColumn ? ["stock_code", config.codeLabel || "티커"] : null,
                       ["stock_name", "종목"],
                       ["sortino_norm", "Sortino"],
-                      ["score_o", "당일점수"],
-                      ["score", "종합점수"],
-                      ["change_pct", "등락률"],
+                      ["atr_20", "% ATR(20)"],
                       ["market_cap_100m", config.marketCapLabel],
                       ["trading_value_100m", config.tradingValueLabel],
+                      ["high_drawdown_pct", "고점대비"],
+                      ["change_pct", "등락률"],
+                      ["score_o", "당일점수"],
+                      ["score", "종합점수"],
                     ].filter(Boolean).concat(showMarketColumn ? [["industry", config.marketColumnLabel]] : []).map(function (column) {
                       const key = column[0];
                       const label = column[1];
                       const active = themeTableSortState.key === key;
+                      const headerClassName =
+                        key === "rank" ? "theme-col-rank" :
+                        key === "sector" ? "theme-col-sector" :
+                        key === "stock_code" ? "theme-col-stock_code" :
+                        key === "stock_name" ? "theme-col-stock_name" :
+                         key === "industry" ? "theme-col-industry" :
+                         "numeric-cell theme-col-" + key;
                       return h(
                         "th",
-                        { key: key },
+                        { key: key, className: headerClassName },
                         h(
                           "button",
                           {
@@ -14434,20 +26967,35 @@
                   sortedVisibleRows.map(function (row, index) {
                     const sector = String(row.manual_sector || row.theme || "").trim() || "Other";
                     const color = colorForKey(sector);
+                    const stockKey = buildStockSearchKey(row);
                     return h(
                       "tr",
-                      { key: row.stock_code || row.stock_name || index, onClick: function () { openChart(row); } },
-                      h("td", null, numberFormat(index + 1, 0)),
+                      {
+                        key: row.stock_code || row.stock_name || index,
+                        ref: function (element) {
+                          if (element) {
+                            stockRowRefs.current[stockKey] = element;
+                          } else {
+                            delete stockRowRefs.current[stockKey];
+                          }
+                        },
+                        "data-stock-search-key": stockKey,
+                        className: highlightedStockKey === stockKey ? "stock-search-highlight" : "",
+                        onClick: function () { openChart(row); },
+                      },
+                      h("td", { className: "theme-col-rank" }, renderRankCell(row, index + 1)),
                       h("td", { className: "theme-sector-cell", style: { borderLeft: "4px solid " + color } }, sector),
-                      showTickerColumn ? h("td", null, row.stock_code || "-") : null,
-                      h("td", null, renderNameCell(row)),
-                      h("td", null, renderNumberCell(row.sortino_norm, 4)),
-                      h("td", null, renderNumberCell(row.score_o, 2)),
-                      h("td", null, renderNumberCell(row.score, 2)),
-                      h("td", null, renderSignedPercent(row.change_pct)),
-                      h("td", null, renderNumberCell(row.market_cap_100m, 2)),
-                      h("td", null, renderNumberCell(row.trading_value_100m, 2)),
-                      showMarketColumn ? h("td", null, row.industry || "-") : null
+                      showTickerColumn ? h("td", { className: "theme-col-stock_code" }, row.stock_code || "-") : null,
+                      h("td", { className: "theme-col-stock_name" }, renderNameCell(row)),
+                      h("td", { className: "numeric-cell theme-col-sortino_norm" }, renderNumberCell(row.sortino_norm, 4)),
+                      h("td", { className: "numeric-cell theme-col-atr_20" }, formatPercent(row.atr_20_pct != null ? row.atr_20_pct : row.atr_20, 2)),
+                      h("td", { className: "numeric-cell theme-col-market_cap_100m" }, renderMarketValueCell(row.market_cap_100m)),
+                      h("td", { className: "numeric-cell theme-col-trading_value_100m" }, renderMarketValueCell(row.trading_value_100m)),
+                      h("td", { className: "numeric-cell theme-col-high_drawdown_pct" }, renderHighDrawdownPercent(row)),
+                      h("td", { className: "numeric-cell theme-col-change_pct" }, renderSignedPercent(row.change_pct)),
+                      h("td", { className: "numeric-cell theme-col-score_o" }, renderNumberCell(row.score_o, 2)),
+                      h("td", { className: "numeric-cell theme-col-score" }, renderTodayScore(row.score, row)),
+                      showMarketColumn ? h("td", { className: "theme-col-industry" }, row.industry || "-") : null
                     );
                   })
                 )
@@ -14469,20 +27017,22 @@
       eyebrow: "US Daily Theme Radar",
       title: "미국 주도주",
       copy: "NASDAQ/NYSE/AMEX 기준으로 점수를 계산해 미국 시장의 강한 종목 흐름을 같은 방식으로 확인합니다.",
-      universeHelp: "미국 시가총액 10억달러 이상",
-      groupHelp: "대분류 Industry 기준",
+      universeHelp: "미국 시가총액 100억달러 이상",
+      groupHelp: "세부 Industry 기준",
       calendarTitle: "날짜별 미국 주도 섹터 흐름",
       calendarHelp: "미국 Industry 기준 상위 5개 흐름",
       calendarLoadingTitle: "미국 캘린더 불러오는 중",
       calendarEmptyMessage: "표시할 미국 주도주 데이터가 없습니다. 오늘자 데이터를 먼저 로드해 주세요.",
       tableTitle: "미국 점수 테이블",
       tableEmptyMessage: "조건에 맞는 미국 주도주 데이터가 없습니다.",
-      codeLabel: "ƼĿ",
+      sectorLabel: "산업",
+      codeLabel: "티커",
       showTickerColumn: true,
-      marketColumnLabel: "거래소",
+      showAdrColumn: false,
+      marketColumnLabel: "대분류",
       showMarketColumn: false,
-      marketCapLabel: "시총(억달러)",
-      tradingValueLabel: "거래대금(억달러)",
+      marketCapLabel: "시총(B)",
+      tradingValueLabel: "거래대금(B)",
       chartEyebrow: "US 3개월 주가",
     });
   }
@@ -14527,21 +27077,29 @@
       }
       const savedThemeState = loadThemeSectorState();
       const lastFileDate = savedThemeState.lastFileDate || "";
-      const urls = [
-        "/api/sector-watch-board?limit_per_sector=80",
-        "/api/portfolio/performance",
-        "/api/themes/today?min_score=0&recent_limit=20",
-        "/api/sector-db",
-        "/api/theme-sector-calendar?min_score=0&limit=60",
-        "/api/real-estate/building",
-      ];
-      if (!(props && props.publicWeb)) {
-        urls.push("/api/telegram/status");
+      const themesPageModule = getStockAppModule("themesPage");
+      const urls = typeof themesPageModule.buildBackgroundPrefetchUrls === "function"
+        ? themesPageModule.buildBackgroundPrefetchUrls({ publicWeb: !!(props && props.publicWeb), lastFileDate: lastFileDate })
+        : [
+            "/api/sector-watch-board?limit_per_sector=80",
+            "/api/portfolio/performance",
+            "/api/themes/today?min_score=0&recent_limit=20",
+            "/api/sector-db",
+            "/api/theme-sector-calendar?min_score=0&limit=60",
+            "/api/real-estate/building",
+          ];
+      if (typeof themesPageModule.buildBackgroundPrefetchUrls !== "function") {
+        if (!(props && props.publicWeb)) {
+          urls.push("/api/telegram/status");
+        }
+        if (lastFileDate) {
+          urls.push("/api/themes/today?min_score=0&recent_limit=20&file_date=" + encodeURIComponent(lastFileDate));
+        }
       }
-      if (lastFileDate) {
-        urls.push("/api/themes/today?min_score=0&recent_limit=20&file_date=" + encodeURIComponent(lastFileDate));
-      }
-      urls.forEach(function (url, index) {
+      const filteredUrls = urls.filter(function (url) {
+        return typeof url === "string" && url.indexOf("/api/sector-watch-board") !== 0;
+      });
+      filteredUrls.forEach(function (url, index) {
         window.setTimeout(function () { prefetchJson(url); }, index * 180);
       });
     }, [props && props.publicWeb]);
@@ -14550,13 +27108,17 @@
 
   function GlobalLoadingDock() {
     const [requests, setRequests] = useState(getActiveApiRequests());
+    const [tasks, setTasks] = useState(getActiveBackgroundTasks());
     const [tick, setTick] = useState(0);
+    const [detailOpen, setDetailOpen] = useState(false);
 
     useEffect(function () {
       function syncRequests() {
         setRequests(getActiveApiRequests());
+        setTasks(getActiveBackgroundTasks());
       }
       window.addEventListener("stock-api-loading-change", syncRequests);
+      window.addEventListener("stock-background-task-change", syncRequests);
       const timer = window.setInterval(function () {
         setTick(function (value) { return value + 1; });
         syncRequests();
@@ -14564,25 +27126,115 @@
       syncRequests();
       return function () {
         window.removeEventListener("stock-api-loading-change", syncRequests);
+        window.removeEventListener("stock-background-task-change", syncRequests);
         window.clearInterval(timer);
       };
     }, []);
 
-    if (!requests.length) {
+    if (!requests.length && !tasks.length) {
       return null;
     }
-    const firstRequest = requests[0];
-    const firstSeconds = Math.max(0, Math.round((Date.now() - firstRequest.startedAt) / 1000));
-    const extraCount = Math.max(0, requests.length - 1);
+    const firstRequest = requests[0] || null;
+    const firstTask = tasks[0] || null;
+    const primaryLabel = firstTask
+      ? (firstTask.label || firstTask.message || "백그라운드 작업")
+      : (firstRequest ? firstRequest.label : "작업");
+    const primarySeconds = Math.max(0, Math.round((Date.now() - normalizeTimestampMs((firstTask && firstTask.startedAt) || (firstRequest && firstRequest.startedAt) || Date.now())) / 1000));
+    const extraCount = Math.max(0, requests.length + tasks.length - 1);
+    const primaryPercent = firstTask && Number.isFinite(Number(firstTask.percent)) ? Number(firstTask.percent) : null;
     return h(
-      "div",
-      { className: "global-loading-dock", "aria-live": "polite" },
-      h("div", { className: "global-loading-title" },
-        h("strong", null, "로드 중"),
-        h("span", null, extraCount ? firstRequest.label + " 외 " + numberFormat(extraCount, 0) + "개" : firstRequest.label)
+      React.Fragment,
+      null,
+      h(
+        "button",
+        {
+          type: "button",
+          className: "global-loading-dock",
+          "aria-live": "polite",
+          onClick: function () { setDetailOpen(true); },
+        },
+        h("div", { className: "global-loading-title" },
+          h("strong", null, "로드 중"),
+          h("span", null, extraCount ? primaryLabel + " 외 " + numberFormat(extraCount, 0) + "개" : primaryLabel)
+        ),
+        primaryPercent == null
+          ? h("div", { className: "loading-bar indeterminate" }, h("span", null))
+          : h("div", { className: "loading-bar determinate" }, h("span", { style: { width: Math.max(0, Math.min(primaryPercent, 100)) + "%" } })),
+        h("div", { className: "global-loading-meta" },
+          h("em", { className: "global-loading-time" }, primarySeconds + "초"),
+          primaryPercent == null ? null : h("span", { className: "global-loading-percent" }, numberFormat(primaryPercent, 0) + "%")
+        )
       ),
-      h("div", { className: "loading-bar indeterminate" }, h("span", null)),
-      h("em", { className: "global-loading-time" }, firstSeconds + "초")
+      detailOpen
+        ? h(
+            "div",
+            { className: "modal-backdrop", onClick: function () { setDetailOpen(false); } },
+            h(
+              "div",
+              { className: "modal-card global-loading-modal", onClick: function (event) { event.stopPropagation(); } },
+              h(
+                "div",
+                { className: "modal-head" },
+                h("div", null, h("strong", null, "진행 중 작업"), h("div", { className: "summary-help" }, "현재 요청과 백그라운드 계산 상태")),
+                h("button", { type: "button", className: "mini-button", onClick: function () { setDetailOpen(false); } }, "닫기")
+              ),
+              h(
+                "div",
+                { className: "global-loading-modal-body" },
+                tasks.length
+                  ? h(
+                      "div",
+                      { className: "global-loading-section" },
+                      h("h3", null, "백그라운드 작업"),
+                      tasks.map(function (task) {
+                        const percent = Number(task.percent);
+                        const startedAt = normalizeTimestampMs(task.startedAt || task.updatedAt || Date.now());
+                        const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+                        return h(
+                          "div",
+                          { key: task.id, className: "global-loading-item" },
+                          h("div", { className: "global-loading-item-head" },
+                            h("strong", null, task.label || task.marketLabel || "백그라운드 작업"),
+                            h("span", null, Number.isFinite(percent) ? numberFormat(percent, 0) + "%" : "-")
+                          ),
+                          h("div", { className: "summary-help" }, task.message || task.status || ""),
+                          h("div", { className: "loading-bar determinate compact" }, h("span", { style: { width: Math.max(0, Math.min(Number.isFinite(percent) ? percent : 0, 100)) + "%" } })),
+                          h("div", { className: "global-loading-item-meta" },
+                            h("span", null, "상태 " + String(task.status || "-")),
+                            h("span", null, "시작 " + formatDateTimeShort(startedAt) + " · " + seconds + "초")
+                          )
+                        );
+                      })
+                    )
+                  : null,
+                requests.length
+                  ? h(
+                      "div",
+                      { className: "global-loading-section" },
+                      h("h3", null, "실시간 요청"),
+                      requests.map(function (request) {
+                        const seconds = Math.max(0, Math.round((Date.now() - normalizeTimestampMs(request.startedAt)) / 1000));
+                        return h(
+                          "div",
+                          { key: request.id, className: "global-loading-item" },
+                          h("div", { className: "global-loading-item-head" },
+                            h("strong", null, request.label),
+                            h("span", null, "진행률 없음")
+                          ),
+                          h("div", { className: "summary-help" }, request.url),
+                          h("div", { className: "loading-bar indeterminate compact" }, h("span", null)),
+                          h("div", { className: "global-loading-item-meta" },
+                            h("span", null, "상태 요청 중"),
+                            h("span", null, seconds + "초")
+                          )
+                        );
+                      })
+                    )
+                  : null
+              )
+            )
+          )
+        : null
     );
   }
 
@@ -14823,7 +27475,7 @@
     const [page, setPage] = useState(function () {
       const sharedMode = new URLSearchParams(window.location.search || "").get("shared") === "1";
       const savedPage = sharedMode ? "themes" : (localStorage.getItem(LAST_PAGE_KEY) || "portfolio");
-      return ["portfolio", "themes", "global-themes", "asia-themes", "telegram", "global-company", "sector-entry", "sector-snapshot", "next"].indexOf(savedPage) >= 0
+      return ["portfolio", "themes", "global-themes", "asia-themes", "telegram", "global-company", "sector-entry", "sector-snapshot", "naver-blog", "next"].indexOf(savedPage) >= 0
         ? savedPage
         : "portfolio";
     });
@@ -14856,23 +27508,23 @@
     }, []);
 
     const tabs = [
-      { key: "portfolio", label: "鍮꾩쨷 諛깊뀒?ㅽ듃" },
+      { key: "portfolio", label: "비중 백테스트" },
       { key: "themes", label: "오늘의 주도주" },
-      { key: "telegram", label: "?붾젅洹몃옩 寃?됯린" },
-      { key: "next", label: "異붽? ?덉젙 ?섏씠吏" },
+      { key: "telegram", label: "텔레그램 검색기" },
+      { key: "next", label: "추가 예정 페이지" },
     ];
 
     const tabLabels = {
-      portfolio: "鍮꾩쨷 諛깊뀒?ㅽ듃",
+      portfolio: "비중 백테스트",
       themes: "오늘의 주도주",
-      telegram: "?붾젅洹몃옩 寃?됯린",
-      "sector-snapshot": "?? ?? ???",
-      next: "異붽? ?덉젙 ?섏씠吏",
+      telegram: "텔레그램 검색기",
+      "sector-snapshot": "섹터 스냅샷",
+      next: "추가 예정 페이지",
     };
 
     let content = null;
     if (page === "portfolio") {
-      content = h(PortfolioPage);
+      content = h(PortfolioPageModern);
     } else if (page === "themes") {
       content = h(MemoThemesPageV2);
     } else if (page === "telegram") {
@@ -15122,7 +27774,7 @@
     }
 
     const sectorColumns = [
-      { key: "sector", label: "?뱁꽣" },
+      { key: "sector", label: "섹터" },
       { key: "stock_count", label: "\uc885\ubaa9 \uc218", render: function (row) { return numberFormat(row.stock_count, 0); } },
       { key: "strength_score", label: "媛뺣룄 ?먯닔", render: function (row) { return metricSpan(row.strength_score, "percent"); } },
       { key: "w_return_pct", label: "W Return", render: function (row) { return metricSpan(row.w_return_pct, "percent"); } },
@@ -15138,15 +27790,15 @@
     const stockColumns = [
       { key: "sector", label: "?뱁꽣" },
       { key: "stock_name", label: "\uc885\ubaa9\uba85" },
-      { key: "current_price", label: "?꾩옱媛", render: function (row) { return metricSpan(row.current_price, "price"); } },
+      { key: "current_price", label: "현재가", render: function (row) { return metricSpan(row.current_price, "price"); } },
       { key: "w_return_pct", label: "W Return", render: function (row) { return metricSpan(row.w_return_pct, "percent"); } },
       { key: "w1_return_pct", label: "W-1 Return", render: function (row) { return metricSpan(row.w1_return_pct, "percent"); } },
       { key: "m1_return_pct", label: "1M Return", render: function (row) { return metricSpan(row.m1_return_pct, "percent"); } },
       { key: "m3_return_pct", label: "3M Return", render: function (row) { return metricSpan(row.m3_return_pct, "percent"); } },
       { key: "foreigner_net_k", label: "\uc678\uad6d\uc778", render: function (row) { return numberFormat(row.foreigner_net_k, 1); } },
-      { key: "institution_net_k", label: "湲곌?", render: function (row) { return numberFormat(row.institution_net_k, 1); } },
+      { key: "institution_net_k", label: "기관", render: function (row) { return numberFormat(row.institution_net_k, 1); } },
       { key: "foreigner_pct", label: "\uc678\uad6d\uc778(%)", render: function (row) { return metricSpan(row.foreigner_pct, "percent"); } },
-      { key: "institution_pct", label: "湲곌?(%)", render: function (row) { return metricSpan(row.institution_pct, "percent"); } },
+      { key: "institution_pct", label: "기관(%)", render: function (row) { return metricSpan(row.institution_pct, "percent"); } },
       { key: "ma200_gap_pct", label: "200ma", render: function (row) { return metricSpan(row.ma200_gap_pct, "percent"); } },
       { key: "ma20_gap_pct", label: "20ma", render: function (row) { return metricSpan(row.ma20_gap_pct, "percent"); } }
     ];
@@ -15167,15 +27819,15 @@
               h(SummaryCard, { label: "기준일", value: preview.as_of_date || "-" }),
               h(SummaryCard, { label: "섹터 수", value: numberFormat(preview.summary ? preview.summary.sector_count : 0, 0) }),
               h(SummaryCard, { label: "종목 수", value: numberFormat(preview.summary ? preview.summary.stock_count : 0, 0) }),
-              h(SummaryCard, { label: "誘몄닔吏?醫낅ぉ", value: numberFormat(preview.summary ? preview.summary.error_count : 0, 0) })
+              h(SummaryCard, { label: "미수집 종목", value: numberFormat(preview.summary ? preview.summary.error_count : 0, 0) })
             )
           : null,
         h(
           "div",
           { className: "form-actions section-actions" },
-          h("button", { className: "mini-button", onClick: addSector }, "?뱁꽣 異붽?"),
-          h("button", { className: "primary-button", onClick: runPreview, disabled: loading }, loading ? "誘몃━蹂닿린 ?앹꽦 以?.." : "誘몃━蹂닿린"),
-          h("button", { className: "primary-button", onClick: runExport, disabled: exporting }, exporting ? "?묒? ?앹꽦 以?.." : "?묒? 異쒕젰")
+          h("button", { className: "mini-button", onClick: addSector }, "섹터 추가"),
+          h("button", { className: "primary-button", onClick: runPreview, disabled: loading }, loading ? "미리보기 생성 중.." : "미리보기"),
+          h("button", { className: "primary-button", onClick: runExport, disabled: exporting }, exporting ? "엑셀 생성 중.." : "엑셀 출력")
         ),
         message ? h("div", { className: "notice-box" }, message) : null
       ),
@@ -15189,7 +27841,7 @@
             h(
               "div",
               { className: "section-toolbar" },
-              h("strong", null, "?뱁꽣 " + numberFormat(index + 1, 0)),
+              h("strong", null, "섹터 " + numberFormat(index + 1, 0)),
               h("button", { className: "mini-button", onClick: function () { removeSector(group.id); } }, "삭제")
             ),
             h("label", { className: "form-field" }, "\uc139\ud130\uba85", h("input", {
@@ -15244,7 +27896,7 @@
       h(
         "div",
         { className: "panel" },
-        h(SectionTitle, null, "?뱁꽣 ?됯퇏 誘몃━蹂닿린"),
+        h(SectionTitle, null, "섹터 평균 미리보기"),
         loading
           ? h("div", { className: "summary-help" }, "종목 데이터를 불러오는 중입니다.")
           : h(DataTable, {
@@ -16417,6 +29069,750 @@
     );
   }
 
+  function SubscriptionListPage() {
+    const runtimeCacheRef = useRef(loadSubscriptionRuntimeCache());
+    const cachedRuntime = runtimeCacheRef.current || {};
+    const cachedListState = cachedRuntime.list || {};
+    const detailCacheRef = useRef(cachedRuntime.detailById || {});
+    const briefCacheRef = useRef(cachedRuntime.briefById || {});
+    const hasCachedList = ensureArray(cachedListState.items).length > 0;
+    const [items, setItems] = useState(ensureArray(cachedListState.items).map(normalizeSubscriptionItem));
+    const [offset, setOffset] = useState(Number(cachedListState.offset) || 0);
+    const [hasMore, setHasMore] = useState(!!cachedListState.hasMore);
+    const [totalCount, setTotalCount] = useState(Number(cachedListState.totalCount) || 0);
+    const [loading, setLoading] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [applyhomeMeta, setApplyhomeMeta] = useState(cachedListState.applyhomeMeta || null);
+    const [query, setQuery] = useState(String(cachedListState.query || ""));
+    const [regionFilter, setRegionFilter] = useState(String(cachedListState.regionFilter || "all"));
+    const [statusFilter, setStatusFilter] = useState(String(cachedListState.statusFilter || "all"));
+    const [yearFilter, setYearFilter] = useState(String(cachedListState.yearFilter || "all"));
+    const [message, setMessage] = useState(String(cachedListState.message || ""));
+    const [selectedId, setSelectedId] = useState(String(cachedListState.selectedId || ""));
+    const [detail, setDetail] = useState(cachedListState.selectedId ? (detailCacheRef.current[cachedListState.selectedId] || null) : null);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [brief, setBrief] = useState(cachedListState.selectedId ? (briefCacheRef.current[cachedListState.selectedId] || null) : null);
+    const [briefLoading, setBriefLoading] = useState(false);
+    const [filtersOpen, setFiltersOpen] = useState(!!cachedListState.filtersOpen);
+    const [frameworkOpen, setFrameworkOpen] = useState(!!cachedListState.frameworkOpen);
+    const [statsOpen, setStatsOpen] = useState(!!cachedListState.statsOpen);
+    const [statsData, setStatsData] = useState(cachedRuntime.stats || null);
+    const [statsLoading, setStatsLoading] = useState(false);
+
+    useEffect(function () {
+      if (!items.length) {
+        loadPage(true, false);
+      } else if (!message) {
+        setMessage("저장된 10년치 청약 목록 캐시를 사용 중입니다. 목록은 수동 새로고침 전까지 다시 불러오지 않습니다.");
+      }
+    }, []);
+
+    useEffect(function () {
+      if (statsOpen && !statsData && !statsLoading) {
+        loadStats(false);
+      }
+    }, [statsOpen, statsData, statsLoading]);
+
+    useEffect(function () {
+      persistSubscriptionRuntimeCache({
+        list: {
+          items: ensureArray(items).map(normalizeSubscriptionItem),
+          offset: offset,
+          hasMore: hasMore,
+          totalCount: totalCount,
+          applyhomeMeta: applyhomeMeta,
+          query: query,
+          regionFilter: regionFilter,
+          statusFilter: statusFilter,
+          yearFilter: yearFilter,
+          message: message,
+          selectedId: selectedId,
+          filtersOpen: filtersOpen,
+          frameworkOpen: frameworkOpen,
+          statsOpen: statsOpen,
+        },
+        detailById: detailCacheRef.current,
+        briefById: briefCacheRef.current,
+        stats: statsData,
+      });
+    }, [items, offset, hasMore, totalCount, applyhomeMeta, query, regionFilter, statusFilter, yearFilter, message, selectedId, filtersOpen, frameworkOpen, statsOpen, detail, brief, statsData]);
+
+    async function fetchSubscriptionPage(targetOffset, forceRefresh) {
+      return fetchJson("/api/real-estate/subscriptions"
+        + "?recent_days=3650"
+        + "&offset=" + encodeURIComponent(targetOffset)
+        + "&limit=200"
+        + (forceRefresh ? "&force_refresh=true" : ""), {
+          noCache: !!forceRefresh,
+          forceRefresh: !!forceRefresh,
+        });
+    }
+
+    async function loadStats(forceRefresh) {
+      setStatsLoading(true);
+      try {
+        const payload = await fetchJson("/api/real-estate/subscription-stats?from_year=2020" + (forceRefresh ? "&force_refresh=true" : ""), {
+          noCache: !!forceRefresh,
+          forceRefresh: !!forceRefresh,
+        });
+        setStatsData(payload || null);
+      } catch (error) {
+        setMessage(error.message || String(error));
+      } finally {
+        setStatsLoading(false);
+      }
+    }
+
+    async function loadPage(reset, forceRefresh) {
+      if (reset && forceRefresh) {
+        setStatsData(null);
+      }
+      if (reset) {
+        setLoading(true);
+      } else {
+        setLoadingMore(true);
+      }
+      try {
+        const nextOffset = reset ? 0 : offset;
+        let payload = await fetchSubscriptionPage(nextOffset, forceRefresh);
+        setApplyhomeMeta(payload);
+        if (payload && payload.configured) {
+          let mergedItems = ensureArray(payload.items).map(normalizeSubscriptionItem);
+          let nextCursor = nextOffset + mergedItems.length;
+          let nextHasMore = !!payload.has_more;
+          while (reset && nextHasMore) {
+            payload = await fetchSubscriptionPage(nextCursor, false);
+            const pageItems = ensureArray(payload.items).map(normalizeSubscriptionItem);
+            if (!pageItems.length) {
+              nextHasMore = false;
+              break;
+            }
+            mergedItems = mergedItems.concat(pageItems);
+            nextCursor += pageItems.length;
+            nextHasMore = !!payload.has_more;
+          }
+          setItems(function (current) {
+            return reset ? mergedItems : current.concat(mergedItems);
+          });
+          setOffset(reset ? mergedItems.length : nextCursor);
+          setHasMore(false);
+          setTotalCount(Number(payload.total_count) || mergedItems.length);
+          if (reset && mergedItems.length && !selectedId) {
+            setSelectedId(mergedItems[0].sourceId || mergedItems[0].id);
+          }
+          if (payload.message) {
+            setMessage(payload.message);
+          }
+        } else if (payload) {
+          setHasMore(false);
+          setMessage(payload.message);
+        }
+      } catch (error) {
+        setMessage(error.message || String(error));
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+        if (reset && forceRefresh && statsOpen) {
+          loadStats(true);
+        }
+      }
+    }
+
+    function phaseLabel(item) {
+      const announceDate = strToDate(item.announcementDate);
+      const startDate = strToDate(item.applicationStart);
+      const endDate = strToDate(item.applicationEnd);
+      const today = strToDate(todayIsoDate());
+      if (startDate && endDate && today >= startDate && today <= endDate) {
+        return "접수중";
+      }
+      if (startDate && today < startDate) {
+        return "예정";
+      }
+      if (announceDate && today > announceDate && endDate && today > endDate) {
+        return "과거";
+      }
+      return item.status || "-";
+    }
+
+    function strToDate(value) {
+      if (!value) {
+        return null;
+      }
+      const parsed = new Date(String(value).slice(0, 10) + "T00:00:00");
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function daysLabel(item) {
+      const daysLeft = diffDaysFromToday(item.applicationEnd);
+      if (daysLeft == null) {
+        return "-";
+      }
+      if (daysLeft < 0) {
+        return "마감 " + Math.abs(daysLeft) + "일 전";
+      }
+      if (daysLeft === 0) {
+        return "오늘 마감";
+      }
+      return daysLeft + "일 남음";
+    }
+
+    function matchesFilters(item) {
+      if (regionFilter !== "all" && item.region !== regionFilter) {
+        return false;
+      }
+      if (statusFilter !== "all" && phaseLabel(item) !== statusFilter) {
+        return false;
+      }
+      if (yearFilter !== "all") {
+        const announcementYear = String(item.announcementDate || "").slice(0, 4);
+        if (announcementYear !== yearFilter) {
+          return false;
+        }
+      }
+      const haystack = normalizeLooseSearchText([
+        item.name,
+        item.region,
+        item.district,
+        item.saleType,
+        item.note,
+        item.address,
+        ensureArray(item.tags).join(" "),
+      ].join(" "));
+      if (query && haystack.indexOf(normalizeLooseSearchText(query)) < 0) {
+        return false;
+      }
+      return true;
+    }
+
+    const filteredItems = ensureArray(items)
+      .filter(matchesFilters)
+      .sort(function (left, right) {
+        return String(right.announcementDate || "").localeCompare(String(left.announcementDate || ""));
+      });
+    const summary = {
+      total: totalCount || ensureArray(items).length,
+      past: ensureArray(items).filter(function (item) { return phaseLabel(item) === "과거"; }).length,
+      future: ensureArray(items).filter(function (item) { return phaseLabel(item) === "예정"; }).length,
+      live: ensureArray(items).filter(function (item) { return phaseLabel(item) === "접수중"; }).length,
+    };
+    const availableRegions = Array.from(new Set(ensureArray(items).map(function (item) { return item.region; }).filter(Boolean)));
+    const availableYears = Array.from(new Set(
+      ensureArray(items)
+        .map(function (item) { return String(item.announcementDate || "").slice(0, 4); })
+        .filter(function (value) { return /^\d{4}$/.test(value); })
+    )).sort().reverse();
+    const selectedItem = filteredItems.find(function (item) { return (item.sourceId || item.id) === selectedId; })
+      || ensureArray(items).find(function (item) { return (item.sourceId || item.id) === selectedId; })
+      || filteredItems[0]
+      || null;
+
+    useEffect(function () {
+      if (selectedItem && (selectedItem.sourceId || selectedItem.id) !== selectedId) {
+        setSelectedId(selectedItem.sourceId || selectedItem.id);
+      }
+    }, [selectedItem && (selectedItem.sourceId || selectedItem.id)]);
+
+    useEffect(function () {
+      if (!selectedItem || !selectedItem.sourceId) {
+        return;
+      }
+      loadDetail(selectedItem.sourceId);
+      loadBrief(selectedItem.sourceId, true);
+    }, [selectedItem && selectedItem.sourceId]);
+
+    async function loadDetail(sourceId) {
+      setDetail(null);
+      setDetailLoading(true);
+      try {
+        const payload = await fetchJson("/api/real-estate/subscriptions/" + encodeURIComponent(sourceId), { noCache: true });
+        detailCacheRef.current[sourceId] = payload;
+        setDetail(payload);
+      } catch (error) {
+        setDetail({ error: error.message || String(error) });
+      } finally {
+        setDetailLoading(false);
+      }
+    }
+
+    async function loadBrief(sourceIdOverride, forceRefresh) {
+      const sourceId = sourceIdOverride || (selectedItem && selectedItem.sourceId);
+      if (!sourceId) {
+        return;
+      }
+      const cached = !forceRefresh && briefCacheRef.current[sourceId];
+      if (cached) {
+        setBrief(cached);
+        setBriefLoading(false);
+        return;
+      }
+      setBrief(null);
+      setBriefLoading(true);
+      try {
+        const payload = await fetchJson("/api/real-estate/subscriptions/" + encodeURIComponent(sourceId) + "/ai-brief", {
+          noCache: !!forceRefresh,
+          forceRefresh: !!forceRefresh,
+        });
+        briefCacheRef.current[sourceId] = payload;
+        setBrief(payload);
+      } catch (error) {
+        setBrief({ error: error.message || String(error) });
+      } finally {
+        setBriefLoading(false);
+      }
+    }
+
+    function metricDeltaClass(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return "flat";
+      }
+      return number >= 0 ? "positive" : "negative";
+    }
+
+    function specialBreakdownEntries(source) {
+      const breakdown = (source && source.specialSupplyBreakdown) || {};
+      return Object.keys(breakdown).map(function (label) {
+        return {
+          label: label,
+          count: Number((breakdown[label] || {}).count) || 0,
+          ratioTotal: Number((breakdown[label] || {}).ratio_total) || 0,
+          ratioSpecial: Number((breakdown[label] || {}).ratio_special) || 0,
+        };
+      }).sort(function (left, right) {
+        return right.ratioTotal - left.ratioTotal;
+      });
+    }
+
+    function specialBreakdownSummary(source, limit) {
+      const entries = specialBreakdownEntries(source).slice(0, limit || 3);
+      if (!entries.length) {
+        return source && source.specialSupplyRatio ? "특별공급 " + numberFormat(source.specialSupplyRatio, 0) + "%" : "-";
+      }
+      return entries.map(function (entry) {
+        return entry.label + " " + numberFormat(entry.ratioTotal, 1) + "%";
+      }).join(", ");
+    }
+
+    function subscriptionPriceSummary(item) {
+      if (item && item.private84PriceEok) {
+        return numberFormat(item.private84PriceEok, 1) + "억";
+      }
+      if (item && item.maxPriceEok) {
+        return "최고가 " + numberFormat(item.maxPriceEok, 1) + "억";
+      }
+      return (item && item.priceDataStatusLabel) || "-";
+    }
+
+    function subscriptionSpecialSummary(item) {
+      const summary = specialBreakdownSummary(item, 2);
+      if (summary && summary !== "-") {
+        return summary;
+      }
+      if (item && item.specialSupplyRatio) {
+        return "특별공급 " + numberFormat(item.specialSupplyRatio, 1) + "%";
+      }
+      if (item && item.specialSupplyStatus === "special_supply_zero") {
+        return "특공 없음";
+      }
+      return (item && item.specialSupplyStatusLabel) || "-";
+    }
+
+    function renderListRow(item) {
+      const rowKey = item.sourceId || item.id;
+      return h(
+        "button",
+        {
+          key: rowKey,
+          type: "button",
+          className: "subscription-list-row" + (rowKey === (selectedItem && (selectedItem.sourceId || selectedItem.id)) ? " active" : ""),
+          title: specialBreakdownSummary(item, 6),
+          onClick: function () { setSelectedId(rowKey); },
+        },
+        h("span", { className: "subscription-row-date" }, item.announcementDate || "-"),
+        h("span", { className: "subscription-row-region" }, [item.region, item.district].filter(Boolean).join(" · ")),
+        h("span", { className: "subscription-row-name" }, item.name),
+        h("span", { className: "subscription-row-price" }, subscriptionPriceSummary(item)),
+        h("span", { className: "subscription-row-special" }, subscriptionSpecialSummary(item)),
+        h("span", { className: "subscription-row-phase" }, phaseLabel(item)),
+        h("span", { className: "subscription-row-deadline" }, daysLabel(item))
+      );
+    }
+
+    const modelColumns = [
+      { key: "HOUSE_TY", label: "주택형" },
+      { key: "SUPLY_HSHLDCO", label: "일반", render: function (row) { return numberFormat(row.SUPLY_HSHLDCO, 0); } },
+      { key: "SPSPLY_HSHLDCO", label: "특공", render: function (row) { return numberFormat(row.SPSPLY_HSHLDCO, 0); } },
+      { key: "LTTOT_TOP_AMOUNT", label: "분양가", render: function (row) { return row.LTTOT_TOP_AMOUNT ? numberFormat(Number(row.LTTOT_TOP_AMOUNT) / 10000, 2) + "억" : "-"; } },
+      { key: "SUPLY_AR", label: "공급면적", render: function (row) { return row.SUPLY_AR ? numberFormat(row.SUPLY_AR, 2) + "㎡" : "-"; } },
+    ];
+
+    const tradeRows = ensureArray(detail && detail.current_trade && detail.current_trade.sample_trades);
+    const tradeColumns = [
+      { key: "deal_date", label: "거래일" },
+      { key: "apartment", label: "단지" },
+      { key: "area_m2", label: "면적", render: function (row) { return numberFormat(row.area_m2, 1) + "㎡"; } },
+      { key: "amount_manwon", label: "실거래가", render: function (row) { return numberFormat(Number(row.amount_manwon) / 10000, 2) + "억"; } },
+      { key: "floor", label: "층" },
+    ];
+
+    const competitionSummaryColumns = [
+      { key: "houseType", label: "Type" },
+      { key: "local_rank1", label: "Local 1st" },
+      { key: "other_rank1", label: "Etc 1st" },
+      { key: "gyeonggi_rank1", label: "Metro 1st" },
+      { key: "local_rank2", label: "Local 2nd" },
+      { key: "other_rank2", label: "Etc 2nd" }
+    ];
+
+    const specialRequestColumns = [
+      { key: "supplyName", label: "Special Type" },
+      { key: "houseType", label: "Type" },
+      { key: "supplyHouseholds", label: "Supply", render: function (row) { return numberFormat(row.supplyHouseholds, 0); } },
+      { key: "requestCount", label: "Requests", render: function (row) { return numberFormat(row.requestCount, 0); } },
+      { key: "competitionRate", label: "Rate" }
+    ];
+
+    const scoreColumns = [
+      { key: "houseType", label: "Type" },
+      { key: "resideName", label: "Area" },
+      { key: "lowestScore", label: "Low" },
+      { key: "averageScore", label: "Avg" },
+      { key: "highestScore", label: "High" }
+    ];
+
+    const complexHistoryColumns = [
+      { key: "changedYear", label: "Year" },
+      { key: "previousName", label: "Previous Name" },
+      { key: "currentName", label: "Current Name" }
+    ];
+
+    const statsRegionColumns = [
+      { key: "label", label: "지역" },
+      { key: "count", label: "건수", render: function (row) { return numberFormat(row.count, 0); } },
+      { key: "averageGainEok", label: "평균 차익", render: function (row) { return row.averageGainEok != null ? numberFormat(row.averageGainEok, 2) + "억" : "-"; } },
+      { key: "medianGainEok", label: "중앙값 차익", render: function (row) { return row.medianGainEok != null ? numberFormat(row.medianGainEok, 2) + "억" : "-"; } },
+      { key: "averageGainPct", label: "평균 차익률", render: function (row) { return row.averageGainPct != null ? numberFormat(row.averageGainPct, 1) + "%" : "-"; } },
+      { key: "positiveRatePct", label: "플러스 비율", render: function (row) { return row.positiveRatePct != null ? numberFormat(row.positiveRatePct, 1) + "%" : "-"; } }
+    ];
+
+    const statsPriceBandColumns = [
+      { key: "label", label: "가격대" },
+      { key: "count", label: "건수", render: function (row) { return numberFormat(row.count, 0); } },
+      { key: "averageSubscriptionPriceEok", label: "평균 기준 분양가", render: function (row) { return row.averageSubscriptionPriceEok != null ? numberFormat(row.averageSubscriptionPriceEok, 2) + "억" : "-"; } },
+      { key: "averageGainEok", label: "평균 차익", render: function (row) { return row.averageGainEok != null ? numberFormat(row.averageGainEok, 2) + "억" : "-"; } },
+      { key: "medianGainEok", label: "중앙값 차익", render: function (row) { return row.medianGainEok != null ? numberFormat(row.medianGainEok, 2) + "억" : "-"; } },
+      { key: "positiveRatePct", label: "플러스 비율", render: function (row) { return row.positiveRatePct != null ? numberFormat(row.positiveRatePct, 1) + "%" : "-"; } }
+    ];
+
+    const statsYearColumns = [
+      { key: "label", label: "공고연도" },
+      { key: "count", label: "건수", render: function (row) { return numberFormat(row.count, 0); } },
+      { key: "averageGainEok", label: "평균 차익", render: function (row) { return row.averageGainEok != null ? numberFormat(row.averageGainEok, 2) + "억" : "-"; } },
+      { key: "medianGainEok", label: "중앙값 차익", render: function (row) { return row.medianGainEok != null ? numberFormat(row.medianGainEok, 2) + "억" : "-"; } },
+      { key: "averageGainPct", label: "평균 차익률", render: function (row) { return row.averageGainPct != null ? numberFormat(row.averageGainPct, 1) + "%" : "-"; } }
+    ];
+
+    const statsRegionPriceColumns = [
+      { key: "region", label: "지역" },
+      { key: "priceBandLabel", label: "가격대" },
+      { key: "count", label: "건수", render: function (row) { return numberFormat(row.count, 0); } },
+      { key: "averageGainEok", label: "평균 차익", render: function (row) { return row.averageGainEok != null ? numberFormat(row.averageGainEok, 2) + "억" : "-"; } },
+      { key: "medianGainEok", label: "중앙값 차익", render: function (row) { return row.medianGainEok != null ? numberFormat(row.medianGainEok, 2) + "억" : "-"; } },
+      { key: "positiveRatePct", label: "플러스 비율", render: function (row) { return row.positiveRatePct != null ? numberFormat(row.positiveRatePct, 1) + "%" : "-"; } }
+    ];
+
+    const statsCaseColumns = [
+      { key: "announcementDate", label: "공고일" },
+      { key: "region", label: "지역" },
+      { key: "name", label: "단지명" },
+      { key: "subscriptionPriceEok", label: "기준 분양가", render: function (row) { return row.subscriptionPriceEok != null ? numberFormat(row.subscriptionPriceEok, 2) + "억" : "-"; } },
+      { key: "currentPriceEok", label: "추정 현재가", render: function (row) { return row.currentPriceEok != null ? numberFormat(row.currentPriceEok, 2) + "억" : "-"; } },
+      { key: "gainEok", label: "예상 차익", render: function (row) { return row.gainEok != null ? numberFormat(row.gainEok, 2) + "억" : "-"; } },
+      { key: "gainPct", label: "차익률", render: function (row) { return row.gainPct != null ? numberFormat(row.gainPct, 1) + "%" : "-"; } }
+    ];
+
+    function renderStatsPanel() {
+      if (!statsOpen) {
+        return null;
+      }
+      if (statsLoading && !statsData) {
+        return h("section", { className: "panel subscription-detail-panel" }, h(LoadingBlock, { compact: true, title: "통계 집계 중", label: "2020년 이후 실거래 매칭 가능한 청약 차익 통계를 계산하고 있습니다." }));
+      }
+      if (!statsData || statsData.error) {
+        return h("section", { className: "panel subscription-detail-panel" }, h("div", { className: "notice-box compact" }, (statsData && statsData.error) || "통계 데이터를 불러오지 못했습니다."));
+      }
+      const summary = statsData.summary || {};
+      return h(
+        "section",
+        { className: "panel subscription-detail-panel" },
+        h("div", { className: "section-toolbar compact" },
+          h(SectionTitle, null, "예상 차익 통계"),
+          h("div", { className: "section-actions" },
+            h("span", { className: "summary-help" }, String(statsData.fromYear || 2020) + "년~" + String(statsData.throughDate || todayIsoDate()) + " · " + (statsData.cached ? "캐시 사용" : "방금 집계")),
+            h("button", { type: "button", className: "mini-button", disabled: statsLoading, onClick: function () { loadStats(true); } }, statsLoading ? "집계 중" : "통계 새로고침")
+          )
+        ),
+        h("div", { className: "summary-grid summary-grid-small" },
+          h(SummaryCard, { label: "집계 대상", value: numberFormat(statsData.candidateCount, 0) + "건", help: "2020년 이후 수도권 청약 공고" }),
+          h(SummaryCard, { label: "실거래 매칭", value: numberFormat(statsData.matchedCaseCount, 0) + "건", help: "예상 차익 계산 가능 케이스" }),
+          h(SummaryCard, { label: "평균 차익", value: summary.averageGainEok != null ? numberFormat(summary.averageGainEok, 2) + "억" : "-", help: "전체 평균" }),
+          h(SummaryCard, { label: "중앙값 차익", value: summary.medianGainEok != null ? numberFormat(summary.medianGainEok, 2) + "억" : "-", help: "극단값 제외 중심값" }),
+          h(SummaryCard, { label: "평균 차익률", value: summary.averageGainPct != null ? numberFormat(summary.averageGainPct, 1) + "%" : "-", help: "기준 분양가 대비" }),
+          h(SummaryCard, { label: "플러스 비율", value: summary.positiveRatePct != null ? numberFormat(summary.positiveRatePct, 1) + "%" : "-", help: "예상 차익 양수 비중" })
+        ),
+        h("div", { className: "subscription-stats-stack" },
+          h("section", { className: "subscription-stats-block" }, h(SectionTitle, null, "지역별"), h(DataTable, { rows: ensureArray(statsData.regionStats), columns: statsRegionColumns, compact: true, emptyMessage: "지역 통계가 없습니다." })),
+          h("section", { className: "subscription-stats-block" }, h(SectionTitle, null, "가격대별"), h(DataTable, { rows: ensureArray(statsData.priceBandStats), columns: statsPriceBandColumns, compact: true, emptyMessage: "가격대 통계가 없습니다." })),
+          h("section", { className: "subscription-stats-block" }, h(SectionTitle, null, "연도별"), h(DataTable, { rows: ensureArray(statsData.yearStats), columns: statsYearColumns, compact: true, emptyMessage: "연도 통계가 없습니다." })),
+          h("section", { className: "subscription-stats-block" }, h(SectionTitle, null, "지역 × 가격대"), h(DataTable, { rows: ensureArray(statsData.regionPriceBandStats), columns: statsRegionPriceColumns, compact: true, emptyMessage: "교차 통계가 없습니다." })),
+          h("section", { className: "subscription-stats-block" }, h(SectionTitle, null, "상위 예상 차익"), h(DataTable, { rows: ensureArray(statsData.topPositiveCases), columns: statsCaseColumns, compact: true, emptyMessage: "상위 차익 케이스가 없습니다." })),
+          h("section", { className: "subscription-stats-block" }, h(SectionTitle, null, "하위 예상 차익"), h(DataTable, { rows: ensureArray(statsData.topNegativeCases), columns: statsCaseColumns, compact: true, emptyMessage: "하위 차익 케이스가 없습니다." }))
+        )
+      );
+    }
+
+    function renderDetailPanel() {
+      if (detailLoading) {
+        return h("div", { className: "panel subscription-detail-panel" }, h(LoadingBlock, { compact: true, title: "상세 데이터 불러오는 중", label: "청약홈 상세와 최근 실거래를 분석하고 있습니다." }));
+      }
+      if (!selectedItem) {
+        return h("div", { className: "panel subscription-detail-panel" }, h(EmptyState, { message: "왼쪽 목록에서 단지를 선택해 주세요." }));
+      }
+      if (detail && detail.error) {
+        return h("div", { className: "panel subscription-detail-panel" }, h("div", { className: "notice-box error" }, detail.error));
+      }
+      const currentTrade = (detail && detail.current_trade) || {};
+      const currentItem = (detail && detail.item) || selectedItem;
+      const modelSummary = (detail && detail.model_summary) || {};
+      const competition = (detail && detail.competition) || {};
+      const specialRequestStatus = (detail && detail.special_request_status) || {};
+      const winningScores = (detail && detail.winning_scores) || {};
+      const complexInfo = (detail && detail.complex_info) || null;
+      const complexHistory = ensureArray(detail && detail.complex_history);
+      const complexAliases = ensureArray(detail && detail.complex_aliases);
+      const competitionSummaryRows = ensureArray(competition.summary);
+      const specialRequestRows = ensureArray(specialRequestStatus.rows);
+      const scoreRows = ensureArray(winningScores.rows);
+      const specialEntries = specialBreakdownEntries(currentItem);
+      const subscriptionPriceBasis = currentTrade.subscription_price_basis || (currentItem.private84PriceEok ? "84㎡ 기준" : (currentItem.maxPriceEok ? "최고 분양가 기준" : "분양가 데이터 없음"));
+      const subscriptionPriceValue = currentTrade.subscription_price_eok != null && Number(currentTrade.subscription_price_eok) > 0
+        ? numberFormat(currentTrade.subscription_price_eok, 2) + "억"
+        : (currentItem.private84PriceEok ? numberFormat(currentItem.private84PriceEok, 2) + "억" : (currentItem.maxPriceEok ? numberFormat(currentItem.maxPriceEok, 2) + "억" : "-"));
+      return h(
+        "div",
+        { className: "subscription-detail-stack" },
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h("div", { className: "subscription-detail-head" },
+            h("div", null,
+              h("h2", null, currentItem.name || "-"),
+              h("p", { className: "subscription-detail-subtitle" }, [currentItem.region, currentItem.district, currentItem.saleType, currentItem.announcementDate].filter(Boolean).join(" · "))
+            ),
+            currentItem.url ? h("a", { className: "secondary-button subscription-link-button", href: currentItem.url, target: "_blank", rel: "noreferrer" }, "청약홈 공고") : null
+          ),
+          h("div", { className: "subscription-detail-metrics" },
+            h(SummaryCard, { label: "기준 분양가", value: subscriptionPriceValue, help: subscriptionPriceBasis }),
+            h(SummaryCard, { label: "추정 현재가", value: currentTrade.ok ? numberFormat(currentTrade.latest_price_eok, 2) + "억" : "-", help: currentTrade.ok ? (currentTrade.latest_trade_date || "") : (currentTrade.message || "추정 불가") }),
+            h(SummaryCard, { label: "예상 차익", value: currentTrade.ok && currentTrade.estimated_gain_eok != null ? numberFormat(currentTrade.estimated_gain_eok, 2) + "억" : "-", className: currentTrade.ok ? metricDeltaClass(currentTrade.estimated_gain_eok) : "" }),
+            h(SummaryCard, { label: "차익률", value: currentTrade.ok && currentTrade.estimated_gain_pct != null ? numberFormat(currentTrade.estimated_gain_pct, 1) + "%" : "-" })
+          ),
+          h("div", { className: "subscription-detail-grid" },
+            h("div", null, h("span", null, "접수"), h("strong", null, (currentItem.applicationStart || "-") + " ~ " + (currentItem.applicationEnd || "-"))),
+            h("div", null, h("span", null, "총 세대수"), h("strong", null, numberFormat(currentItem.supplyHouseholds, 0) + "세대")),
+            h("div", null, h("span", null, "특공 비중"), h("strong", null, numberFormat(modelSummary.special_ratio || currentItem.specialSupplyRatio, 1) + "%")),
+            h("div", null, h("span", null, "입주 예정"), h("strong", null, currentItem.moveInMonth || "-")),
+            h("div", null, h("span", null, "위치"), h("strong", null, currentItem.address || "-")),
+            h("div", null, h("span", null, "상태"), h("strong", null, phaseLabel(currentItem)))
+          ),
+          currentItem.note ? h("div", { className: "subscription-inline-note subtle" }, currentItem.note) : null
+        ),
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h("div", { className: "section-toolbar compact" },
+            h(SectionTitle, null, "특별공급 구성"),
+            h("span", { className: "summary-help" }, currentItem.specialSupplyRatio ? "총 특별공급 " + numberFormat(currentItem.specialSupplyRatio, 1) + "%" : "")
+          ),
+          specialEntries.length
+            ? h("div", { className: "subscription-special-grid" }, specialEntries.map(function (entry) {
+                return h(
+                  "div",
+                  { key: entry.label, className: "subscription-special-card" },
+                  h("strong", null, entry.label),
+                  h("span", null, "전체의 " + numberFormat(entry.ratioTotal, 1) + "%"),
+                  h("span", null, "특공 내 " + numberFormat(entry.ratioSpecial, 1) + "%"),
+                  h("em", null, numberFormat(entry.count, 0) + "세대")
+                );
+              }))
+            : h(EmptyState, { compact: true, message: "특별공급 세부 구성이 없습니다." })
+        ),
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h("div", { className: "section-toolbar compact" },
+            h(SectionTitle, null, "생애최초 케이스 스터디"),
+            h("span", { className: "summary-help" }, briefLoading ? "Gemini 분석 중" : "선택 시 자동 분석")
+          ),
+          currentTrade.ok
+            ? h("div", { className: "subscription-case-grid" },
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "분양가 기준"),
+                  h("strong", null, subscriptionPriceValue),
+                  h("em", null, subscriptionPriceBasis)
+                ),
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "최근 실거래 추정"),
+                  h("strong", { className: metricDeltaClass(currentTrade.estimated_gain_eok) }, numberFormat(currentTrade.latest_price_eok, 2) + "억")
+                ),
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "예상 시세차익"),
+                  h("strong", { className: metricDeltaClass(currentTrade.estimated_gain_eok) }, numberFormat(currentTrade.estimated_gain_eok, 2) + "억")
+                ),
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "표본 실거래"),
+                  h("strong", null, numberFormat(currentTrade.matched_trade_count, 0) + "건")
+                ),
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "지역 평균 시세"),
+                  h("strong", { className: metricDeltaClass(currentTrade.district_average_gain_eok) }, currentTrade.district_average_price_eok != null ? numberFormat(currentTrade.district_average_price_eok, 2) + "억" : "-")
+                ),
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "지역 평균 차익"),
+                  h("strong", { className: metricDeltaClass(currentTrade.district_average_gain_eok) }, currentTrade.district_average_gain_eok != null ? numberFormat(currentTrade.district_average_gain_eok, 2) + "억" : "-")
+                ),
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "지역 평균 차익률"),
+                  h("strong", { className: metricDeltaClass(currentTrade.district_average_gain_eok) }, currentTrade.district_average_gain_pct != null ? numberFormat(currentTrade.district_average_gain_pct, 1) + "%" : "-")
+                ),
+                h("div", { className: "subscription-case-card" },
+                  h("span", null, "지역 평균 표본"),
+                  h("strong", null, numberFormat(currentTrade.district_trade_count, 0) + "건")
+                )
+              )
+            : h("div", { className: "notice-box compact" }, currentTrade.message || "현재 시세 추정값이 없습니다."),
+          brief && brief.error ? h("div", { className: "notice-box compact" }, brief.error) : null,
+          brief && brief.brief
+            ? h("div", { className: "subscription-ai-brief" },
+                h("p", { className: "subscription-ai-summary" }, brief.brief.summary || ""),
+                ensureArray(brief.brief.strengths).length ? h("div", null, h("strong", null, "강점"), h("ul", null, ensureArray(brief.brief.strengths).map(function (item, index) { return h("li", { key: "s-" + index }, item); }))) : null,
+                ensureArray(brief.brief.price_gap_view).length ? h("div", null, h("strong", null, "시세차익 포인트"), h("ul", null, ensureArray(brief.brief.price_gap_view).map(function (item, index) { return h("li", { key: "p-" + index }, item); }))) : null,
+                ensureArray(brief.brief.life_first_view).length ? h("div", null, h("strong", null, "생애최초 관점"), h("ul", null, ensureArray(brief.brief.life_first_view).map(function (item, index) { return h("li", { key: "l-" + index }, item); }))) : null,
+                ensureArray(brief.brief.risks).length ? h("div", null, h("strong", null, "리스크"), h("ul", null, ensureArray(brief.brief.risks).map(function (item, index) { return h("li", { key: "r-" + index }, item); }))) : null
+              )
+            : h("div", { className: "summary-help" }, "선택한 단지의 입지, 분양가, 최근 거래를 기준으로 Gemini가 케이스 스터디 포인트를 정리합니다.")
+        ),
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h(SectionTitle, null, "주택형 상세"),
+          h(DataTable, { rows: ensureArray(detail && detail.models), columns: modelColumns, compact: true, emptyMessage: "주택형 상세가 없습니다." })
+        ),
+        h(
+          "section",
+          { className: "panel subscription-detail-panel" },
+          h(SectionTitle, null, "최근 실거래 표본"),
+          h(DataTable, { rows: tradeRows, columns: tradeColumns, compact: true, emptyMessage: "실거래 표본이 없습니다." })
+        )
+      );
+    }
+
+    return h(
+      "div",
+      { className: "page subscription-page" },
+      h(
+        "section",
+        { className: "panel hero-panel subscription-hero" },
+        h("div", null,
+          h("div", { className: "eyebrow" }, "Capital Area Presales"),
+          h("h1", { className: "page-title" }, "아파트 청약 리스트"),
+          h("p", { className: "page-copy compact-copy" }, "수도권 예정 청약과 과거 청약 사례를 한 화면에 모아 두고, 클릭한 단지의 분양가 대비 최근 실거래 차익을 케이스 스터디 중심으로 봅니다.")
+        ),
+        h("div", { className: "hero-actions" },
+          h("span", { className: "status-pill" }, "기준일 " + todayIsoDate()),
+          h("span", { className: "status-pill" }, "10년치 수도권 기준"),
+          h("button", { type: "button", className: "secondary-button", disabled: loading, onClick: function () { loadPage(true, false); } }, loading ? "불러오는 중" : "목록 새로고침"),
+          h("button", { type: "button", className: "secondary-button", disabled: loading, onClick: function () { loadPage(true, true); } }, "강제 새로고침")
+        )
+      ),
+      applyhomeMeta
+        ? h(
+            "div",
+            { className: "notice-box compact" },
+            (applyhomeMeta.configured ? "청약홈 연동 완료" : "청약홈 키 필요")
+            + " · "
+            + (applyhomeMeta.fetched_at || "미조회")
+            + (totalCount ? " · " + numberFormat(totalCount, 0) + "건" : "")
+            + (hasCachedList ? " · 저장된 목록 캐시 사용 중" : "")
+          )
+        : null,
+      h(
+        "div",
+        { className: "summary-grid summary-grid-small" },
+        h(SummaryCard, { label: "전체 수도권", value: numberFormat(summary.total, 0) + "건", help: "청약홈 자동 수집" }),
+        h(SummaryCard, { label: "과거 사례", value: numberFormat(summary.past, 0) + "건", help: "모집 종료 공고" }),
+        h(SummaryCard, { label: "예정 공고", value: numberFormat(summary.future, 0) + "건", help: "향후 접수 예정" }),
+        h(SummaryCard, { label: "현재 접수중", value: numberFormat(summary.live, 0) + "건", help: "오늘 기준 진행 중" })
+      ),
+      message ? h("div", { className: "notice-box compact" }, message) : null,
+      renderStatsPanel(),
+      h(
+        "div",
+        { className: "subscription-research-layout" },
+        h(
+          "div",
+          { className: "subscription-list-stack" },
+          h(
+            "section",
+            { className: "panel subscription-list-panel" },
+            h("div", { className: "section-toolbar compact" },
+              h(SectionTitle, null, "목록"),
+              h("span", { className: "summary-help" }, hasCachedList ? "10년치 캐시 목록 우선 사용" : "기본은 무필터 전체 수도권")
+            ),
+            h("div", { className: "subscription-collapsible-toggle-row" },
+              h("button", { type: "button", className: "mini-button", onClick: function () { setFiltersOpen(function (value) { return !value; }); } }, filtersOpen ? "필터 접기" : "필터 펼치기"),
+              h("button", { type: "button", className: "mini-button", onClick: function () { setFrameworkOpen(function (value) { return !value; }); } }, frameworkOpen ? "연구 프레임 접기" : "연구 프레임 펼치기"),
+              h("button", { type: "button", className: "mini-button", onClick: function () { setStatsOpen(function (value) { return !value; }); } }, statsOpen ? "통계 접기" : "통계 펼치기")
+            ),
+            filtersOpen
+              ? h("div", { className: "subscription-filter-bar" },
+                  h("label", { className: "form-field" }, h("span", null, "검색"), h("input", { value: query, placeholder: "단지명, 주소, 지역", onChange: function (event) { setQuery(event.target.value); } })),
+                  h("label", { className: "form-field" }, h("span", null, "지역"), h("select", { value: regionFilter, onChange: function (event) { setRegionFilter(event.target.value); } }, [h("option", { value: "all" }, "전체")].concat(availableRegions.map(function (region) { return h("option", { key: region, value: region }, region); })))),
+                  h("label", { className: "form-field" }, h("span", null, "년도"), h("select", { value: yearFilter, onChange: function (event) { setYearFilter(event.target.value); } }, [h("option", { value: "all" }, "전체")].concat(availableYears.map(function (year) { return h("option", { key: year, value: year }, year + "년"); })))),
+                  h("label", { className: "form-field" }, h("span", null, "상태"), h("select", { value: statusFilter, onChange: function (event) { setStatusFilter(event.target.value); } }, [
+                    h("option", { value: "all" }, "전체"),
+                    h("option", { value: "예정" }, "예정"),
+                    h("option", { value: "접수중" }, "접수중"),
+                    h("option", { value: "과거" }, "과거"),
+                  ]))
+                )
+              : null,
+            frameworkOpen
+              ? h("div", { className: "subscription-inline-note subtle" }, "이 페이지는 생애최초 청약 관점에서 분양가 상한제 지역의 과거 시세차익 사례와 향후 공고를 함께 보는 연구 화면입니다. 필터는 보조 기능이고, 기본은 전체 목록 노출입니다.")
+              : null,
+            h("div", { className: "subscription-list-header" },
+              h("span", null, "모집공고일"),
+              h("span", null, "지역"),
+              h("span", null, "단지명"),
+              h("span", null, "84㎡"),
+              h("span", null, "특별공급"),
+              h("span", null, "상태"),
+              h("span", null, "일정")
+            ),
+            loading && !items.length
+              ? h(LoadingBlock, { compact: true, title: "청약 목록 불러오는 중", label: "수도권 과거/예정 청약 데이터를 읽고 있습니다." })
+              : filteredItems.length
+                ? h("div", { className: "subscription-list-body" }, filteredItems.map(renderListRow))
+                : h(EmptyState, { message: "조건에 맞는 청약 목록이 없습니다." }),
+            loadingMore ? h("div", { className: "subscription-load-more" }, h("span", { className: "summary-help" }, "과거 청약 데이터를 이어서 정리 중입니다.")) : null
+          ),
+          h("div", { className: "subscription-detail-column" }, renderDetailPanel())
+        )
+      )
+    );
+  }
+
   function BuildingManagementPage() {
     const request = useFetchJson("/api/real-estate/building");
     const [data, setData] = useState(null);
@@ -16437,6 +29833,8 @@
     const [syncingWater, setSyncingWater] = useState(false);
     const [syncingElectric, setSyncingElectric] = useState(false);
     const [syncingBank, setSyncingBank] = useState(false);
+    const [exportingBankMonth, setExportingBankMonth] = useState(false);
+    const [exportingBuildingSummary, setExportingBuildingSummary] = useState(false);
     const [bankDraft, setBankDraft] = useState(function () {
       return { date: isoToday(), kind: "income", category: "수동입금", amount: "", target: "", memo: "", payment_method: "현금인출" };
     });
@@ -16449,7 +29847,7 @@
     }, [request.data, data]);
 
     function money(value) {
-      return numberFormat(Number(value || 0), 0) + "?";
+      return numberFormat(Number(value || 0), 0) + "원";
     }
 
     function manwon(value) {
@@ -16653,7 +30051,7 @@
         const unit = buildingData.units[unitId] || {};
         const contract = unit.contract || {};
         if (!String(contract.tenant || contract.tenant_business || "").trim()) return;
-        const target = unitId + "ȣ";
+        const target = unitId + "호";
         const memo = contract.tenant_business || contract.tenant || "";
         if (String(contract.contract_date || "").slice(0, 7) === monthText && Number(contract.contract_deposit || 0) > 0) {
           rows.push({ date: String(contract.contract_date).slice(0, 10), target: target, kind: "expected_income", category: "계약금", amount: Number(contract.contract_deposit || 0), signed: Number(contract.contract_deposit || 0), memo: memo });
@@ -16677,7 +30075,7 @@
             date: dueDate,
             target: target,
             kind: "expected_income",
-            category: "???",
+            category: "부가세",
             amount: charge.vat_total,
             signed: charge.vat_total,
             memo: "월세VAT " + money(charge.rent_vat) + " · 관리비VAT " + money(charge.management_vat) + " (" + managementVatLabel(contract.vat_note) + ")",
@@ -16743,8 +30141,8 @@
       }
       return amountText + "(" + [
         numberFormat(Number(parts["\uc6d4\uc138"] || 0), 0),
-        numberFormat(Number(parts["\ubd80\uac00\uc138"] || 0), 0),
         numberFormat(Number(parts["\uad00\ub9ac\ube44"] || 0), 0),
+        numberFormat(Number(parts["\ubd80\uac00\uc138"] || 0), 0),
       ].join("/") + ")";
     }
 
@@ -16752,8 +30150,8 @@
       const parts = (row && row.parts) || {};
       if (!row || row.category !== "월세+관리비+부가세") return "";
       return "월세 " + money(parts["월세"]) +
-        " / 부가세 " + money(parts["부가세"]) +
-        " / 관리비 " + money(parts["관리비"]);
+        " / 관리비 " + money(parts["관리비"]) +
+        " / 부가세 " + money(parts["부가세"]);
     }
 
     function openCalendarDate(dateText) {
@@ -17007,13 +30405,45 @@
         setMessage(
           "하나은행 사이트에서 내려받은 월별 입출금 엑셀/CSV 파일(예: 거래내역조회_05월)을 상가_관리_데이터 폴더에 넣고 새로고침하면, 예정 월세/관리비와 실제 입출금을 대조합니다." +
             numberFormat(result.imported || 0, 0) +
-            "?? ??????." +
+            "건을 불러왔습니다." +
             (failed.length ? " 확인 필요 파일 " + numberFormat(failed.length, 0) + "개" : "")
         );
       } catch (err) {
         setMessage(err.message || String(err));
       } finally {
         setSyncingBank(false);
+      }
+    }
+
+    async function exportBankMonthlyWorkbook() {
+      setExportingBankMonth(true);
+      setMessage("");
+      try {
+        await postDownload(
+          "/api/real-estate/bank/export.xlsx",
+          { month: calendarMonth },
+          "building_bank_" + String(calendarMonth || "").replace("-", "") + ".xlsx"
+        );
+      } catch (err) {
+        setMessage(err.message || String(err));
+      } finally {
+        setExportingBankMonth(false);
+      }
+    }
+
+    async function exportBuildingSummaryWorkbook() {
+      setExportingBuildingSummary(true);
+      setMessage("");
+      try {
+        await postDownload(
+          "/api/real-estate/building/export.xlsx",
+          { month: calendarMonth },
+          "building_summary_" + String(calendarMonth || "").replace("-", "") + ".xlsx"
+        );
+      } catch (err) {
+        setMessage(err.message || String(err));
+      } finally {
+        setExportingBuildingSummary(false);
       }
     }
 
@@ -17063,7 +30493,7 @@
         setMessage(
           "하나은행 사이트에서 내려받은 월별 입출금 엑셀/CSV 파일(예: 거래내역조회_05월)을 상가_관리_데이터 폴더에 넣고 새로고침하면, 예정 월세/관리비와 실제 입출금을 대조합니다." +
             numberFormat(result.synced_count || 0, 0) +
-            "?? ??????." +
+            "건을 반영했습니다." +
             (result.month ? " 최근 " + result.month : "")
         );
       } catch (err) {
@@ -17388,9 +30818,9 @@
           const amount = Number(unit.amount || 0);
           return {
             date: year + "-12-31",
-            target: unit.unit_id + "ȣ",
+            target: unit.unit_id + "호",
             kind: "expected_income",
-            category: "???",
+            category: "수도세",
             amount: amount,
             signed: amount,
             memo: year + "년 수도세 연말 정산",
@@ -17444,7 +30874,7 @@
           if (dateText) {
             pushEntry(dateText, {
               unit_id: unitId,
-              target: unitId + "ȣ",
+              target: unitId + "호",
               kind: "event",
               category: pair[1],
               amount: 0,
@@ -17463,7 +30893,7 @@
           if (dateText) {
             pushEntry(dateText, {
               unit_id: unitId,
-              target: unitId + "ȣ",
+              target: unitId + "호",
               kind: "event",
               category: pair[1],
               amount: 0,
@@ -17476,7 +30906,7 @@
           const amount = Number(tx.amount || 0);
           pushEntry(tx.date, {
             unit_id: unitId,
-            target: unitId + "ȣ",
+            target: unitId + "호",
             kind: tx.kind || "income",
             category: tx.category || "",
             amount: amount,
@@ -17572,7 +31002,7 @@
     const actualBankRows = [];
     Object.keys((building && building.units) || {}).forEach(function (unitId) {
       ensureArray(building.units[unitId] && building.units[unitId].transactions).forEach(function (tx) {
-        if (String(tx.date || "").slice(0, 7) === calendarMonth) actualBankRows.push({ ...tx, target: unitId + "ȣ" });
+        if (String(tx.date || "").slice(0, 7) === calendarMonth) actualBankRows.push({ ...tx, target: unitId + "호" });
       });
     });
     operatingTransactions.forEach(function (tx) {
@@ -17603,14 +31033,14 @@
       .reduce(function (sum, row) { return sum + Number(row.amount || 0); }, 0);
     const selectedMonthActualNet = selectedMonthActualIncome - selectedMonthActualExpense;
     const bankIncomeCategoryOptions = ["가계약금", "계약금", "보증금", "자본납입", "월세+관리비+부가세", "월세", "관리비", "수도세", "부가세", "기타입금"];
-    const bankExpenseCategoryOptions = ["세금", "수도세", "전기세", "청소용역", "CCTV", "엘리베이터", "세무사", "보험", "승강기 보험", "화재보험", "기타 결제", "수익 출금"];
+    const bankExpenseCategoryOptions = ["세금", "수도세", "전기세", "전기안전관리자", "청소용역", "CCTV", "엘리베이터", "세무사", "보험", "승강기 보험", "화재보험", "기타 결제", "수익 출금"];
     const bankPaymentMethodOptions = ["현금인출", "하나카드", "삼성카드", "신한카드", "현대카드"];
     const serviceCategoryOptions = ["CCTV", "\uc5d8\ub9ac\ubca0\uc774\ud130", "\uc138\ubb34\uc0ac", "\uccad\uc18c\uc6a9\uc5ed", "\uc804\uae30\uc548\uc804\uad00\ub9ac\uc790", "\ubcf4\ud5d8", "\uc2b9\uac15\uae30 \ubcf4\ud5d8", "\ud654\uc7ac\ubcf4\ud5d8"];
     const bankTargetOptions = [
       { value: "", label: "미지정" },
       { value: "공통", label: "공통" },
     ].concat(unitIds.map(function (unitId) {
-      return { value: unitId + "ȣ", label: unitId + "ȣ" };
+      return { value: unitId + "호", label: unitId + "호" };
     }));
     function defaultBankCategory(tx, mappedTarget) {
       const isExpense = tx && tx.kind === "expense";
@@ -17754,7 +31184,7 @@
 
     Object.keys((building && building.units) || {}).forEach(function (unitId) {
       ensureArray(building.units[unitId] && building.units[unitId].transactions).forEach(function (tx) {
-        addActualProfitFlow(tx, unitId + "ȣ");
+        addActualProfitFlow(tx, unitId + "호");
       });
     });
     operatingTransactions.forEach(function (tx) {
@@ -17828,7 +31258,7 @@
           h(
             "table",
             { className: "building-bank-table bank-ledger-table" },
-            h("thead", null, h("tr", null, h("th", null, "예정일"), h("th", null, "구분"), h("th", null, "대상"), h("th", null, "항목"), h("th", null, "예정금액"), h("th", null, "실입/출금액"), h("th", null, "상태"))),
+            h("thead", null, h("tr", null, h("th", null, "거래일"), h("th", null, "구분"), h("th", null, "실입금액"), h("th", null, "항목"), h("th", null, "호실"), h("th", null, "원본"), h("th", null, "관리"))),
             h(
               "tbody",
               null,
@@ -17883,7 +31313,7 @@
                       h("td", null, h("button", { type: "button", className: "mini-button danger", onClick: function () { deleteBankTransaction(tx); } }, "제거"))
                     );
                   })
-                : h("tr", null, h("td", { colSpan: 7 }, "이번 달 예정 입출금이 없습니다."))
+                : h("tr", null, h("td", { colSpan: 7 }, "이번 달 입금 내역이 없습니다."))
             )
           )
         )
@@ -17901,7 +31331,7 @@
           h(
             "table",
             { className: "building-bank-table bank-ledger-table" },
-            h("thead", null, h("tr", null, h("th", null, "예정일"), h("th", null, "구분"), h("th", null, "대상"), h("th", null, "항목"), h("th", null, "예정금액"), h("th", null, "실입/출금액"), h("th", null, "상태"))),
+            h("thead", null, h("tr", null, h("th", null, "거래일"), h("th", null, "구분"), h("th", null, "결제수단"), h("th", null, "실출금액"), h("th", null, "항목"), h("th", null, "원본"), h("th", null, "관리"))),
             h(
               "tbody",
               null,
@@ -17950,7 +31380,7 @@
                       h("td", null, h("button", { type: "button", className: "mini-button danger", onClick: function () { deleteBankTransaction(tx); } }, "제거"))
                     );
                   })
-                : h("tr", null, h("td", { colSpan: 7 }, "이번 달 예정 입출금이 없습니다."))
+                : h("tr", null, h("td", { colSpan: 7 }, "이번 달 출금 내역이 없습니다."))
             )
           )
         )
@@ -18533,14 +31963,38 @@
           { className: "building-bank-actions" },
           h("span", null, "경로: D:\\Study\\상가_관리_데이터\\계좌입출금내역"),
           h(
-            "button",
-            {
-              type: "button",
-              className: "mini-button primary",
-              disabled: syncingBank,
-              onClick: importBankFiles,
-            },
-            syncingBank ? "새로고침 중..." : "거래내역 새로고침"
+            React.Fragment,
+            null,
+            h(
+              "button",
+              {
+                type: "button",
+                className: "mini-button",
+                disabled: exportingBankMonth,
+                onClick: exportBankMonthlyWorkbook,
+              },
+              exportingBankMonth ? "엑셀 출력 중..." : calendarMonth + " 엑셀 출력"
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "mini-button",
+                disabled: exportingBuildingSummary,
+                onClick: exportBuildingSummaryWorkbook,
+              },
+              exportingBuildingSummary ? "정리본 생성 중..." : "건물 정리본 엑셀"
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "mini-button primary",
+                disabled: syncingBank,
+                onClick: importBankFiles,
+              },
+              syncingBank ? "새로고침 중..." : "거래내역 새로고침"
+            )
           )
         ),
         h(
@@ -18566,7 +32020,7 @@
           h(
             "table",
             { className: "building-bank-table" },
-            h("thead", null, h("tr", null, h("th", null, "예정일"), h("th", null, "구분"), h("th", null, "대상"), h("th", null, "항목"), h("th", null, "예정금액"), h("th", null, "실입/출금액"), h("th", null, "상태"))),
+            h("thead", null, h("tr", null, h("th", null, "예정일"), h("th", null, "구분"), h("th", null, "호실"), h("th", null, "항목"), h("th", null, "예정금액"), h("th", null, "실입/출금액"), h("th", null, "상태"))),
             h(
               "tbody",
               null,
@@ -18752,7 +32206,7 @@
                         },
                         h("option", { value: "" }, "호실 선택"),
                         unitIds.map(function (unitId) {
-                          return h("option", { key: unitId, value: unitId }, unitId + "ȣ");
+                          return h("option", { key: unitId, value: unitId }, unitId + "호");
                         })
                       )
                     )
@@ -18991,7 +32445,343 @@
     );
   }
 
+  function NaverBlogBriefPage() {
+    const savedState = loadNaverBlogPageState();
+    const [query, setQuery] = useState(savedState.query || "");
+    const [category, setCategory] = useState(savedState.category || "all");
+    const [selectedId, setSelectedId] = useState(savedState.selectedId || 0);
+    const [items, setItems] = useState([]);
+    const [status, setStatus] = useState(null);
+    const [detail, setDetail] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [actionLoading, setActionLoading] = useState(false);
+    const [message, setMessage] = useState("");
+    const detailCacheRef = useRef({});
+
+    useEffect(function () {
+      persistNaverBlogPageState({
+        query: query,
+        category: category,
+        selectedId: selectedId,
+      });
+    }, [query, category, selectedId]);
+
+    useEffect(function () {
+      loadStatus(true);
+      loadPosts(true);
+    }, []);
+
+    useEffect(function () {
+      if (!status || !status.login_running) {
+        return;
+      }
+      const timer = window.setInterval(function () {
+        loadStatus(true);
+      }, 4000);
+      return function () {
+        window.clearInterval(timer);
+      };
+    }, [status && status.login_running]);
+
+    const filteredItems = ensureArray(items).filter(function (item) {
+      if (category !== "all" && item.category !== category) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = normalizeLooseSearchText([
+        item.title,
+        item.blog_name,
+        item.summary,
+        item.content_text,
+        ensureArray(item.keywords).join(" "),
+      ].join(" "));
+      return haystack.indexOf(normalizeLooseSearchText(query)) >= 0;
+    });
+
+    const selectedItem = filteredItems.find(function (item) { return item.id === selectedId; })
+      || ensureArray(items).find(function (item) { return item.id === selectedId; })
+      || filteredItems[0]
+      || null;
+
+    useEffect(function () {
+      const detailLabel = selectedItem ? (selectedItem.title || selectedItem.blog_name || "") : "";
+      emitWindowTitleDetail("naver-blog", detailLabel ? "블로그: " + detailLabel : "");
+    }, [selectedItem && selectedItem.id, selectedItem && selectedItem.title]);
+
+    useEffect(function () {
+      if (selectedItem && selectedItem.id !== selectedId) {
+        setSelectedId(selectedItem.id);
+      }
+    }, [selectedItem && selectedItem.id]);
+
+    useEffect(function () {
+      if (!selectedItem || !selectedItem.id) {
+        setDetail(null);
+        return;
+      }
+      const cached = detailCacheRef.current[selectedItem.id];
+      if (cached) {
+        setDetail(cached);
+        return;
+      }
+      setDetailLoading(true);
+      fetchJson("/api/naver-blog/posts/" + encodeURIComponent(selectedItem.id), { noCache: true })
+        .then(function (payload) {
+          detailCacheRef.current[selectedItem.id] = payload;
+          setDetail(payload);
+        })
+        .catch(function (error) {
+          setDetail({ error: error.message || String(error) });
+        })
+        .finally(function () {
+          setDetailLoading(false);
+        });
+    }, [selectedItem && selectedItem.id]);
+
+    function loadStatus(forceRefresh) {
+      fetchJson("/api/naver-blog/status", { noCache: !!forceRefresh, forceRefresh: !!forceRefresh })
+        .then(function (payload) {
+          setStatus(payload || null);
+        })
+        .catch(function (error) {
+          setMessage(error.message || String(error));
+        });
+    }
+
+    function loadPosts(forceRefresh) {
+      setLoading(true);
+      fetchJson("/api/naver-blog/posts?limit=120&recent_days=14", { noCache: !!forceRefresh, forceRefresh: !!forceRefresh })
+        .then(function (payload) {
+          const rows = ensureArray(payload.items);
+          setItems(rows);
+          if (!rows.length && payload.login_error) {
+            setMessage(payload.login_error);
+          }
+        })
+        .catch(function (error) {
+          setMessage(error.message || String(error));
+          setItems([]);
+        })
+        .finally(function () {
+          setLoading(false);
+        });
+    }
+
+    function startLogin() {
+      setActionLoading(true);
+      setMessage("");
+      postJson("/api/naver-blog/login/start", {})
+        .then(function (payload) {
+          setStatus(payload || null);
+          setMessage((payload && payload.message) || "브라우저에서 네이버 로그인 후 잠시 기다려 주세요.");
+        })
+        .catch(function (error) {
+          setMessage(error.message || String(error));
+        })
+        .finally(function () {
+          setActionLoading(false);
+        });
+    }
+
+    function refreshFeed() {
+      setActionLoading(true);
+      setMessage("");
+      postJson("/api/naver-blog/refresh?limit=120", {})
+        .then(function (payload) {
+          setMessage("새 글 " + numberFormat(payload.item_count, 0) + "건을 다시 정리했습니다.");
+          loadStatus(true);
+          loadPosts(true);
+        })
+        .catch(function (error) {
+          setMessage(error.message || String(error));
+        })
+        .finally(function () {
+          setActionLoading(false);
+        });
+    }
+
+    const counts = {
+      all: ensureArray(items).length,
+      company: ensureArray(items).filter(function (item) { return item.category === "기업분석"; }).length,
+      industry: ensureArray(items).filter(function (item) { return item.category === "산업"; }).length,
+      market: ensureArray(items).filter(function (item) { return item.category === "시장"; }).length,
+    };
+
+    return h(
+      "div",
+      { className: "page naver-blog-page" },
+      h(
+        "section",
+        { className: "panel hero-panel naver-blog-hero" },
+        h("div", null,
+          h("div", { className: "eyebrow" }, "NAVER Neighbor Feed"),
+          h("h1", { className: "page-title" }, "네이버 블로그 브리핑"),
+          h("p", { className: "page-copy compact-copy" }, "이웃새글을 불러와서 기업분석, 산업, 시장으로 분류하고 바로 읽을 수 있게 요약합니다.")
+        ),
+        h("div", { className: "hero-actions" },
+          h("span", { className: "status-pill" }, status && status.logged_in ? "로그인 연결됨" : "로그인 필요"),
+          status && status.last_updated_at ? h("span", { className: "status-pill" }, "마지막 수집 " + status.last_updated_at.replace("T", " ")) : null,
+          (!(status && status.logged_in) || (status && status.login_running))
+            ? h("button", { type: "button", className: "secondary-button", disabled: actionLoading || (status && status.login_running), onClick: startLogin }, (status && status.login_running) ? "로그인 대기 중" : "브라우저 열고 로그인")
+            : h("button", { type: "button", className: "secondary-button", disabled: actionLoading, onClick: startLogin }, "다시 로그인"),
+          h("button", { type: "button", className: "primary-button", disabled: actionLoading || !(status && status.logged_in), onClick: refreshFeed }, actionLoading ? "수집 중" : "새로고침")
+        )
+      ),
+      h(
+        "div",
+        { className: "naver-blog-summary-bar" },
+        h("span", { className: "naver-blog-summary-chip" }, "최근 2주 " + numberFormat(counts.all, 0) + "건"),
+        h("span", { className: "naver-blog-summary-chip" }, "기업분석 " + numberFormat(counts.company, 0) + "건"),
+        h("span", { className: "naver-blog-summary-chip" }, "산업 " + numberFormat(counts.industry, 0) + "건"),
+        h("span", { className: "naver-blog-summary-chip" }, "시장 " + numberFormat(counts.market, 0) + "건")
+      ),
+      message ? h("div", { className: "notice-box compact" }, message) : null,
+      status && status.login_running ? h("div", { className: "notice-box compact" }, status.login_message || "브라우저 로그인 완료를 기다리는 중입니다.") : null,
+      status && status.logged_in && !status.login_running && !message
+        ? h("div", { className: "notice-box compact" }, (status.login_message || "네이버 로그인 세션이 연결되어 있습니다.") + " 새로고침 버튼으로 최신 이웃새글을 다시 불러올 수 있습니다.")
+        : null,
+      !(status && status.logged_in)
+        ? h(
+            "section",
+            { className: "panel naver-blog-login-panel" },
+            h(SectionTitle, null, "초기 연결"),
+            h("p", { className: "summary-help" }, "한 번만 네이버 로그인 세션을 저장하면 이후에는 이 페이지에서 새로고침 버튼으로 이웃새글을 다시 불러올 수 있습니다."),
+            h("button", { type: "button", className: "primary-button", disabled: actionLoading, onClick: startLogin }, "브라우저 열고 로그인")
+          )
+        : null,
+      h(
+        "div",
+        { className: "naver-blog-layout" },
+        h(
+          "section",
+          { className: "panel naver-blog-list-panel" },
+          h("div", { className: "section-toolbar compact" },
+            h(SectionTitle, null, "최신 글"),
+            h("span", { className: "summary-help" }, loading ? "목록 불러오는 중" : numberFormat(filteredItems.length, 0) + "건")
+          ),
+          h("div", { className: "naver-blog-filter-bar" },
+            h("label", { className: "form-field" }, h("span", null, "검색"), h("input", { value: query, placeholder: "제목, 블로그명, 키워드", onChange: function (event) { setQuery(event.target.value); } })),
+            h("label", { className: "form-field" }, h("span", null, "카테고리"), h("select", { value: category, onChange: function (event) { setCategory(event.target.value); } }, [
+              h("option", { value: "all" }, "전체"),
+              h("option", { value: "기업분석" }, "기업분석"),
+              h("option", { value: "산업" }, "산업"),
+              h("option", { value: "시장" }, "시장"),
+            ]))
+          ),
+          loading
+            ? h(LoadingBlock, { compact: true, title: "이웃새글 목록 정리 중", label: "저장된 최신 글을 읽고 있습니다." })
+            : filteredItems.length
+              ? h("div", { className: "naver-blog-list" }, filteredItems.map(function (item) {
+                  return h(
+                    "button",
+                    {
+                      key: item.id,
+                      type: "button",
+                      className: "naver-blog-row" + (selectedItem && item.id === selectedItem.id ? " active" : ""),
+                      onClick: function () { setSelectedId(item.id); },
+                    },
+                    h("div", { className: "naver-blog-row-head" },
+                      h("span", { className: "naver-blog-row-category" }, item.category || "시장"),
+                      h("span", { className: "naver-blog-row-date" }, item.published_text || item.updated_at || "")
+                    ),
+                    h("strong", { className: "naver-blog-row-title" }, item.title || "-"),
+                    h("div", { className: "naver-blog-row-blog" }, normalizeNaverBlogName(item.blog_name) || "블로그명 없음"),
+                    h("div", { className: "naver-blog-row-meta" }, ensureArray(item.keywords).slice(0, 3).join(" · ")),
+                    h("p", { className: "naver-blog-row-summary" }, item.summary || item.feed_snippet || "")
+                  );
+                }))
+              : h(EmptyState, { message: status && status.logged_in ? "조건에 맞는 글이 없습니다." : "로그인 연결 후 새로고침을 눌러 첫 수집을 진행해 주세요." })
+        ),
+        h(
+          "section",
+          { className: "panel naver-blog-detail-panel" },
+          !selectedItem
+            ? h(EmptyState, { message: "왼쪽 목록에서 글을 선택해 주세요." })
+            : detailLoading
+              ? h(LoadingBlock, { compact: true, title: "본문 정리 중", label: "선택한 글의 상세 내용을 불러오는 중입니다." })
+              : detail && detail.error
+                ? h("div", { className: "notice-box error" }, detail.error)
+                : h(
+                    React.Fragment,
+                    null,
+                    h("div", { className: "naver-blog-detail-head" },
+                      h("div", null,
+                        h("div", { className: "eyebrow" }, (detail && detail.category) || (selectedItem.category) || "시장"),
+                        h("h2", null, (detail && detail.title) || selectedItem.title || "-"),
+                        h("p", { className: "naver-blog-detail-meta" }, [
+                          normalizeNaverBlogName((detail && detail.blog_name) || (selectedItem && selectedItem.blog_name)),
+                          detail && detail.published_text,
+                        ].filter(Boolean).join(" · "))
+                      ),
+                      h("a", { className: "secondary-button", href: (detail && detail.url) || selectedItem.url, target: "_blank", rel: "noreferrer" }, "원문 열기")
+                    ),
+                    h("div", { className: "naver-blog-detail-summary" },
+                      h("strong", null, "요약"),
+                      h("p", null, (detail && detail.summary) || selectedItem.summary || selectedItem.feed_snippet || "")
+                    ),
+                    ensureArray((detail && detail.keywords) || selectedItem.keywords).length
+                      ? h("div", { className: "naver-blog-keywords" }, ensureArray((detail && detail.keywords) || selectedItem.keywords).map(function (keyword) {
+                          return h("span", { key: keyword, className: "naver-blog-keyword" }, keyword);
+                        }))
+                      : null,
+                    h("div", { className: "naver-blog-detail-body" }, ((detail && detail.content_text) || selectedItem.content_text || selectedItem.feed_snippet || "본문이 비어 있습니다."))
+                  )
+        )
+      )
+    );
+  }
+
   function App() {
+    const defaultTabGroups = [
+      {
+        label: "\uc8fc\uc2dd",
+        tabs: [
+          { key: "sector-watch", label: "관심종목 보드" },
+          { key: "themes", label: "오늘의 주도주" },
+          { key: "chart-game", label: "차트 게임" },
+          { key: "global-themes", label: "\ubbf8\uad6d \uc8fc\ub3c4\uc8fc" },
+          { key: "asia-themes", label: "\uc544\uc2dc\uc544 \uc8fc\ub3c4\uc8fc" },
+          { key: "telegram", label: "종목 정보 검색기" },
+          { key: "disclosure", label: "공시/실적" },
+          { key: "stock-news", label: "뉴스 검색기" },
+          { key: "global-company", label: "해외기업 검색기" },
+          { key: "pair-correlation", label: "주가 상관관계" },
+          { key: "etf-flow", label: "ETF 자금 추정" },
+          { key: "global-indices", label: "지수/가격동향" },
+          { key: "institutional-rebalance", label: "기관 리밸런싱 추정" },
+          { key: "portfolio", label: "포트폴리오 수익" },
+          { key: "sector-entry", label: "섹터 진입 신호" },
+          { key: "sector-snapshot", label: "섹터 비교 테이블" },
+          { key: "trade-data", label: "수출입" },
+          { key: "economy-cycle", label: "경기순환" },
+          { key: "strategy-backtest", label: "전략 백테스트" },
+          { key: "market-calendar", label: "증시 일정" },
+          { key: "naver-blog", label: "네이버 블로그 브리핑" },
+          { key: "next", label: "추가 예정 페이지" }
+        ]
+      },
+      {
+        label: "\ubd80\ub3d9\uc0b0",
+        tabs: [
+          { key: "real-estate-prices", label: "부동산 가격" },
+          { key: "subscription-list", label: "아파트 청약 리스트" },
+          { key: "building-management", label: "건물 관리" }
+        ]
+      }
+    ];
+    const defaultTabs = defaultTabGroups.reduce(function (accumulator, group) {
+      return accumulator.concat(group.tabs.map(function (tab) {
+        return Object.assign({ groupLabel: group.label }, tab);
+      }));
+    }, []);
+    const defaultTabKeys = defaultTabs.map(function (tab) { return tab.key; });
+    const tabMap = defaultTabs.reduce(function (accumulator, tab) {
+      accumulator[tab.key] = tab;
+      return accumulator;
+    }, {});
     const [page, setPage] = useState(function () {
       const savedPage = localStorage.getItem(LAST_PAGE_KEY) || "sector-watch";
       const migratedFirstPage = localStorage.getItem(FIRST_PAGE_MIGRATION_KEY) === "1";
@@ -19001,12 +32791,21 @@
           return "sector-watch";
         }
       }
-      return ["sector-watch", "portfolio", "themes", "global-themes", "asia-themes", "telegram", "disclosure", "stock-news", "global-company", "global-indices", "sector-entry", "sector-snapshot", "trade-data", "economy-cycle", "strategy-backtest", "market-calendar", "real-estate-prices", "building-management", "next"].indexOf(savedPage) >= 0
+      return ["sector-watch", "portfolio", "themes", "chart-game", "global-themes", "asia-themes", "telegram", "disclosure", "stock-news", "global-company", "pair-correlation", "etf-flow", "global-indices", "institutional-rebalance", "sector-entry", "sector-snapshot", "trade-data", "economy-cycle", "strategy-backtest", "market-calendar", "naver-blog", "real-estate-prices", "subscription-list", "building-management", "next"].indexOf(savedPage) >= 0
         ? savedPage
         : "sector-watch";
     });
     const [visitedPages, setVisitedPages] = useState(function () {
       return [page];
+    });
+    const [tabOrder, setTabOrder] = useState(function () {
+      try {
+        const raw = localStorage.getItem(TAB_ORDER_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return normalizeTabOrder(parsed, defaultTabKeys);
+      } catch (error) {
+        return defaultTabKeys.slice();
+      }
     });
     const [sidebarCollapsed, setSidebarCollapsed] = useState(function () {
       if (window.innerWidth <= 1080) {
@@ -19014,6 +32813,7 @@
       }
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
     });
+    const [draggingTabKey, setDraggingTabKey] = useState("");
     const appConfigRequest = useFetchJson("/api/app-config");
     const appConfig = appConfigRequest.data || {};
     const publicWeb = !!appConfig.public_web;
@@ -19029,6 +32829,10 @@
     useEffect(function () {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? "1" : "0");
     }, [sidebarCollapsed]);
+
+    useEffect(function () {
+      localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(normalizeTabOrder(tabOrder, defaultTabKeys)));
+    }, [tabOrder]);
 
     useEffect(function () {
       function handleTitleDetail(event) {
@@ -19063,50 +32867,161 @@
     }, []);
 
     useEffect(function () {
+      function handleSidebarHotkey(event) {
+        if (!event || event.defaultPrevented || !event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) {
+          return;
+        }
+        if (isEditableHotkeyTarget(event.target)) {
+          return;
+        }
+        const keyText = String(event.key || "");
+        if (!/^[1-9]$/.test(keyText)) {
+          return;
+        }
+        const targetIndex = Number(keyText) - 1;
+        const orderedKeys = normalizeTabOrder(tabOrder, defaultTabKeys);
+        if (targetIndex < 0 || targetIndex >= orderedKeys.length) {
+          return;
+        }
+        event.preventDefault();
+        setPage(orderedKeys[targetIndex]);
+      }
+      window.addEventListener("keydown", handleSidebarHotkey);
+      return function () {
+        window.removeEventListener("keydown", handleSidebarHotkey);
+      };
+    }, [tabOrder]);
+
+    useEffect(function () {
       document.title = buildWindowTitle(page, titleDetails[page]);
     }, [page, titleDetails]);
 
-    const tabGroups = [
-      {
-        label: "\uc8fc\uc2dd",
-        tabs: [
-          { key: "sector-watch", label: "관심종목 보드" },
-          { key: "themes", label: "오늘의 주도주" },
-          { key: "global-themes", label: "\ubbf8\uad6d \uc8fc\ub3c4\uc8fc" },
-          { key: "asia-themes", label: "\uc544\uc2dc\uc544 \uc8fc\ub3c4\uc8fc" },
-          { key: "telegram", label: "종목 정보 검색기" },
-          { key: "disclosure", label: "공시/실적" },
-          { key: "stock-news", label: "뉴스 검색기" },
-          { key: "global-company", label: "해외기업 검색기" },
-          { key: "global-indices", label: "지수/가격동향" },
-          { key: "portfolio", label: "포트폴리오 수익" },
-          { key: "sector-entry", label: "섹터 진입 신호" },
-          { key: "sector-snapshot", label: "섹터 비교 테이블" },
-          { key: "trade-data", label: "수출입" },
-          { key: "economy-cycle", label: "경기순환" },
-          { key: "strategy-backtest", label: "전략 백테스트" },
-          { key: "market-calendar", label: "증시 일정" },
-          { key: "next", label: "추가 예정 페이지" }
-        ]
-      },
-      {
-        label: "\ubd80\ub3d9\uc0b0",
-        tabs: [
-          { key: "real-estate-prices", label: "부동산 가격" },
-          { key: "building-management", label: "건물 관리" }
-        ]
+    useEffect(function () {
+      const timers = [];
+      const running = { kr: false, us: false };
+
+      function getStateForToday() {
+        const today = todayIsoDate();
+        const currentState = readAutoDailyThemeBuildState();
+        if (currentState.date === today) {
+          return currentState;
+        }
+        const nextState = { date: today, kr: false, us: false };
+        writeAutoDailyThemeBuildState(nextState);
+        return nextState;
       }
-    ];
+
+      function runAutoBuild(market) {
+        const todayState = getStateForToday();
+        if (running[market] || todayState[market]) {
+          return;
+        }
+        const delayMs = getAutoBuildDelayMs(market);
+        if (delayMs == null) {
+          return;
+        }
+        if (delayMs > 0) {
+          timers.push(window.setTimeout(function () {
+            runAutoBuild(market);
+          }, delayMs));
+          return;
+        }
+        running[market] = true;
+        const url = market === "us" ? "/api/us-themes/build-today-data" : "/api/themes/build-today-data";
+        postJson(url, {
+          min_score: 0,
+          recent_limit: 20,
+        }).then(function (payload) {
+          const nextState = getStateForToday();
+          nextState[market] = true;
+          writeAutoDailyThemeBuildState(nextState);
+          emitAutoDailyThemeBuildEvent(market, payload || {});
+        }).catch(function () {
+          const nextState = getStateForToday();
+          nextState[market] = false;
+          writeAutoDailyThemeBuildState(nextState);
+        }).finally(function () {
+          running[market] = false;
+        });
+      }
+
+      getStateForToday();
+      runAutoBuild("kr");
+      runAutoBuild("us");
+      return function () {
+        timers.forEach(function (timerId) {
+          window.clearTimeout(timerId);
+        });
+      };
+    }, []);
+
+    const orderedTabs = normalizeTabOrder(tabOrder, defaultTabKeys).map(function (key) {
+      return tabMap[key];
+    }).filter(Boolean);
+    const orderedGroups = [];
+    orderedTabs.forEach(function (tab) {
+      const groupLabel = tab.groupLabel || "";
+      const lastGroup = orderedGroups.length ? orderedGroups[orderedGroups.length - 1] : null;
+      if (!lastGroup || lastGroup.label !== groupLabel) {
+        orderedGroups.push({ label: groupLabel, tabs: [tab] });
+      } else {
+        lastGroup.tabs.push(tab);
+      }
+    });
+
+    function moveTabToPosition(sourceKey, targetKey) {
+      if (!sourceKey || !targetKey || sourceKey === targetKey) {
+        return;
+      }
+      setTabOrder(function (current) {
+        const normalized = normalizeTabOrder(current, defaultTabKeys);
+        const fromIndex = normalized.indexOf(sourceKey);
+        const toIndex = normalized.indexOf(targetKey);
+        if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+          return normalized;
+        }
+        return moveArrayItem(normalized, fromIndex, toIndex);
+      });
+    }
+
+    function handleTabDragStart(tabKey, event) {
+      setDraggingTabKey(tabKey);
+      try {
+        if (event && event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", tabKey);
+        }
+      } catch (error) {
+      }
+    }
+
+    function handleTabDrop(targetKey, event) {
+      if (event) {
+        event.preventDefault();
+      }
+      var sourceKey = draggingTabKey;
+      try {
+        if (event && event.dataTransfer) {
+          sourceKey = event.dataTransfer.getData("text/plain") || sourceKey;
+        }
+      } catch (error) {
+      }
+      setDraggingTabKey("");
+      moveTabToPosition(sourceKey, targetKey);
+    }
 
     function renderPageContent(pageKey) {
       if (pageKey === "sector-watch") {
         return h(SectorWatchBoardPage);
       }
       if (pageKey === "portfolio") {
-        return h(PortfolioPage);
+        return h(PortfolioPageModern);
       }
       if (pageKey === "themes") {
         return h(MemoThemesPageV2);
+      }
+      if (pageKey === "chart-game") {
+        return h(ChartGamePage);
       }
       if (pageKey === "global-themes") {
         return h(GlobalThemesPage);
@@ -19140,8 +33055,17 @@
       if (pageKey === "global-company") {
         return h(GlobalCompanyPage);
       }
+      if (pageKey === "pair-correlation") {
+        return h(PairCorrelationPage);
+      }
+      if (pageKey === "etf-flow") {
+        return h(EtfFlowPage);
+      }
       if (pageKey === "global-indices") {
         return h(GlobalIndicesPage);
+      }
+      if (pageKey === "institutional-rebalance") {
+        return h(InstitutionalRebalancePage);
       }
       if (pageKey === "sector-entry") {
         return h(SectorEntrySignalPage);
@@ -19161,8 +33085,21 @@
       if (pageKey === "market-calendar") {
         return h(MarketCalendarPage);
       }
+      if (pageKey === "naver-blog") {
+        return appConfigRequest.loading
+          ? h(LoadingPanel, { label: appConfigRequest.label })
+          : publicWeb
+            ? h(SecurityLockedPanel, {
+                title: "네이버 블로그 브리핑",
+                message: "네이버 블로그 브리핑은 개인 로그인 세션을 사용하므로 공개 웹 배포 모드에서는 잠겨 있습니다.",
+              })
+            : h(NaverBlogBriefPage);
+      }
       if (pageKey === "real-estate-prices") {
         return h(RealEstatePricePage);
+      }
+      if (pageKey === "subscription-list") {
+        return h(SubscriptionListPage);
       }
       if (pageKey === "building-management") {
         return h(BuildingManagementPage);
@@ -19210,20 +33147,29 @@
         h(
           "div",
           { className: "nav-list" },
-          tabGroups.map(function (group) {
+          orderedGroups.map(function (group) {
             return h(
               "div",
               { key: group.label, className: "nav-group" },
               h("div", { className: "nav-group-title" }, group.label),
               group.tabs.map(function (tab) {
+                const shortcutIndex = orderedTabs.findIndex(function (item) { return item.key === tab.key; });
+                const shortcutLabel = shortcutIndex >= 0 && shortcutIndex < 9 ? "Ctrl+" + String(shortcutIndex + 1) : "";
                 return h(
                   "button",
                   {
                     key: tab.key,
-                    className: "nav-item" + (page === tab.key ? " active" : ""),
-                    onClick: function () { setPage(tab.key); }
+                    className: "nav-item" + (page === tab.key ? " active" : "") + (draggingTabKey === tab.key ? " dragging" : ""),
+                    onClick: function () { setPage(tab.key); },
+                    draggable: true,
+                    onDragStart: function (event) { handleTabDragStart(tab.key, event); },
+                    onDragEnd: function () { setDraggingTabKey(""); },
+                    onDragOver: function (event) { event.preventDefault(); },
+                    onDrop: function (event) { handleTabDrop(tab.key, event); },
+                    title: shortcutLabel ? tab.label + " (" + shortcutLabel + ")" : tab.label,
                   },
-                  tab.label
+                  h("span", { className: "nav-item-label" }, tab.label),
+                  shortcutLabel ? h("span", { className: "nav-item-shortcut" }, shortcutLabel) : null
                 );
               })
             );
@@ -19283,3 +33229,4 @@
   const rootElement = document.getElementById("root");
   ReactDOM.createRoot(rootElement).render(h(App));
 })();
+

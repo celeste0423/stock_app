@@ -16,7 +16,7 @@ DEFAULT_FORMULA_CONFIG: dict[str, Any] = {
     "score_formula": {
         "amount_power": 2.0,
         "marcap_power": 0.8,
-        "return_base": 1.1,
+        "return_base": 1.0,
         "return_power": 4.0,
         "log_base": 1.1,
         "bonus_if_52w_high": 4.0,
@@ -28,7 +28,7 @@ DEFAULT_FORMULA_CONFIG: dict[str, Any] = {
         "weight_today": 0.35,
         "weight_1w": 0.45,
         "weight_3m": 0.2,
-        "sortino_power": 0.8,
+        "sortino_power": 2.0,
         "sortino_floor": 1e-6,
     },
 }
@@ -145,14 +145,16 @@ def _recalc_one_file(path: Path, cfg: dict[str, Any]) -> tuple[int, int]:
         weight_today = float(final_cfg.get("weight_today", 0.35))
         weight_1w = float(final_cfg.get("weight_1w", 0.45))
         weight_3m = float(final_cfg.get("weight_3m", final_cfg.get("weight_1m", 0.2)))
-        sortino_power = float(final_cfg.get("sortino_power", 0.8))
+        sortino_power = float(final_cfg.get("sortino_power", 2.0))
         sortino_floor = float(final_cfg.get("sortino_floor", 1e-6))
+        sortino_center = 0.6
 
         composite = (new_score * weight_today) + (avg_1w * weight_1w) + (avg_1m * weight_3m)
+        sortino_multiplier = math.exp(sortino_power * (sortino - sortino_center))
         if composite >= 0:
-            final_score = composite * ((max(sortino, sortino_floor)) ** sortino_power)
+            final_score = composite * sortino_multiplier
         else:
-            final_score = composite * ((max(2.0 - sortino, sortino_floor)) ** sortino_power)
+            final_score = composite / sortino_multiplier
 
         ws.cell(r, 9).value = round(new_score, 2)
         ws.cell(r, 13).value = round(final_score, 2)

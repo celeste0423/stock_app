@@ -8,6 +8,9 @@ import sqlite3
 import hashlib
 import re
 import sys
+import time
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -16,11 +19,20 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 VENDOR_DIR = ROOT_DIR / "backend" / "vendor"
-if VENDOR_DIR.exists():
+USE_BACKEND_VENDOR = os.getenv("STOCK_APP_USE_BACKEND_VENDOR", "1").strip().lower() not in {"0", "false", "no", "off"}
+if USE_BACKEND_VENDOR and VENDOR_DIR.exists() and str(VENDOR_DIR) not in sys.path:
     sys.path.insert(0, str(VENDOR_DIR))
+
+BUILD_PROGRESS_DIR = Path(
+    os.getenv("STOCK_BUILD_PROGRESS_DIR", str(ROOT_DIR / "backend" / "runtime" / "build_progress"))
+)
 
 import numpy as np
 import pandas as pd
+try:
+    import FinanceDataReader as fdr
+except Exception:
+    fdr = None
 
 try:
     from pykrx import stock as pykrx_stock
@@ -45,22 +57,51 @@ DEFAULT_FORMULA_CONFIG: dict[str, Any] = {
     "score_formula": {
         "amount_power": 1.2,
         "marcap_power": 0.8,
-        "return_base": 1.1,
+        "return_base": 1.0,
         "return_power": 4.0,
         "log_base": 1.1,
-        "bonus_if_52w_high": 5.0,
-        "bonus_if_not_52w_high": -4.0,
+        "trading_value_surge_power": 0.35,
+        "trading_value_surge_cap": 8.0,
+        "bonus_if_52w_high": 20.0,
+        "bonus_if_20d_high": 10.0,
+        "bonus_if_not_52w_high": -5.0,
         "offset": -13.0,
-        "invalid_fill": 0.0,
+        "invalid_fill": -80.0,
+        "missing_daily_score": -80.0,
     },
     "final_score_formula": {
         "weight_today": 0.1,
         "weight_1w": 0.5,
-        "weight_3m": 0.4,
-        "sortino_power": 0.4,
+        "weight_1m": 0.3,
+        "weight_3m": 0.1,
+        "sortino_power": 2.0,
         "sortino_floor": 1e-6,
+        "sortino_tanh_scale": 0.8,
+        "sortino_min_obs": 10,
+        "sortino_insufficient_value": 0.25,
     },
 }
+
+
+def _progress_path(market: str = "kr") -> Path:
+    return BUILD_PROGRESS_DIR / f"{market}_latest.json"
+
+
+def _write_progress(percent: float, message: str, *, market: str = "kr", status: str = "running", date_key: str = "") -> None:
+    try:
+        BUILD_PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "market": market,
+            "status": status,
+            "percent": max(0.0, min(float(percent), 100.0)),
+            "message": str(message or "").strip(),
+            "date_key": str(date_key or "").strip(),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_ts": time.time(),
+        }
+        _progress_path(market).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 @dataclass
@@ -75,6 +116,19 @@ class BuildConfig:
 def _normalize_code(code: Any) -> str:
     digits = re.sub(r"\D", "", str(code or ""))
     return digits.zfill(6) if digits else ""
+
+
+def _normalize_exact_code(code: Any) -> str:
+    text = str(code or "").strip().upper()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d+\.0", text):
+        text = text.split(".", 1)[0]
+    if re.fullmatch(r"\d{5,6}", text):
+        return text.zfill(6)
+    if re.fullmatch(r"\d{5,6}[A-Z]{1,3}", text):
+        return text
+    return text
 
 
 def _extract_date_key_from_name(name: str) -> str:
@@ -205,9 +259,69 @@ def _load_recent_stock_name_map(target_date: str) -> dict[str, str]:
     return out
 
 
-def _build_score_history_maps(target_date: str) -> tuple[dict[str, float], dict[str, float]]:
+def _canonicalize_codes_from_recent_history(base: pd.DataFrame, target_date: str) -> pd.DataFrame:
+    if base.empty or not FAST_DB_PATH.exists():
+        return base
+    try:
+        with sqlite3.connect(str(FAST_DB_PATH)) as conn:
+            rows = conn.execute(
+                """
+                SELECT stock_code, file_date_key, close_price
+                FROM daily_close_cache
+                WHERE file_date_key < ?
+                  AND file_date_key >= ?
+                ORDER BY file_date_key DESC
+                """,
+                (target_date, (datetime.strptime(target_date, "%Y%m%d") - timedelta(days=14)).strftime("%Y%m%d")),
+            ).fetchall()
+    except Exception:
+        return base
+    if not rows:
+        return base
+
+    candidate_map: dict[str, list[tuple[str, str, float]]] = {}
+    for stock_code, file_date_key, close_price in rows:
+        exact_code = _normalize_exact_code(stock_code)
+        alias_code = _normalize_code(stock_code)
+        price = pd.to_numeric(close_price, errors="coerce")
+        if not exact_code or not alias_code or not np.isfinite(price):
+            continue
+        candidate_map.setdefault(alias_code, []).append((exact_code, str(file_date_key or ""), float(price)))
+
+    updated = base.copy()
+    for index, row in updated.iterrows():
+        raw_code = _normalize_exact_code(row.get("stock_code"))
+        if not raw_code or re.search(r"[A-Z]", raw_code):
+            continue
+        alias_code = _normalize_code(raw_code)
+        candidates = candidate_map.get(alias_code) or []
+        if not candidates:
+            continue
+        current_close = pd.to_numeric(row.get("close_price"), errors="coerce")
+        if not np.isfinite(current_close) or float(current_close) <= 0:
+            continue
+        best_choice: tuple[float, str] | None = None
+        latest_by_code: dict[str, tuple[str, float]] = {}
+        for exact_code, file_date_key, close_price in candidates:
+            if exact_code == raw_code:
+                continue
+            prev = latest_by_code.get(exact_code)
+            if prev is None or file_date_key > prev[0]:
+                latest_by_code[exact_code] = (file_date_key, close_price)
+        for exact_code, (_, prev_close) in latest_by_code.items():
+            if prev_close <= 0:
+                continue
+            relative_gap = abs(float(current_close) - float(prev_close)) / float(prev_close)
+            if best_choice is None or relative_gap < best_choice[0]:
+                best_choice = (relative_gap, exact_code)
+        if best_choice and best_choice[0] <= 0.25:
+            updated.at[index, "stock_code"] = best_choice[1]
+    return updated
+
+
+def _build_score_history_maps(target_date: str) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
     if not FAST_DB_PATH.exists():
-        return {}, {}
+        return {}, {}, {}, {}
     try:
         with sqlite3.connect(str(FAST_DB_PATH)) as conn:
             date_rows = conn.execute(
@@ -222,12 +336,12 @@ def _build_score_history_maps(target_date: str) -> tuple[dict[str, float], dict[
             ).fetchall()
             recent_date_keys = [str(row[0]) for row in date_rows if row and row[0]]
             if not recent_date_keys:
-                return {}, {}, {}
+                return {}, {}, {}, {}
             recent_date_keys.reverse()
             placeholders = ",".join("?" for _ in recent_date_keys)
             score_rows = conn.execute(
                 f"""
-                SELECT file_date_key, stock_code, score_o
+                SELECT file_date_key, stock_code, score_o, trading_value_100m
                 FROM screening_rows
                 WHERE file_date_key IN ({placeholders})
                   AND score_o IS NOT NULL
@@ -235,17 +349,21 @@ def _build_score_history_maps(target_date: str) -> tuple[dict[str, float], dict[
                 recent_date_keys,
             ).fetchall()
     except Exception:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
     history_by_date: dict[str, dict[str, float]] = {date_key: {} for date_key in recent_date_keys}
+    amount_history_by_date: dict[str, dict[str, float]] = {date_key: {} for date_key in recent_date_keys}
     all_codes: set[str] = set()
-    for file_date_key, stock_code, score_o in score_rows:
+    for file_date_key, stock_code, score_o, trading_value_100m in score_rows:
         date_key = str(file_date_key or "").strip()
         code = _normalize_code(stock_code)
         score = pd.to_numeric(score_o, errors="coerce")
+        amount = pd.to_numeric(trading_value_100m, errors="coerce")
         if not date_key or not code or not np.isfinite(score):
             continue
         history_by_date.setdefault(date_key, {})[code] = float(score)
+        if np.isfinite(amount):
+            amount_history_by_date.setdefault(date_key, {})[code] = float(amount)
         all_codes.add(code)
 
     recent_1w_dates = recent_date_keys[-7:]
@@ -253,17 +371,21 @@ def _build_score_history_maps(target_date: str) -> tuple[dict[str, float], dict[
     avg_1w: dict[str, float] = {}
     avg_1m: dict[str, float] = {}
     avg_3m: dict[str, float] = {}
+    avg_value_20d: dict[str, float] = {}
     for code in all_codes:
         avg_1w[code] = float(
-            sum(float(history_by_date.get(date_key, {}).get(code, 0.0)) for date_key in recent_1w_dates) / 7.0
+            sum(float(history_by_date.get(date_key, {}).get(code, -80.0)) for date_key in recent_1w_dates) / 7.0
         )
         avg_1m[code] = float(
-            sum(float(history_by_date.get(date_key, {}).get(code, 0.0)) for date_key in recent_1m_dates) / 20.0
+            sum(float(history_by_date.get(date_key, {}).get(code, -80.0)) for date_key in recent_1m_dates) / 20.0
         )
         avg_3m[code] = float(
-            sum(float(history_by_date.get(date_key, {}).get(code, 0.0)) for date_key in recent_date_keys) / 60.0
+            sum(float(history_by_date.get(date_key, {}).get(code, -80.0)) for date_key in recent_date_keys) / 60.0
         )
-    return avg_1w, avg_1m, avg_3m
+        avg_value_20d[code] = float(
+            sum(float(amount_history_by_date.get(date_key, {}).get(code, 0.0)) for date_key in recent_1m_dates) / 20.0
+        )
+    return avg_1w, avg_1m, avg_3m, avg_value_20d
 
 
 def _load_previous_note_map(target_date: str) -> dict[str, str]:
@@ -317,11 +439,195 @@ def _ensure_pykrx_login(krx_id: str = "", krx_password: str = "") -> None:
             _record_krx_login_result(krx_id, krx_password, success=False, error=str(exc))
 
 
+def _pick_listing_column(frame: pd.DataFrame, candidates: list[str]) -> str:
+    for name in candidates:
+        if name in frame.columns:
+            return name
+    return ""
+
+
+def _fetch_base_snapshot_from_fdr(date_key: str) -> pd.DataFrame:
+    if fdr is None:
+        raise RuntimeError("FinanceDataReader is not installed.")
+    listing = fdr.StockListing("KRX").copy()
+    if listing is None or listing.empty:
+        raise RuntimeError("FDR KRX listing is empty.")
+    code_column = _pick_listing_column(listing, ["Code", "Symbol"])
+    name_column = _pick_listing_column(listing, ["Name"])
+    close_column = _pick_listing_column(listing, ["Close", "Price"])
+    change_column = _pick_listing_column(listing, ["ChagesRatio", "ChangeRate", "Change"])
+    amount_column = _pick_listing_column(listing, ["Amount"])
+    marcap_column = _pick_listing_column(listing, ["Marcap", "MarCap"])
+    open_column = _pick_listing_column(listing, ["Open"])
+    high_column = _pick_listing_column(listing, ["High"])
+    low_column = _pick_listing_column(listing, ["Low"])
+    if not code_column or not name_column:
+        raise RuntimeError("FDR KRX listing schema is missing code/name columns.")
+    if not close_column:
+        raise RuntimeError("FDR KRX listing schema is missing close/price column.")
+
+    close_series = pd.to_numeric(listing[close_column], errors="coerce").fillna(0.0)
+    open_series = pd.to_numeric(listing[open_column] if open_column else np.nan, errors="coerce")
+    high_series = pd.to_numeric(listing[high_column] if high_column else np.nan, errors="coerce")
+    low_series = pd.to_numeric(listing[low_column] if low_column else np.nan, errors="coerce")
+    change_series = pd.to_numeric(listing[change_column] if change_column else np.nan, errors="coerce").fillna(0.0)
+    amount_series = pd.to_numeric(listing[amount_column] if amount_column else np.nan, errors="coerce").fillna(0.0)
+    marcap_series = pd.to_numeric(listing[marcap_column] if marcap_column else np.nan, errors="coerce").fillna(0.0)
+
+    frame = pd.DataFrame(
+        {
+            "stock_code": listing[code_column].astype(str).str.strip().str.upper().map(_normalize_exact_code),
+            "stock_name": listing[name_column].astype(str).str.strip(),
+            "market_cap": marcap_series,
+            "trading_value": amount_series,
+            "change_pct": change_series,
+            "open_price": open_series.fillna(close_series),
+            "high_price": high_series.fillna(np.maximum(open_series.fillna(close_series), close_series)),
+            "low_price": low_series.fillna(np.minimum(open_series.fillna(close_series), close_series)),
+            "close_price": close_series,
+            "security_type": "stock",
+        }
+    )
+    if frame.empty:
+        raise RuntimeError(f"FDR KRX listing snapshot is empty for {date_key}.")
+    frame["stock_code"] = frame["stock_code"].map(_normalize_exact_code)
+    frame = frame[frame["stock_code"].astype(str).str.fullmatch(r"(?:\d{6}|\d{5,6}[A-Z]{1,3})")].copy()
+    frame = frame.drop_duplicates(subset=["stock_code"], keep="first")
+    return frame
+
+
+def _naver_number(value: Any) -> float:
+    text = str(value or "").replace(",", "").strip()
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _read_naver_json(url: str, timeout: int = 20) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://m.stock.naver.com/",
+            "Accept": "application/json, text/plain, */*",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise RuntimeError("Naver Finance returned an invalid JSON payload.")
+    return payload
+
+
+def _fetch_base_snapshot_from_naver_close(date_key: str) -> pd.DataFrame:
+    """Load an exact, closed KRX daily snapshot from Naver Finance.
+
+    The market-value API carries exact regular-session market cap/trading value,
+    while the polling API supplies the matching OHLC values. The source date is
+    validated before any SQL replacement can happen.
+    """
+    rows: list[dict[str, Any]] = []
+    observed_dates: set[str] = set()
+    observed_statuses: set[str] = set()
+    for market in ("KOSPI", "KOSDAQ"):
+        page = 1
+        total_count = 0
+        while page == 1 or (page - 1) * 100 < total_count:
+            query = urllib.parse.urlencode({"page": page, "pageSize": 100})
+            payload = _read_naver_json(f"https://m.stock.naver.com/api/stocks/marketValue/{market}?{query}")
+            total_count = int(payload.get("totalCount") or 0)
+            observed_statuses.add(str(payload.get("marketStatus") or "").upper())
+            page_rows = payload.get("stocks") or []
+            if not page_rows:
+                break
+            for item in page_rows:
+                if str(item.get("stockEndType") or "").lower() != "stock":
+                    continue
+                traded_at = str(item.get("localTradedAt") or "")[:10].replace("-", "")
+                if traded_at:
+                    observed_dates.add(traded_at)
+                code = _normalize_exact_code(item.get("itemCode"))
+                if not code:
+                    continue
+                close_price = _naver_number(item.get("closePriceRaw") or item.get("closePrice"))
+                rows.append(
+                    {
+                        "stock_code": code,
+                        "stock_name": str(item.get("stockName") or "").strip(),
+                        "market_cap": _naver_number(item.get("marketValueRaw")) or (_naver_number(item.get("marketValue")) * 1_000_000.0),
+                        "trading_value": _naver_number(item.get("accumulatedTradingValueRaw")) or (_naver_number(item.get("accumulatedTradingValue")) * 1_000_000.0),
+                        "change_pct": _naver_number(item.get("fluctuationsRatio")),
+                        "open_price": close_price,
+                        "high_price": close_price,
+                        "low_price": close_price,
+                        "close_price": close_price,
+                        "security_type": "stock",
+                    }
+                )
+            page += 1
+
+    if observed_dates != {date_key}:
+        raise RuntimeError(
+            f"Naver Finance source date mismatch: requested {date_key}, observed {sorted(observed_dates) or ['none']}"
+        )
+    if "CLOSE" not in observed_statuses:
+        raise RuntimeError(f"Naver Finance market is not closed for {date_key}: {sorted(observed_statuses)}")
+    if not rows:
+        raise RuntimeError(f"Naver Finance KRX snapshot is empty for {date_key}.")
+
+    ohlc_by_code: dict[str, dict[str, float]] = {}
+    codes = [str(row["stock_code"]) for row in rows]
+    for start in range(0, len(codes), 80):
+        batch = codes[start : start + 80]
+        url = "https://polling.finance.naver.com/api/realtime/domestic/stock/" + ",".join(batch)
+        payload = _read_naver_json(url)
+        for item in payload.get("datas") or []:
+            traded_at = str(item.get("localTradedAt") or "")[:10].replace("-", "")
+            if traded_at and traded_at != date_key:
+                raise RuntimeError(
+                    f"Naver Finance OHLC date mismatch: requested {date_key}, observed {traded_at}"
+                )
+            code = _normalize_exact_code(item.get("itemCode") or item.get("symbolCode"))
+            if not code:
+                continue
+            close_price = _naver_number(item.get("closePriceRaw") or item.get("closePrice"))
+            ohlc_by_code[code] = {
+                "open_price": _naver_number(item.get("openPriceRaw") or item.get("openPrice")) or close_price,
+                "high_price": _naver_number(item.get("highPriceRaw") or item.get("highPrice")) or close_price,
+                "low_price": _naver_number(item.get("lowPriceRaw") or item.get("lowPrice")) or close_price,
+                "close_price": close_price,
+            }
+
+    for row in rows:
+        row.update(ohlc_by_code.get(str(row["stock_code"])) or {})
+    frame = pd.DataFrame(rows)
+    frame = frame.drop_duplicates(subset=["stock_code"], keep="first")
+    return frame
+
+
 def _resolve_available_market_date(date_key: str, krx_id: str = "", krx_password: str = "") -> str:
+    start_dt = datetime.strptime(date_key, "%Y%m%d")
+    # Fast path:
+    # - weekday requests use the requested date directly
+    # - weekend requests fall back to the previous weekday
+    # This avoids blocking the whole build on an expensive pykrx probe before
+    # the actual snapshot load starts. The snapshot step already has its own
+    # pykrx/FDR fallback logic.
+    if start_dt.weekday() < 5:
+        return date_key
+    weekend_probe = start_dt
+    while weekend_probe.weekday() >= 5:
+        weekend_probe -= timedelta(days=1)
+    return weekend_probe.strftime("%Y%m%d")
+
     if pykrx_stock is None:
+        if fdr is not None:
+            snapshot = _fetch_base_snapshot_from_fdr(date_key)
+            if snapshot is not None and not snapshot.empty:
+                return date_key
         raise RuntimeError("pykrx is not installed.")
     _ensure_pykrx_login(krx_id, krx_password)
-    start_dt = datetime.strptime(date_key, "%Y%m%d")
     checked_dates: set[str] = set()
     for offset in range(8):
         probe_key = (start_dt - timedelta(days=offset)).strftime("%Y%m%d")
@@ -338,18 +644,34 @@ def _resolve_available_market_date(date_key: str, krx_id: str = "", krx_password
             continue
         if ohlcv is not None and not ohlcv.empty:
             return effective_date
+    if fdr is not None:
+        try:
+            snapshot = _fetch_base_snapshot_from_fdr(date_key)
+            if snapshot is not None and not snapshot.empty:
+                return date_key
+        except Exception:
+            pass
     raise RuntimeError(f"pykrx snapshot fetch failed: no available market data on or before {date_key}")
 
 
 def _fetch_base_snapshot(date_key: str, krx_id: str = "", krx_password: str = "") -> pd.DataFrame:
+    # FDR StockListing is a current snapshot and must never be written under a
+    # historical date. For today's closed session, Naver exposes an exact-date
+    # snapshot; historical dates must come from pykrx or fail without replacing
+    # the existing SQL rows.
+    if date_key == datetime.now().strftime("%Y%m%d"):
+        return _fetch_base_snapshot_from_naver_close(date_key)
     if pykrx_stock is None:
-        raise RuntimeError("pykrx is not installed.")
+        raise RuntimeError(f"Exact historical KRX source is unavailable for {date_key}; existing SQL was not changed.")
 
     effective_date = _resolve_available_market_date(date_key, krx_id, krx_password)
 
-    ohlcv = pykrx_stock.get_market_ohlcv_by_ticker(effective_date, market="ALL")
+    try:
+        ohlcv = pykrx_stock.get_market_ohlcv_by_ticker(effective_date, market="ALL")
+    except Exception:
+        ohlcv = None
     if ohlcv is None or ohlcv.empty:
-        raise RuntimeError(f"pykrx snapshot fetch failed: {effective_date}")
+        raise RuntimeError(f"Exact historical KRX snapshot fetch failed for {date_key}; existing SQL was not changed.")
 
     ohlcv = ohlcv.reset_index()
     if ohlcv.shape[1] < 9:
@@ -393,35 +715,81 @@ def _fetch_base_snapshot(date_key: str, krx_id: str = "", krx_password: str = ""
     ohlcv["market_cap"] = pd.to_numeric(ohlcv["market_cap"], errors="coerce").fillna(0.0)
     ohlcv["trading_value"] = pd.to_numeric(ohlcv["trading_value"], errors="coerce").fillna(0.0)
     ohlcv["change_pct"] = pd.to_numeric(ohlcv["change_pct"], errors="coerce").fillna(0.0)
+    ohlcv["open_price"] = pd.to_numeric(ohlcv["open_price"], errors="coerce").fillna(0.0)
+    ohlcv["high_price"] = pd.to_numeric(ohlcv["high_price"], errors="coerce").fillna(0.0)
+    ohlcv["low_price"] = pd.to_numeric(ohlcv["low_price"], errors="coerce").fillna(0.0)
     ohlcv["close_price"] = pd.to_numeric(ohlcv["close_price"], errors="coerce").fillna(0.0)
-    return ohlcv[["stock_code", "stock_name", "market_cap", "trading_value", "change_pct", "close_price"]].copy()
+    ohlcv["security_type"] = "stock"
+    return ohlcv[["stock_code", "stock_name", "market_cap", "trading_value", "change_pct", "open_price", "high_price", "low_price", "close_price", "security_type"]].copy()
+
+
+def _fetch_kr_etf_snapshot() -> pd.DataFrame:
+    if fdr is None:
+        return pd.DataFrame(columns=["stock_code", "stock_name", "market_cap", "trading_value", "change_pct", "open_price", "high_price", "low_price", "close_price", "security_type"])
+    listing = fdr.StockListing("ETF/KR").copy()
+    if listing.empty:
+        return pd.DataFrame(columns=["stock_code", "stock_name", "market_cap", "trading_value", "change_pct", "open_price", "high_price", "low_price", "close_price", "security_type"])
+    code_column = "Symbol" if "Symbol" in listing.columns else "Code" if "Code" in listing.columns else ""
+    if not code_column or "Name" not in listing.columns:
+        return pd.DataFrame(columns=["stock_code", "stock_name", "market_cap", "trading_value", "change_pct", "open_price", "high_price", "low_price", "close_price", "security_type"])
+    price_series = pd.to_numeric(listing["Price"] if "Price" in listing.columns else np.nan, errors="coerce").fillna(0.0)
+    change_rate_series = pd.to_numeric(listing["ChangeRate"] if "ChangeRate" in listing.columns else np.nan, errors="coerce").fillna(0.0)
+    amount_series = pd.to_numeric(listing["Amount"] if "Amount" in listing.columns else np.nan, errors="coerce").fillna(0.0)
+    marcap_series = pd.to_numeric(listing["MarCap"] if "MarCap" in listing.columns else np.nan, errors="coerce").fillna(0.0)
+    prev_close_series = np.where(
+        np.abs(1.0 + (change_rate_series / 100.0)) > 1e-9,
+        price_series / (1.0 + (change_rate_series / 100.0)),
+        price_series,
+    )
+    frame = pd.DataFrame(
+        {
+            "stock_code": listing[code_column].astype(str).str.strip().str.upper(),
+            "stock_name": listing["Name"].astype(str).str.strip(),
+            "market_cap": marcap_series * 100_000_000.0,
+            "trading_value": amount_series * 1_000_000.0,
+            "change_pct": change_rate_series,
+            "open_price": prev_close_series,
+            "high_price": np.maximum(prev_close_series, price_series),
+            "low_price": np.minimum(prev_close_series, price_series),
+            "close_price": price_series,
+            "security_type": "etf",
+        }
+    )
+    frame["stock_code"] = frame["stock_code"].map(_normalize_exact_code)
+    frame = frame[frame["stock_code"].astype(str).str.fullmatch(r"(?:\d{6}|\d{5,6}[A-Z]{1,3})")].copy()
+    frame = frame.drop_duplicates(subset=["stock_code"], keep="first")
+    return frame
 
 
 def _metrics_from_close_series(close_series: pd.Series) -> dict[str, float]:
     close = pd.to_numeric(close_series, errors="coerce").dropna()
     if close.empty:
-        return {"sortino_norm": 0.5, "is_52w_high": 0}
+        return {"sortino_norm": 0.25, "is_52w_high": 0, "is_20d_high": 0}
     daily_ret = close.pct_change().dropna().tail(20)
-    if len(daily_ret) < 10:
-        sortino_norm = 0.5
+    formula_cfg = _load_formula_config()
+    final_cfg = formula_cfg.get("final_score_formula", {}) if isinstance(formula_cfg.get("final_score_formula"), dict) else {}
+    sortino_scale = max(float(final_cfg.get("sortino_tanh_scale", 1.0)), 1e-6)
+    sortino_min_obs = max(int(final_cfg.get("sortino_min_obs", 10)), 1)
+    insufficient_value = float(final_cfg.get("sortino_insufficient_value", 0.25))
+    if len(daily_ret) < sortino_min_obs:
+        sortino_norm = insufficient_value
     else:
         clean = np.asarray(daily_ret.values, dtype=float)
         mean_return = float(np.mean(clean))
-        full_vol = float(np.std(clean))
-        negative_ratio = float(np.mean(clean < 0))
-        losses_pct = np.abs(np.minimum(clean, 0.0)) * 100.0
-        downside_penalty = np.power(losses_pct, 1.5) / 100.0
-        downside_dev = float(np.sqrt(np.mean(np.square(downside_penalty))))
+        downside_returns = np.minimum(clean, 0.0)
+        downside_dev = float(np.sqrt(np.mean(np.square(downside_returns))))
         if downside_dev <= 1e-8:
-            downside_dev = 1e-8
-        adjusted_mean = mean_return - (full_vol * 0.35) - (negative_ratio * 0.02)
-        ratio = adjusted_mean / downside_dev
-        ratio = max(min(float(ratio), 20.0), -20.0)
-        sortino_norm = float(1.0 / (1.0 + math.exp(-ratio)))
+            raw_sortino = 6.0 if mean_return > 0 else -6.0 if mean_return < 0 else 0.0
+        else:
+            raw_sortino = float(mean_return / downside_dev)
+        raw_sortino = max(min(raw_sortino, 6.0), -6.0)
+        sortino_norm = float(0.5 + (0.5 * math.tanh(raw_sortino / sortino_scale)))
     last = float(close.iloc[-1])
     recent_252 = close.tail(252)
+    recent_20 = close.tail(20)
     is_52w_high = int(not recent_252.empty and last >= float(recent_252.max()))
-    return {"sortino_norm": sortino_norm, "is_52w_high": is_52w_high}
+    is_20d_high = int(not recent_20.empty and last >= float(recent_20.max()))
+    return {"sortino_norm": sortino_norm, "is_52w_high": is_52w_high, "is_20d_high": is_20d_high}
 
 
 def _load_recent_close_history_map(
@@ -429,6 +797,8 @@ def _load_recent_close_history_map(
     target_date: str,
     stock_codes: list[str],
     current_close_map: dict[str, float],
+    current_high_map: dict[str, float],
+    current_low_map: dict[str, float],
 ) -> dict[str, dict[str, float]]:
     if not stock_codes:
         return {}
@@ -447,7 +817,7 @@ def _load_recent_close_history_map(
         params.extend(recent_dates)
         params.extend(stock_codes)
         query = f"""
-            SELECT file_date_key, stock_code, close_price
+            SELECT file_date_key, stock_code, close_price, high_price, low_price
             FROM daily_close_cache
             WHERE file_date_key IN ({placeholders_dates})
               AND stock_code IN ({placeholders_codes})
@@ -456,34 +826,75 @@ def _load_recent_close_history_map(
     else:
         params.extend(stock_codes)
         query = f"""
-            SELECT file_date_key, stock_code, close_price
+            SELECT file_date_key, stock_code, close_price, high_price, low_price
             FROM daily_close_cache
             WHERE 1 = 0
               AND stock_code IN ({placeholders_codes})
         """
     frame = pd.read_sql_query(query, conn, params=params)
     history_by_code: dict[str, list[tuple[str, float]]] = {str(code): [] for code in stock_codes}
+    ohlc_by_code: dict[str, list[tuple[str, float, float, float]]] = {str(code): [] for code in stock_codes}
     if not frame.empty:
         frame["close_price"] = pd.to_numeric(frame["close_price"], errors="coerce")
-        frame = frame.dropna(subset=["close_price"])
+        frame["high_price"] = pd.to_numeric(frame["high_price"], errors="coerce")
+        frame["low_price"] = pd.to_numeric(frame["low_price"], errors="coerce")
         for row in frame.itertuples(index=False):
             code = _normalize_code(row.stock_code)
             if not code:
                 continue
-            history_by_code.setdefault(code, []).append((str(row.file_date_key), float(row.close_price)))
+            if np.isfinite(row.close_price):
+                history_by_code.setdefault(code, []).append((str(row.file_date_key), float(row.close_price)))
+            if np.isfinite(row.close_price) and np.isfinite(row.high_price) and np.isfinite(row.low_price):
+                ohlc_by_code.setdefault(code, []).append(
+                    (str(row.file_date_key), float(row.high_price), float(row.low_price), float(row.close_price))
+                )
     metrics: dict[str, dict[str, float]] = {}
     for stock_code in stock_codes:
         code = _normalize_code(stock_code)
         rows = list(history_by_code.get(code, []))
+        ohlc_rows = list(ohlc_by_code.get(code, []))
         current_close = pd.to_numeric(current_close_map.get(code), errors="coerce")
+        current_high = pd.to_numeric(current_high_map.get(code), errors="coerce")
+        current_low = pd.to_numeric(current_low_map.get(code), errors="coerce")
         if np.isfinite(current_close):
             rows.append((target_date, float(current_close)))
-        if not rows:
-            metrics[code] = {"sortino_norm": 0.5, "is_52w_high": 0}
+        if np.isfinite(current_close) and np.isfinite(current_high) and np.isfinite(current_low):
+            ohlc_rows.append((target_date, float(current_high), float(current_low), float(current_close)))
+        if not rows and not ohlc_rows:
+            metrics[code] = {"sortino_norm": 0.25, "is_52w_high": 0, "is_20d_high": 0, "atr_20": 0.0}
             continue
-        rows.sort(key=lambda item: item[0])
-        close_series = pd.Series([price for _, price in rows], dtype=float)
-        metrics[code] = _metrics_from_close_series(close_series)
+        row_metrics = {"sortino_norm": 0.25, "is_52w_high": 0, "is_20d_high": 0, "atr_20": 0.0}
+        if rows:
+            rows.sort(key=lambda item: item[0])
+            close_series = pd.Series([price for _, price in rows], dtype=float)
+            row_metrics.update(_metrics_from_close_series(close_series))
+        if ohlc_rows:
+            ohlc_rows.sort(key=lambda item: item[0])
+            true_range_values: list[float] = []
+            previous_close: float | None = None
+            for _date_key, high_price, low_price, close_price in ohlc_rows:
+                high_value = float(high_price)
+                low_value = float(low_price)
+                close_value = float(close_price)
+                intraday_range = max(high_value - low_value, 0.0)
+                true_range = intraday_range
+                if previous_close not in (None, 0):
+                    true_range = max(
+                        intraday_range,
+                        abs(high_value - float(previous_close)),
+                        abs(low_value - float(previous_close)),
+                    )
+                if np.isfinite(true_range):
+                    true_range_values.append(float(true_range))
+                previous_close = close_value
+            if true_range_values and previous_close not in (None, 0):
+                atr_price = float(pd.Series(true_range_values, dtype=float).tail(20).mean())
+                row_metrics["atr_20"] = (atr_price / float(previous_close)) * 100.0
+            recent_20_highs = [float(high_price) for _, high_price, _low_price, _close_price in ohlc_rows[-20:]]
+            current_high_value = float(ohlc_rows[-1][1]) if ohlc_rows else 0.0
+            if recent_20_highs:
+                row_metrics["is_20d_high"] = int(current_high_value >= (max(recent_20_highs) - 1e-9))
+        metrics[code] = row_metrics
     return metrics
 
 
@@ -543,19 +954,36 @@ def _build_trend_adjustment(frame: pd.DataFrame, trend_cfg: dict[str, Any]) -> t
 
 def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _write_progress(10, "기본 설정과 점수 파라미터를 불러오는 중", date_key=config.date_key)
     formula_cfg = _load_formula_config()
     score_cfg = formula_cfg.get("score_formula", {})
     final_cfg = formula_cfg.get("final_score_formula", {})
     trend_cfg = formula_cfg.get("trend_adjustment_formula", {})
     sector_map = _load_sector_map()
 
-    base = _fetch_base_snapshot(config.date_key, config.krx_id, config.krx_password).copy()
+    _write_progress(20, "국내 주식 시세 스냅샷을 불러오는 중", date_key=config.date_key)
+    stock_base = _fetch_base_snapshot(config.date_key, config.krx_id, config.krx_password).copy()
+    etf_base = _fetch_kr_etf_snapshot().copy()
+    if not etf_base.empty:
+        base = pd.concat([stock_base, etf_base], ignore_index=True, sort=False)
+    else:
+        base = stock_base
+    base["stock_code"] = base["stock_code"].map(_normalize_exact_code)
+    base = _canonicalize_codes_from_recent_history(base, config.date_key)
     base = base[base["market_cap"] >= config.min_marcap_100m * 100_000_000].copy()
     if base.empty:
         raise RuntimeError("No stocks above market-cap threshold.")
 
-    base["sector"] = base["stock_code"].map(lambda c: sector_map.get(c, ""))
-    base["industry"] = ""
+    base["security_type"] = base["security_type"].astype(str).str.strip().str.lower().replace("", "stock")
+    base["sector"] = base.apply(
+        lambda row: (
+            str(sector_map.get(_normalize_code(row.get("stock_code")), "") or "").strip()
+            if str(row.get("security_type") or "").strip().lower() != "etf"
+            else "국내 ETF"
+        ),
+        axis=1,
+    )
+    base["industry"] = base["security_type"].map(lambda value: "ETF" if str(value or "").strip().lower() == "etf" else "")
     base["market_cap_100m"] = base["market_cap"] / 100_000_000.0
     base["trading_value_100m"] = base["trading_value"] / 100_000_000.0
 
@@ -564,22 +992,44 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
         for row in base[["stock_code", "close_price"]].itertuples(index=False)
         if _normalize_code(row.stock_code)
     }
+    current_high_map = {
+        _normalize_code(row.stock_code): float(row.high_price)
+        for row in base[["stock_code", "high_price", "low_price"]].itertuples(index=False)
+        if _normalize_code(row.stock_code)
+    }
+    current_low_map = {
+        _normalize_code(row.stock_code): float(row.low_price)
+        for row in base[["stock_code", "high_price", "low_price"]].itertuples(index=False)
+        if _normalize_code(row.stock_code)
+    }
     history_rows: dict[str, dict[str, float]] = {}
     avg_1w_map: dict[str, float] = {}
     avg_1m_map: dict[str, float] = {}
     avg_3m_map: dict[str, float] = {}
+    avg_value_20d_map: dict[str, float] = {}
     if FAST_DB_PATH.exists():
         try:
+            _write_progress(40, "과거 점수와 가격 히스토리를 읽는 중", date_key=config.date_key)
             with sqlite3.connect(str(FAST_DB_PATH)) as conn:
-                history_rows = _load_recent_close_history_map(conn, config.date_key, base["stock_code"].astype(str).tolist(), current_close_map)
-                avg_1w_map, avg_1m_map, avg_3m_map = _build_score_history_maps(config.date_key)
+                history_rows = _load_recent_close_history_map(
+                    conn,
+                    config.date_key,
+                    base["stock_code"].astype(str).tolist(),
+                    current_close_map,
+                    current_high_map,
+                    current_low_map,
+                )
+                avg_1w_map, avg_1m_map, avg_3m_map, avg_value_20d_map = _build_score_history_maps(config.date_key)
         except Exception:
             history_rows = {}
             avg_1w_map = {}
             avg_1m_map = {}
             avg_3m_map = {}
-    base["sortino_norm"] = base["stock_code"].map(lambda c: history_rows.get(_normalize_code(c), {}).get("sortino_norm", 0.5))
+            avg_value_20d_map = {}
+    base["sortino_norm"] = base["stock_code"].map(lambda c: history_rows.get(_normalize_code(c), {}).get("sortino_norm", 0.25))
     base["is_52w_high"] = base["stock_code"].map(lambda c: int(history_rows.get(_normalize_code(c), {}).get("is_52w_high", 0)))
+    base["is_20d_high"] = base["stock_code"].map(lambda c: int(history_rows.get(_normalize_code(c), {}).get("is_20d_high", 0)))
+    base["atr_20"] = base["stock_code"].map(lambda c: float(history_rows.get(_normalize_code(c), {}).get("atr_20", 0.0)))
 
     chg = base["change_pct"] / 100.0
     amount_100m = pd.to_numeric(base["trading_value_100m"], errors="coerce").fillna(0.0)
@@ -590,46 +1040,65 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     return_base = float(score_cfg.get("return_base", 1.1))
     return_power = float(score_cfg.get("return_power", 4.0))
     log_base = float(score_cfg.get("log_base", 1.1))
+    trading_value_surge_power = float(score_cfg.get("trading_value_surge_power", 0.35))
+    trading_value_surge_cap = max(float(score_cfg.get("trading_value_surge_cap", 8.0)), 1.0)
     bonus_if_52w_high = float(score_cfg.get("bonus_if_52w_high", 5.0))
+    bonus_if_20d_high = float(score_cfg.get("bonus_if_20d_high", 0.0))
     bonus_if_not_52w_high = float(score_cfg.get("bonus_if_not_52w_high", -4.0))
     offset = float(score_cfg.get("offset", -13.0))
-    invalid_fill = float(score_cfg.get("invalid_fill", 0.0))
+    missing_daily_score = float(score_cfg.get("missing_daily_score", -80.0))
+    invalid_fill = float(score_cfg.get("invalid_fill", missing_daily_score))
+    avg_value_20d = base["stock_code"].map(lambda c: avg_value_20d_map.get(c, np.nan))
+    surge_ratio = np.where(np.isfinite(avg_value_20d) & (avg_value_20d > 0), amount_100m / avg_value_20d, 1.0)
+    surge_ratio = np.where(np.isfinite(surge_ratio), surge_ratio, 1.0)
+    surge_ratio = np.clip(surge_ratio, 0.0, trading_value_surge_cap)
+    surge_factor = np.power(surge_ratio, trading_value_surge_power)
 
     core = np.where(
         marcap_100m > 0,
         (np.power(np.maximum(amount_100m, 0.0), amount_power) / np.power(marcap_100m, marcap_power))
-        * np.power(return_base + chg, return_power),
+        * np.power(return_base + chg, return_power)
+        * surge_factor,
         np.nan,
     )
     core = np.where(core > 0, core, np.nan)
     log_term = np.log(core) / np.log(log_base)
-    high_bonus = np.where(base["is_52w_high"] == 1, bonus_if_52w_high, bonus_if_not_52w_high)
+    high_bonus = np.where(
+        base["is_52w_high"] == 1,
+        bonus_if_52w_high,
+        np.where(base["is_20d_high"] == 1, bonus_if_20d_high, bonus_if_not_52w_high),
+    )
     base["score_o"] = np.where(np.isfinite(log_term), log_term + high_bonus + offset, invalid_fill)
+    _write_progress(60, "당일 점수를 계산하는 중", date_key=config.date_key)
 
     base["avg_1w"] = base["stock_code"].map(lambda c: avg_1w_map.get(c, np.nan))
     base["avg_1m"] = base["stock_code"].map(lambda c: avg_1m_map.get(c, np.nan))
     base["avg_3m"] = base["stock_code"].map(lambda c: avg_3m_map.get(c, np.nan))
-    base["avg_1w"] = np.where(np.isfinite(base["avg_1w"]), base["avg_1w"], base["score_o"])
-    base["avg_1m"] = np.where(np.isfinite(base["avg_1m"]), base["avg_1m"], base["score_o"])
-    base["avg_3m"] = np.where(np.isfinite(base["avg_3m"]), base["avg_3m"], base["score_o"])
+    base["avg_1w"] = np.where(np.isfinite(base["avg_1w"]), base["avg_1w"], missing_daily_score)
+    base["avg_1m"] = np.where(np.isfinite(base["avg_1m"]), base["avg_1m"], missing_daily_score)
+    base["avg_3m"] = np.where(np.isfinite(base["avg_3m"]), base["avg_3m"], missing_daily_score)
 
     weight_today = float(final_cfg.get("weight_today", 0.1))
     weight_1w = float(final_cfg.get("weight_1w", 0.5))
     weight_1m = float(final_cfg.get("weight_1m", 0.0))
     weight_3m = float(final_cfg.get("weight_3m", 0.4))
-    sortino_power = float(final_cfg.get("sortino_power", 0.4))
-    sortino_floor = float(final_cfg.get("sortino_floor", 1e-6))
+    sortino_power = float(final_cfg.get("sortino_power", 2.0))
+    sortino_floor = max(float(final_cfg.get("sortino_floor", 0.25)), 0.25)
     composite = (base["score_o"] * weight_today) + (base["avg_1w"] * weight_1w) + (base["avg_1m"] * weight_1m) + (base["avg_3m"] * weight_3m)
-    base_score_s = np.where(
-        composite >= 0,
-        composite * np.power(base["sortino_norm"].clip(lower=sortino_floor), sortino_power),
-        composite * np.power((2.0 - base["sortino_norm"]).clip(lower=sortino_floor), sortino_power),
-    )
     base["acceleration_bonus"], base["trend_break_penalty"] = _build_trend_adjustment(base, trend_cfg)
-    base["score_s"] = base_score_s + base["acceleration_bonus"] - base["trend_break_penalty"]
+    adjusted_composite = composite + base["acceleration_bonus"] - base["trend_break_penalty"]
+    sortino_center = 0.6
+    sortino_multiplier = np.exp(sortino_power * (base["sortino_norm"] - sortino_center))
+    base_score_s = np.where(
+        adjusted_composite >= 0,
+        adjusted_composite * sortino_multiplier,
+        adjusted_composite / sortino_multiplier,
+    )
+    base["score_s"] = base_score_s
+    _write_progress(75, "종합 점수와 추세 보정을 계산하는 중", date_key=config.date_key)
     previous_note_map = _load_previous_note_map(config.date_key)
 
-    base = base.sort_values(["score_s", "score_o"], ascending=False).reset_index(drop=True)
+    base = base.sort_values(["score_s", "score_o"], ascending=False).drop_duplicates(subset=["stock_code"], keep="first").reset_index(drop=True)
     base["rank"] = np.arange(1, len(base) + 1)
     base["note"] = base["stock_code"].map(lambda c: previous_note_map.get(_normalize_code(c), ""))
 
@@ -639,11 +1108,13 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             "sector",
             "stock_code",
             "stock_name",
+            "security_type",
             "industry",
             "market_cap_100m",
             "trading_value_100m",
             "change_pct",
             "score_o",
+            "atr_20",
             "avg_1w",
             "avg_1m",
             "avg_3m",
@@ -652,22 +1123,28 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             "note",
         ]
     ].copy()
-    close_frame = base[["stock_code", "close_price"]].copy()
+    close_frame = base[["stock_code", "open_price", "high_price", "low_price", "close_price"]].drop_duplicates(subset=["stock_code"], keep="first").copy()
 
     out["market_cap_100m"] = out["market_cap_100m"].round(0)
     out["trading_value_100m"] = out["trading_value_100m"].round(0)
     out["change_pct"] = out["change_pct"].round(2)
     out["score_o"] = out["score_o"].round(2)
+    out["atr_20"] = pd.to_numeric(out["atr_20"], errors="coerce").fillna(0.0).round(2)
     out["avg_1w"] = out["avg_1w"].round(2)
     out["avg_1m"] = out["avg_1m"].round(2)
     out["avg_3m"] = out["avg_3m"].round(2)
     out["sortino_norm"] = out["sortino_norm"].round(4)
     out["score_s"] = out["score_s"].round(2)
+    close_frame["open_price"] = pd.to_numeric(close_frame["open_price"], errors="coerce").fillna(0.0).round(2)
+    close_frame["high_price"] = pd.to_numeric(close_frame["high_price"], errors="coerce").fillna(0.0).round(2)
+    close_frame["low_price"] = pd.to_numeric(close_frame["low_price"], errors="coerce").fillna(0.0).round(2)
+    _write_progress(85, "결과 테이블을 저장 형식으로 정리하는 중", date_key=config.date_key)
     close_frame["close_price"] = pd.to_numeric(close_frame["close_price"], errors="coerce").fillna(0.0).round(2)
     return out, close_frame
 
 
 def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> None:
+    _write_progress(90, "SQL 캐시에 점수 데이터를 저장하는 중", date_key=date_key)
     FAST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     file_name = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]} SQL 캐시"
     file_date = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:]}"
@@ -679,11 +1156,13 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             "sector": "sector",
             "stock_code": "stock_code",
             "stock_name": "stock_name",
+            "security_type": "security_type",
             "industry": "industry",
             "market_cap_100m": "market_cap_100m",
             "trading_value_100m": "trading_value_100m",
             "change_pct": "change_pct",
             "score_o": "score_o",
+            "atr_20": "atr_20",
             "avg_1w": "avg_1w",
             "avg_1m": "avg_1m",
             "avg_3m": "avg_3m",
@@ -698,12 +1177,14 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             "file_date_key",
             "stock_code",
             "stock_name",
+            "security_type",
             "sector",
             "industry",
             "market_cap_100m",
             "trading_value_100m",
             "change_pct",
             "score_o",
+            "atr_20",
             "avg_1w",
             "avg_1m",
             "avg_3m",
@@ -712,10 +1193,12 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             "note",
         ]
     ].copy()
+    payload = payload.drop_duplicates(subset=["file_date_key", "stock_code"], keep="first")
 
     close_payload = close_frame.copy()
     close_payload["file_date_key"] = date_key
-    close_payload = close_payload[["file_date_key", "stock_code", "close_price"]]
+    close_payload = close_payload[["file_date_key", "stock_code", "open_price", "high_price", "low_price", "close_price"]]
+    close_payload = close_payload.drop_duplicates(subset=["file_date_key", "stock_code"], keep="first")
 
     with sqlite3.connect(str(FAST_DB_PATH)) as conn:
         conn.execute(
@@ -725,16 +1208,20 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
                 file_date_key TEXT NOT NULL,
                 stock_code TEXT NOT NULL,
                 stock_name TEXT,
+                security_type TEXT,
                 sector TEXT,
                 industry TEXT,
                 market_cap_100m REAL,
                 trading_value_100m REAL,
                 change_pct REAL,
                 score_o REAL,
+                atr_20 REAL,
                 avg_1w REAL,
                 avg_1m REAL,
                 avg_3m REAL,
                 sortino_norm REAL,
+                is_52w_high INTEGER,
+                is_20d_high INTEGER,
                 score_s REAL,
                 note TEXT,
                 PRIMARY KEY (file_date_key, stock_code)
@@ -742,8 +1229,16 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             """
         )
         existing_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(screening_rows)").fetchall() if row and len(row) > 1}
+        if "security_type" not in existing_columns:
+            conn.execute("ALTER TABLE screening_rows ADD COLUMN security_type TEXT")
         if "avg_1m" not in existing_columns:
             conn.execute("ALTER TABLE screening_rows ADD COLUMN avg_1m REAL")
+        if "atr_20" not in existing_columns:
+            conn.execute("ALTER TABLE screening_rows ADD COLUMN atr_20 REAL")
+        if "is_52w_high" not in existing_columns:
+            conn.execute("ALTER TABLE screening_rows ADD COLUMN is_52w_high INTEGER")
+        if "is_20d_high" not in existing_columns:
+            conn.execute("ALTER TABLE screening_rows ADD COLUMN is_20d_high INTEGER")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date ON screening_rows(file_date_key)")
         conn.execute(
             """
@@ -759,11 +1254,21 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             CREATE TABLE IF NOT EXISTS daily_close_cache (
                 file_date_key TEXT NOT NULL,
                 stock_code TEXT NOT NULL,
+                open_price REAL,
+                high_price REAL,
+                low_price REAL,
                 close_price REAL,
                 PRIMARY KEY (file_date_key, stock_code)
             )
             """
         )
+        existing_close_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(daily_close_cache)").fetchall() if row and len(row) > 1}
+        if "open_price" not in existing_close_columns:
+            conn.execute("ALTER TABLE daily_close_cache ADD COLUMN open_price REAL")
+        if "high_price" not in existing_close_columns:
+            conn.execute("ALTER TABLE daily_close_cache ADD COLUMN high_price REAL")
+        if "low_price" not in existing_close_columns:
+            conn.execute("ALTER TABLE daily_close_cache ADD COLUMN low_price REAL")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_close_cache_date ON daily_close_cache(file_date_key)")
         conn.execute("DELETE FROM screening_rows WHERE file_date_key = ?", (date_key,))
         conn.execute("DELETE FROM daily_close_cache WHERE file_date_key = ?", (date_key,))
@@ -785,6 +1290,7 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             full.to_parquet(FAST_PARQUET_PATH, index=False)
         except Exception:
             pass
+    _write_progress(100, "국내 오늘의 주도주 계산이 완료되었습니다", status="completed", date_key=date_key)
 
 
 def _build_excel(config: BuildConfig) -> Path:
@@ -808,30 +1314,37 @@ def main() -> int:
     if not re.fullmatch(r"20\d{6}", date_key):
         raise SystemExit("invalid date format, use YYYYMMDD")
 
-    effective_date_key = _resolve_available_market_date(
-        date_key,
-        str(args.krx_id or "").strip(),
-        str(args.krx_password or "").strip(),
-    )
-
-    config = BuildConfig(
-        date_key=effective_date_key,
-        min_marcap_100m=args.min_marcap_100m,
-        max_workers=max(1, int(args.max_workers)),
-        krx_id=str(args.krx_id or "").strip(),
-        krx_password=str(args.krx_password or "").strip(),
-    )
-    if args.sql_only:
-        out, close_frame = _build_frame(config)
-        _write_sql(effective_date_key, out, close_frame)
-        print(
-            f"[DONE] sql_only rows={len(out)} requested_date={date_key} "
-            f"effective_date={effective_date_key} db={FAST_DB_PATH}"
+    try:
+        _write_progress(2, "생성 요청을 초기화하는 중", date_key=date_key)
+        effective_date_key = _resolve_available_market_date(
+            date_key,
+            str(args.krx_id or "").strip(),
+            str(args.krx_password or "").strip(),
         )
-    else:
-        path = _build_excel(config)
-        print(f"[DONE] requested_date={date_key} effective_date={effective_date_key} path={path}")
-    return 0
+        _write_progress(5, "영업일과 기준 날짜를 확정하는 중", date_key=effective_date_key)
+
+        config = BuildConfig(
+            date_key=effective_date_key,
+            min_marcap_100m=args.min_marcap_100m,
+            max_workers=max(1, int(args.max_workers)),
+            krx_id=str(args.krx_id or "").strip(),
+            krx_password=str(args.krx_password or "").strip(),
+        )
+        if args.sql_only:
+            out, close_frame = _build_frame(config)
+            _write_sql(effective_date_key, out, close_frame)
+            print(
+                f"[DONE] sql_only rows={len(out)} requested_date={date_key} "
+                f"effective_date={effective_date_key} db={FAST_DB_PATH}"
+            )
+        else:
+            path = _build_excel(config)
+            _write_progress(100, "엑셀 생성이 완료되었습니다", status="completed", date_key=effective_date_key)
+            print(f"[DONE] requested_date={date_key} effective_date={effective_date_key} path={path}")
+        return 0
+    except Exception as exc:
+        _write_progress(100, f"실패: {exc}", status="failed", date_key=date_key)
+        raise
 
 
 if __name__ == "__main__":

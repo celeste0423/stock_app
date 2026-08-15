@@ -625,7 +625,7 @@ def scheduled_jobs_due(now_kst: datetime) -> list[tuple[str, str]]:
     return jobs
 
 
-def run_scheduled_image_jobs(base_url: str, state: dict[str, Any]) -> None:
+def run_scheduled_image_jobs(base_url: str, state: dict[str, Any], max_rows: int) -> None:
     scheduled_state = state.setdefault("scheduled_images", {})
     for market, date_key in scheduled_jobs_due(datetime.now(KST)):
         state_key = f"{market}:{date_key}"
@@ -642,6 +642,8 @@ def run_scheduled_image_jobs(base_url: str, state: dict[str, Any]) -> None:
                 if not filter_rows(rows, "score", threshold):
                     continue
                 send_market_capture_image(base_url, chat_id, market, threshold)
+                if market == "us":
+                    send_message(chat_id, build_rows_message(before_payload, market, "52w", threshold, max_rows))
                 delivered = True
             if delivered:
                 scheduled_state[state_key] = datetime.now(KST).isoformat(timespec="seconds")
@@ -750,7 +752,7 @@ def run_loop(base_url: str, poll_timeout: int, max_rows: int) -> None:
     state = load_state()
     while True:
         try:
-            run_scheduled_image_jobs(base_url, state)
+            run_scheduled_image_jobs(base_url, state, max_rows=max_rows)
             save_state(state)
             result = telegram_call("getUpdates", {"timeout": poll_timeout, "offset": int(state.get("offset") or 0)})
             for update in result.get("result", []):

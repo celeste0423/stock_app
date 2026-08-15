@@ -58,6 +58,13 @@ COMMAND_HELP = """가능한 명령
 /kr50 /us50 /jp50 /tw50      - 종합점수 50점 이상
 /kr52w /us52w /jp52w /tw52w  - 52주 신고가 리스트"""
 
+LEGACY_DAILY_AUTO_SEND_ENABLED = env("STOCK_BOT_LEGACY_DAILY_AUTO_SEND_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 
 def env(name: str, default: str = "") -> str:
     return str(os.getenv(name, default) or default).strip()
@@ -323,6 +330,8 @@ def process_updates(base_url: str, state: dict[str, Any]) -> None:
 
 
 def maybe_send_daily(base_url: str, state: dict[str, Any]) -> None:
+    if not LEGACY_DAILY_AUTO_SEND_ENABLED:
+        return
     now_kst = datetime.now(KST)
     if now_kst.weekday() >= 5:
         return

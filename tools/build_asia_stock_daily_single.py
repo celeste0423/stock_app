@@ -20,7 +20,7 @@ import requests
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 VENDOR_DIR = ROOT_DIR / "backend" / "vendor"
-if VENDOR_DIR.exists():
+if VENDOR_DIR.exists() and sys.platform.startswith("win"):
     sys.path.insert(0, str(VENDOR_DIR))
 
 import FinanceDataReader as fdr
@@ -35,7 +35,7 @@ OUTPUT_DIR = Path(
         str(LEGACY_OUTPUT_DIR if LEGACY_OUTPUT_DIR.exists() else (ROOT_DIR / "outputs" / "stock_daily")),
     )
 )
-FORMULA_CONFIG_PATH = OUTPUT_DIR / "score_formula_config.json"
+FORMULA_CONFIG_PATH = OUTPUT_DIR / "asia_score_formula_config.json"
 FAST_DB_PATH = Path(os.getenv("STOCK_DAILY_ASIA_FAST_DB_PATH", str(ROOT_DIR / "backend" / "asia_stock_daily_fast.sqlite")))
 FAST_PARQUET_PATH = Path(os.getenv("STOCK_DAILY_ASIA_FAST_PARQUET_PATH", str(ROOT_DIR / "backend" / "asia_stock_daily_fast.parquet")))
 YAHOO_CACHE_DIR = ROOT_DIR / "backend" / ".yahoo_cache" / "asia_daily"
@@ -55,13 +55,13 @@ DEFAULT_FORMULA_CONFIG: dict[str, Any] = {
     "final_score_formula": {
         "weight_today": 0.1,
         "weight_1w": 0.5,
-        "weight_1m": 0.3,
+        "weight_1m": 0.0,
         "weight_3m": 0.4,
-        "sortino_power": 0.4,
+        "sortino_power": 0.8,
         "sortino_floor": 1e-6,
     },
     "trend_adjustment_formula": {
-        "enabled": True,
+        "enabled": False,
         "today_blend_weight": 0.7,
         "trend_floor": 20.0,
         "acceleration_alignment_bonus": 3.0,
@@ -631,17 +631,18 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     weight_today = float(final_cfg.get("weight_today", 0.1))
     weight_1w = float(final_cfg.get("weight_1w", 0.5))
-    weight_1m = float(final_cfg.get("weight_1m", 0.3))
-    weight_3m = float(final_cfg.get("weight_3m", 0.1))
-    sortino_power = float(final_cfg.get("sortino_power", 0.4))
+    weight_1m = float(final_cfg.get("weight_1m", 0.0))
+    weight_3m = float(final_cfg.get("weight_3m", 0.4))
+    sortino_power = float(final_cfg.get("sortino_power", 0.8))
     sortino_floor = float(final_cfg.get("sortino_floor", 1e-6))
     composite = (base["score_o"] * weight_today) + (base["avg_1w"] * weight_1w) + (base["avg_1m"] * weight_1m) + (base["avg_3m"] * weight_3m)
-    base_score_s = np.where(
-        composite >= 0,
-        composite * np.power(base["sortino_norm"].clip(lower=sortino_floor), sortino_power),
-        composite * np.power((2.0 - base["sortino_norm"]).clip(lower=sortino_floor), sortino_power),
-    )
-    base["acceleration_bonus"], base["trend_break_penalty"] = _build_trend_adjustment(base, trend_cfg)
+    base_score_s = composite * np.power(base["sortino_norm"].clip(lower=sortino_floor), sortino_power)
+    trend_enabled = bool((trend_cfg or {}).get("enabled"))
+    if trend_enabled:
+        base["acceleration_bonus"], base["trend_break_penalty"] = _build_trend_adjustment(base, trend_cfg)
+    else:
+        base["acceleration_bonus"] = 0.0
+        base["trend_break_penalty"] = 0.0
     base["score_s"] = base_score_s + base["acceleration_bonus"] - base["trend_break_penalty"]
 
     base = base.sort_values(["score_s", "score_o"], ascending=False).reset_index(drop=True)

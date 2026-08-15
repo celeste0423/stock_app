@@ -38,6 +38,7 @@
     if (text.indexOf("/api/strategy/portfolio-diagnostic") === 0) return "현재 방식 진단";
     if (text.indexOf("/api/market-calendar") === 0) return "증시 일정";
     if (text.indexOf("/api/themes/today") === 0) return "오늘의 주도주 SQL 데이터";
+    if (text.indexOf("/api/chart-game/session") === 0) return "차트 게임 세션";
     if (text.indexOf("/api/us-themes/today") === 0) return "미국 주도주 SQL 데이터";
     if (text.indexOf("/api/asia-themes/today") === 0) return "아시아 주도주 SQL 데이터";
     if (text.indexOf("/api/themes/reload") === 0) return "국내 주도주 데이터 새로고침";
@@ -63,6 +64,7 @@
     if (text.indexOf("/api/sector-snapshot/export") === 0) return "섹터 비교 엑셀";
     if (text.indexOf("/api/global-stocks/search") === 0) return "해외기업 자동완성";
     if (text.indexOf("/api/global-stocks/detail") === 0) return "해외기업 실적 데이터";
+    if (text.indexOf("/api/global-stocks/earnings-call") === 0) return "해외기업 최근 실적/컨콜";
     if (text.indexOf("/api/global-stocks/ai-brief") === 0) return "AI 기업 브리프 생성";
     if (text.indexOf("/api/global-indices") === 0) return "지수/가격동향 데이터";
     if (text.indexOf("/api/sector-watch-board") === 0) return "관심종목 보드";
@@ -80,6 +82,11 @@
     if (text.indexOf("/api/ssd/prices") === 0) return "SSD 가격 동향";
     if (text.indexOf("/api/tourism/inbound-visitors") === 0) return "인바운드 관광객 통계";
     if (text.indexOf("/api/economy/cycle-clock") === 0) return "경기순환시계 데이터";
+    if (text.indexOf("/api/naver-blog/status") === 0) return "네이버 블로그 세션 상태";
+    if (text.indexOf("/api/naver-blog/login/start") === 0) return "네이버 블로그 로그인 시작";
+    if (text.indexOf("/api/naver-blog/refresh") === 0) return "네이버 블로그 새글 수집";
+    if (text.indexOf("/api/naver-blog/posts/") === 0) return "네이버 블로그 글 상세";
+    if (text.indexOf("/api/naver-blog/posts") === 0) return "네이버 블로그 글 목록";
     if (text.indexOf("/api/real-estate/prices") === 0) return "부동산 가격 지수";
     if (text.indexOf("/api/real-estate/building") === 0) return "건물 관리";
     if (text.indexOf("/api/tradingview/open") === 0) return "TradingView 실행";
@@ -200,6 +207,10 @@
     } else if (url.indexOf("/api/telegram/send_code") === 0 || url.indexOf("/api/telegram/verify_code") === 0) {
       invalidateApiCache(function (key) {
         return key.indexOf("/api/telegram/status") === 0;
+      });
+    } else if (url.indexOf("/api/naver-blog/") === 0) {
+      invalidateApiCache(function (key) {
+        return key.indexOf("/api/naver-blog/") === 0;
       });
     }
     return payload;

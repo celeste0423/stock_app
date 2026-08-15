@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Stock Dashboard</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260614-03" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260811-02" />
     <style>
       .boot-fallback {
         max-width: 720px;
@@ -40,22 +40,24 @@
       <div class="boot-fallback">
         <h1>Stock Dashboard 로딩 중</h1>
         <p>페이지 데이터를 불러오고 있습니다. 10초 이상 이 화면이 유지되면 새로고침하거나 실행 창에서 다시 열어주세요.</p>
-        <p>외부 공유 주소는 반드시 <strong>https://...trycloudflare.com</strong> 주소여야 합니다.</p>
+        <p>앱 초기 로딩이 반복해서 멈추면 서버 상태를 먼저 확인해 주세요.</p>
       </div>
     </div>
     <script>
       window.addEventListener("error", function (event) {
         var root = document.getElementById("root");
         if (!root) return;
-        root.innerHTML = '<div class="boot-fallback"><h1>앱 실행 오류</h1><p>브라우저에서 대시보드 스크립트를 실행하지 못했습니다.</p><div class="boot-error"></div></div>';
+        root.innerHTML =
+          '<div class="boot-fallback"><h1>앱 실행 오류</h1><p>브라우저에서 대시보드 스크립트를 실행하지 못했습니다.</p><div class="boot-error"></div></div>';
         var box = root.querySelector(".boot-error");
         if (box) box.textContent = (event.message || "Unknown error") + "\n" + (event.filename || "") + ":" + (event.lineno || "");
       });
       window.addEventListener("unhandledrejection", function (event) {
         var root = document.getElementById("root");
         if (!root) return;
-        var message = event.reason && (event.reason.message || String(event.reason)) || "Unknown promise rejection";
-        root.innerHTML = '<div class="boot-fallback"><h1>데이터 로드 오류</h1><p>대시보드 데이터를 불러오는 중 문제가 발생했습니다.</p><div class="boot-error"></div></div>';
+        var message = (event.reason && (event.reason.message || String(event.reason))) || "Unknown promise rejection";
+        root.innerHTML =
+          '<div class="boot-fallback"><h1>데이터 로드 오류</h1><p>대시보드 데이터를 불러오는 중 문제가 발생했습니다.</p><div class="boot-error"></div></div>';
         var box = root.querySelector(".boot-error");
         if (box) box.textContent = message;
       });
@@ -66,6 +68,9 @@
     <script src="/static/vendor/hammer.min.js"></script>
     <script src="/static/vendor/chartjs-plugin-zoom.min.js"></script>
     <script src="/static/vendor/html2canvas.min.js"></script>
-    <script src="/static/app.js?v=20260614-03"></script>
+    <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+    <script src="/static/modules/themes-page.js?v=20260809-01"></script>
+    <script src="/static/modules/global-company-page.js?v=20260716-01"></script>
+    <script src="/static/app.js?v=20260814-01"></script>
   </body>
 </html>

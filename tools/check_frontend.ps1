@@ -25,10 +25,17 @@ if ($Files -and $Files.Count -gt 0) {
   $targets = $defaultTargets
 }
 
-function Assert-Utf8NoBom([string]$Path) {
+function Assert-Utf8Integrity([string]$Path) {
   $bytes = [System.IO.File]::ReadAllBytes($Path)
-  if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-    throw "BOM detected: $Path"
+  $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+  $expectsBom = $Path -like "*frontend\static\*.js" -or
+                $Path -like "*frontend\static\*.css" -or
+                $Path -like "*frontend\*.html"
+  if ($expectsBom -and -not $hasBom) {
+    throw "UTF-8 BOM missing: $Path"
+  }
+  if (-not $expectsBom -and $hasBom) {
+    throw "Unexpected BOM detected: $Path"
   }
   $text = [System.Text.Encoding]::UTF8.GetString($bytes)
   if ($text.Contains([string][char]0xFFFD)) {
@@ -41,7 +48,7 @@ foreach ($target in $targets) {
   if (-not (Test-Path $fullPath)) {
     throw "Missing file: $fullPath"
   }
-  Assert-Utf8NoBom $fullPath
+  Assert-Utf8Integrity $fullPath
   if ($fullPath -like "*.js") {
     & $node --check $fullPath
     if ($LASTEXITCODE -ne 0) {
