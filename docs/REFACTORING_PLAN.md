@@ -20,10 +20,12 @@ frontend/static/
       state.js            # 저장 상태와 변환 규칙
 
 backend/
-  api/                    # HTTP 요청과 응답 형식
-  services/               # 업무 규칙과 외부 연동
-  repositories/           # DB와 파일 접근
-  shared/                 # 공통 설정과 기반 코드
+  api/                    # HTTP 경로와 도메인 분류
+  core/                   # 시작, 설정, 호환 로더
+  features/               # 신규·추출 도메인 기능
+    portfolio/
+    themes/
+  legacy/                 # 검증된 Python 3.12 호환 런타임
 ```
 
 파일 수가 적은 기능은 처음부터 `api.js`와 `state.js`를 억지로 만들지 않고 `page.js` 하나로 시작한다.
@@ -60,4 +62,8 @@ backend/
 - 앱 기반 파일은 `frontend/static/core/shared.js`, `api.js`, `app-shell.js`로 분리했다.
 - 구형 중복 라우터와 사용되지 않는 페이지 구현을 제거했다.
 - 각 배치는 정적 검사와 실제 브라우저 메뉴 순회 검증 후 별도 커밋으로 저장했다.
-- 다음 단계는 백엔드의 도메인별 API, 서비스, 저장소 경계를 만드는 작업이다.
+- 백엔드 진입점은 UTF-8 소스인 `backend/app.py`로 축소했다.
+- 기존 147개 API 작업은 `backend/legacy/`의 검증된 Python 3.12 런타임으로 격리했다.
+- 최신 포트폴리오 수기 기록 2개와 테마 날짜 재계산 1개 API는 `backend/features/` 소스로 분리했다.
+- 실행 중 서버와 리팩터링 결과 모두 150개 OpenAPI 작업을 노출하는지 비교 검증했다.
+- 이후 백엔드 기능을 옮길 때는 한 도메인씩 `features/`에 추가하고 동일 OpenAPI 계약과 응답 회귀 검사를 통과한 뒤 레거시 구현을 제거한다.

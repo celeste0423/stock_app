@@ -1,6 +1,7 @@
 # Python / runtime
 __pycache__/
 *.py[cod]
+!backend/legacy/app.cpython-312.pyc
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

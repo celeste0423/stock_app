@@ -13,7 +13,10 @@ Python 백엔드와 React 프런트엔드로 구성된 로컬 주식 분석 애�
 
 ## 주요 디렉터리
 
-- `backend/`: API, 데이터베이스, 계산 결과와 런타임 데이터
+- `backend/api/`: API 경로의 도메인 분류와 HTTP 경계
+- `backend/core/`: 백엔드 시작과 호환 런타임
+- `backend/features/`: 새로 분리된 백엔드 도메인 기능
+- `backend/legacy/`: 소스 손상 전 마지막 Python 3.12 호환 런타임
 - `frontend/static/core/`: 앱 셸, API 및 공용 런타임
 - `frontend/static/features/`: 페이지별 독립 기능 모듈
 - `frontend/static/modules/`: 여러 기능이 공유하는 소규모 도메인 헬퍼
@@ -24,3 +27,7 @@ Python 백엔드와 React 프런트엔드로 구성된 로컬 주식 분석 애�
 
 캐시, SQLite 데이터베이스, 세션과 로컬 설정은 실행 성능 및 사용자 상태에 필요하므로
 소스 정리 과정에서 삭제하지 않습니다.
+
+백엔드는 Python 3.12로 실행합니다. 기존 거대 `app.py`의 텍스트 인코딩 손상 때문에
+검증된 런타임을 `backend/legacy/`에 격리했으며, 새 기능은 `backend/features/`에
+소스로 추가해 단계적으로 레거시 의존성을 줄입니다.
