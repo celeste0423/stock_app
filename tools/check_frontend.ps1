@@ -24,6 +24,11 @@ $defaultTargets = @(
   "frontend/static/features/etf-flow/page.js",
   "frontend/static/features/institutional-rebalance/page.js",
   "frontend/static/features/sector-entry/page.js",
+  "frontend/static/features/trade-data/page.js",
+  "frontend/static/features/economy-cycle/page.js",
+  "frontend/static/features/market-calendar/page.js",
+  "frontend/static/features/real-estate-prices/page.js",
+  "frontend/static/features/subscription-list/page.js",
   "frontend/index.html",
   "backend/app.py",
   "WORKFLOW.md"
