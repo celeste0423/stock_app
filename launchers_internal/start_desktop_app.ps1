@@ -129,7 +129,9 @@ if (-not (Test-Path $serverScript)) {
 Remove-Item -LiteralPath $stderrLog -ErrorAction SilentlyContinue
 $env:PYTHONPATH = "$projectRoot;$(Join-Path $projectRoot 'backend\vendor')"
 $env:STOCK_DASHBOARD_DESKTOP_PORT = "$desktopPort"
-$env:STOCK_DASHBOARD_SCREENING_DIR = Join-Path $projectRoot "data\screening\current"
+$env:STOCK_DASHBOARD_SCREENING_DIR = Join-Path $projectRoot "config\screening"
+$env:STOCK_DASHBOARD_SCORE_FORMULA_CONFIG_PATH = Join-Path $projectRoot "config\screening\score_formula_config.json"
+$env:STOCK_DASHBOARD_US_SCORE_FORMULA_CONFIG_PATH = Join-Path $projectRoot "config\screening\us_score_formula_config.json"
 $env:STOCK_DASHBOARD_REAL_ESTATE_EXCEL_PATH = Join-Path $projectRoot "data\real-estate\안암해링턴 상가 관리.xlsx"
 $env:STOCK_DASHBOARD_REAL_ESTATE_BANK_IMPORT_DIR = Join-Path $projectRoot "data\real-estate\계좌입출금내역"
 $env:STOCK_DASHBOARD_REAL_ESTATE_BUILDING_EXPORT_DIR = Join-Path $projectRoot "data\real-estate\건물 정리"

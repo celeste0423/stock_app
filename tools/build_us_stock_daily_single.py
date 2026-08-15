@@ -29,15 +29,12 @@ import numpy as np
 import pandas as pd
 
 
-LEGACY_OUTPUT_DIR = ROOT_DIR / "data" / "screening" / "current"
-OUTPUT_DIR = Path(
-    os.getenv(
-        "STOCK_DAILY_OUTPUT_DIR",
-        str(LEGACY_OUTPUT_DIR if LEGACY_OUTPUT_DIR.exists() else (ROOT_DIR / "outputs" / "stock_daily")),
-    )
+OUTPUT_DIR = Path(os.getenv("STOCK_DAILY_OUTPUT_DIR", str(ROOT_DIR / "outputs" / "stock_daily")))
+CONFIG_DIR = ROOT_DIR / "config" / "screening"
+FORMULA_CONFIG_PATH = Path(
+    os.getenv("STOCK_DASHBOARD_US_SCORE_FORMULA_CONFIG_PATH", str(CONFIG_DIR / "us_score_formula_config.json"))
 )
-FORMULA_CONFIG_PATH = OUTPUT_DIR / "us_score_formula_config.json"
-LEGACY_FORMULA_CONFIG_PATH = OUTPUT_DIR / "score_formula_config.json"
+LEGACY_FORMULA_CONFIG_PATH = CONFIG_DIR / "score_formula_config.json"
 FAST_DB_PATH = Path(os.getenv("STOCK_DAILY_US_FAST_DB_PATH", str(ROOT_DIR / "backend" / "us_stock_daily_fast.sqlite")))
 FAST_PARQUET_PATH = Path(os.getenv("STOCK_DAILY_US_FAST_PARQUET_PATH", str(ROOT_DIR / "backend" / "us_stock_daily_fast.parquet")))
 YAHOO_CACHE_DIR = ROOT_DIR / "backend" / ".yahoo_cache" / "us_daily"
@@ -101,7 +98,7 @@ def _date_key_to_datetime_utc(date_key: str) -> datetime:
 
 
 def _load_formula_config() -> dict[str, Any]:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    FORMULA_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not FORMULA_CONFIG_PATH.exists():
         seed_config = json.loads(json.dumps(DEFAULT_FORMULA_CONFIG))
         if LEGACY_FORMULA_CONFIG_PATH.exists():

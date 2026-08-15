@@ -15,12 +15,12 @@
 - `backend/core/`: 백엔드 시작과 호환 로더
 - `backend/features/`: 소스로 분리된 백엔드 기능
 - `backend/legacy/`: 기존 Python 3.12 호환 런타임
-- `tools/`: 데이터 생성과 운영 도구
+- `tools/`: SQL 데이터 생성과 운영 도구
 
 ## 데이터 구조
 
-- `data/screening/current/`: 현재 스크리닝 데이터와 점수 설정
-- `data/screening/legacy/`: 과거 엑셀 스크리닝 원본
+- `config/screening/`: 한국/미국/아시아 스크리닝 점수 설정
+- `backend/*stock_daily_fast.sqlite`: 앱이 조회하는 시장별 스크리닝 DB
 - `data/real-estate/`: 건물 관리와 은행 입출금 원본
 - `archive/`: 실행에 사용하지 않는 과거 백업
 - `outputs/`: 재생성 가능한 결과
@@ -36,5 +36,5 @@
 ```
 
 백엔드는 프로젝트의 Python 3.12 런타임으로 검증한다. 새 기능은
-`backend/features/<domain>/`에 추가하고 기존 OpenAPI 150개 작업이 유지되는지
+`backend/features/<domain>/`에 추가하고 의도하지 않은 OpenAPI 변경이 없는지
 확인한다.

@@ -40,15 +40,12 @@ except Exception:
     pykrx_stock = None
 
 
-LEGACY_OUTPUT_DIR = ROOT_DIR / "data" / "screening" / "current"
-OUTPUT_DIR = Path(
-    os.getenv(
-        "STOCK_DAILY_OUTPUT_DIR",
-        str(LEGACY_OUTPUT_DIR if LEGACY_OUTPUT_DIR.exists() else (ROOT_DIR / "outputs" / "stock_daily")),
-    )
-)
+OUTPUT_DIR = Path(os.getenv("STOCK_DAILY_OUTPUT_DIR", str(ROOT_DIR / "outputs" / "stock_daily")))
+CONFIG_DIR = ROOT_DIR / "config" / "screening"
 SECTOR_DB_PATH = Path(os.getenv("STOCK_DAILY_SECTOR_DB_PATH", str(ROOT_DIR / "backend" / "sector_database.json")))
-FORMULA_CONFIG_PATH = OUTPUT_DIR / "score_formula_config.json"
+FORMULA_CONFIG_PATH = Path(
+    os.getenv("STOCK_DASHBOARD_SCORE_FORMULA_CONFIG_PATH", str(CONFIG_DIR / "score_formula_config.json"))
+)
 FAST_DB_PATH = Path(os.getenv("STOCK_DAILY_FAST_DB_PATH", str(ROOT_DIR / "backend" / "stock_daily_fast.sqlite")))
 FAST_PARQUET_PATH = Path(os.getenv("STOCK_DAILY_FAST_PARQUET_PATH", str(ROOT_DIR / "backend" / "stock_daily_fast.parquet")))
 SETTINGS_PATH = ROOT_DIR / "backend" / "local_settings.json"
@@ -137,7 +134,7 @@ def _extract_date_key_from_name(name: str) -> str:
 
 
 def _load_formula_config() -> dict[str, Any]:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    FORMULA_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not FORMULA_CONFIG_PATH.exists():
         FORMULA_CONFIG_PATH.write_text(
             json.dumps(DEFAULT_FORMULA_CONFIG, ensure_ascii=False, indent=2),

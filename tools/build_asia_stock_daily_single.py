@@ -28,14 +28,9 @@ import numpy as np
 import pandas as pd
 
 
-LEGACY_OUTPUT_DIR = ROOT_DIR / "data" / "screening" / "current"
-OUTPUT_DIR = Path(
-    os.getenv(
-        "STOCK_DAILY_OUTPUT_DIR",
-        str(LEGACY_OUTPUT_DIR if LEGACY_OUTPUT_DIR.exists() else (ROOT_DIR / "outputs" / "stock_daily")),
-    )
-)
-FORMULA_CONFIG_PATH = OUTPUT_DIR / "asia_score_formula_config.json"
+OUTPUT_DIR = Path(os.getenv("STOCK_DAILY_OUTPUT_DIR", str(ROOT_DIR / "outputs" / "stock_daily")))
+CONFIG_DIR = ROOT_DIR / "config" / "screening"
+FORMULA_CONFIG_PATH = CONFIG_DIR / "asia_score_formula_config.json"
 FAST_DB_PATH = Path(os.getenv("STOCK_DAILY_ASIA_FAST_DB_PATH", str(ROOT_DIR / "backend" / "asia_stock_daily_fast.sqlite")))
 FAST_PARQUET_PATH = Path(os.getenv("STOCK_DAILY_ASIA_FAST_PARQUET_PATH", str(ROOT_DIR / "backend" / "asia_stock_daily_fast.parquet")))
 YAHOO_CACHE_DIR = ROOT_DIR / "backend" / ".yahoo_cache" / "asia_daily"
@@ -124,7 +119,7 @@ class BuildConfig:
 
 
 def _load_formula_config() -> dict[str, Any]:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    FORMULA_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not FORMULA_CONFIG_PATH.exists():
         FORMULA_CONFIG_PATH.write_text(
             json.dumps(DEFAULT_FORMULA_CONFIG, ensure_ascii=False, indent=2),

@@ -1,0 +1,34 @@
+{
+  "score_formula": {
+    "amount_power": 1.2,
+    "marcap_power": 0.8,
+    "return_base": 1.1,
+    "return_power": 4.0,
+    "log_base": 1.1,
+    "bonus_if_52w_high": 5.0,
+    "bonus_if_not_52w_high": -4.0,
+    "offset": -13.0,
+    "invalid_fill": 0.0
+  },
+  "final_score_formula": {
+    "weight_today": 0.1,
+    "weight_1w": 0.5,
+    "weight_1m": 0.0,
+    "weight_3m": 0.4,
+    "sortino_power": 0.8,
+    "sortino_floor": 1e-06
+  },
+  "trend_adjustment_formula": {
+    "enabled": false,
+    "today_blend_weight": 0.7,
+    "trend_floor": 20.0,
+    "acceleration_alignment_bonus": 3.0,
+    "acceleration_max_bonus": 6.0,
+    "acceleration_cap_ratio": 0.25,
+    "break_base_penalty_today_below_1w": 5.0,
+    "break_base_penalty_1w_below_1m": 5.0,
+    "break_base_penalty_1m_below_3m": 3.0,
+    "break_max_penalty": 15.0,
+    "break_cap_ratio": 0.2
+  }
+}

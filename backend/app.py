@@ -8,7 +8,10 @@ from backend.core.legacy_loader import execute_legacy_backend
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
-os.environ.setdefault("STOCK_DASHBOARD_SCREENING_DIR", str(DATA_ROOT / "screening" / "current"))
+SCREENING_CONFIG_ROOT = PROJECT_ROOT / "config" / "screening"
+os.environ.setdefault("STOCK_DASHBOARD_SCREENING_DIR", str(SCREENING_CONFIG_ROOT))
+os.environ.setdefault("STOCK_DASHBOARD_SCORE_FORMULA_CONFIG_PATH", str(SCREENING_CONFIG_ROOT / "score_formula_config.json"))
+os.environ.setdefault("STOCK_DASHBOARD_US_SCORE_FORMULA_CONFIG_PATH", str(SCREENING_CONFIG_ROOT / "us_score_formula_config.json"))
 os.environ.setdefault("STOCK_DASHBOARD_REAL_ESTATE_EXCEL_PATH", str(DATA_ROOT / "real-estate" / "안암해링턴 상가 관리.xlsx"))
 os.environ.setdefault("STOCK_DASHBOARD_REAL_ESTATE_BANK_IMPORT_DIR", str(DATA_ROOT / "real-estate" / "계좌입출금내역"))
 os.environ.setdefault("STOCK_DASHBOARD_REAL_ESTATE_BUILDING_EXPORT_DIR", str(DATA_ROOT / "real-estate" / "건물 정리"))
@@ -17,9 +20,14 @@ os.environ.setdefault("STOCK_DASHBOARD_REAL_ESTATE_BUILDING_EXPORT_DIR", str(DAT
 # behind stable package boundaries.
 execute_legacy_backend(globals())
 
+# This endpoint only generated workbooks from the retired Excel archive.
+app.router.routes = [
+    route for route in app.router.routes if getattr(route, "path", "") != "/api/themes/test-excel"
+]
+
 # Older runtime snapshots used fixed screening paths. Override every derived
 # configuration path before feature modules and requests can access them.
-SCREENING_DIR = DATA_ROOT / "screening" / "current"
+SCREENING_DIR = SCREENING_CONFIG_ROOT
 SCORE_FORMULA_CONFIG_PATH = SCREENING_DIR / "score_formula_config.json"
 US_SCORE_FORMULA_CONFIG_PATH = SCREENING_DIR / "us_score_formula_config.json"
 ASIA_SCORE_FORMULA_CONFIG_PATH = SCREENING_DIR / "asia_score_formula_config.json"

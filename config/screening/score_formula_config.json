@@ -1,0 +1,47 @@
+{
+  "score_formula": {
+    "amount_power": 1.1,
+    "marcap_power": 0.6,
+    "return_base": 1.0,
+    "return_power": 2.0,
+    "log_base": 1.1,
+    "trading_value_surge_power": 2.8,
+    "trading_value_surge_cap": 4.5,
+    "missing_daily_score": -80.0,
+    "bonus_if_52w_high": 13.0,
+    "bonus_if_20d_high": 7.0,
+    "bonus_if_not_52w_high": -5.0,
+    "offset": 40.0,
+    "invalid_fill": -80.0
+  },
+  "final_score_formula": {
+    "weight_today": 0.05,
+    "weight_1w": 0.2,
+    "weight_1m": 0.45,
+    "weight_3m": 0.3,
+    "sortino_power": 1.5,
+    "sortino_floor": 1e-06,
+    "sortino_tanh_scale": 1.0,
+    "sortino_min_obs": 20,
+    "sortino_insufficient_value": 0.2
+  },
+  "trend_adjustment_formula": {
+    "enabled": true,
+    "today_blend_weight": 0.7,
+    "trend_floor": 20.0,
+    "acceleration_alignment_bonus": 4.0,
+    "acceleration_max_bonus": 6.0,
+    "acceleration_cap_ratio": 0.25,
+    "break_base_penalty_today_below_1w": 5.0,
+    "break_base_penalty_1w_below_1m": 10.0,
+    "break_base_penalty_1m_below_3m": 10.0,
+    "break_max_penalty": 15.0,
+    "break_cap_ratio": 0.2
+  },
+  "display_formula": {
+    "kr_capture_score_threshold": 70.0,
+    "kr_daily_capture_score_threshold": 100.0,
+    "entry_signal_threshold": 100.0,
+    "exit_signal_threshold": 80.0
+  }
+}

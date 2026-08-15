@@ -11,7 +11,7 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / "backend" / "stock_daily_fast.sqlite"
-CONFIG_PATH = PROJECT_ROOT / "data" / "screening" / "current" / "score_formula_config.json"
+CONFIG_PATH = PROJECT_ROOT / "config" / "screening" / "score_formula_config.json"
 
 
 def _load_weights() -> tuple[float, float, float, float, float]:

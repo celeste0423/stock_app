@@ -36,7 +36,6 @@ def _resolve_existing_path(env_name: str, candidates: list[Path | None]) -> Path
     return filtered[0]
 
 
-screening_dir_env = str(os.getenv("STOCK_DASHBOARD_SCREENING_DIR", "") or "").strip()
 DB_PATH = _resolve_existing_path(
     "STOCK_DASHBOARD_SCREENING_FAST_DB_PATH",
     [
@@ -47,10 +46,7 @@ DB_PATH = _resolve_existing_path(
 CONFIG_PATH = _resolve_existing_path(
     "STOCK_DASHBOARD_SCORE_FORMULA_CONFIG_PATH",
     [
-        (Path(screening_dir_env) / "score_formula_config.json") if screening_dir_env else None,
-        BASE_DIR / "score_formula_config.json",
-        BASE_DIR / "outputs" / "stock_daily" / "score_formula_config.json",
-        BASE_DIR / "data" / "screening" / "current" / "score_formula_config.json",
+        BASE_DIR / "config" / "screening" / "score_formula_config.json",
     ],
 )
 SETTINGS_PATH = _resolve_existing_path(
