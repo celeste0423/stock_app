@@ -16,6 +16,7 @@ $defaultTargets = @(
   "frontend/static/app.js",
   "frontend/static/features/naver-blog/page.js",
   "frontend/static/features/building-management/page.js",
+  "frontend/static/features/global-company/page.js",
   "frontend/index.html",
   "backend/app.py",
   "WORKFLOW.md"
