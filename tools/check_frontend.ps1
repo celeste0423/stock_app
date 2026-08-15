@@ -18,6 +18,12 @@ $defaultTargets = @(
   "frontend/static/features/building-management/page.js",
   "frontend/static/features/global-company/page.js",
   "frontend/static/features/portfolio/page.js",
+  "frontend/static/features/stock-news/page.js",
+  "frontend/static/features/global-indices/page.js",
+  "frontend/static/features/pair-correlation/page.js",
+  "frontend/static/features/etf-flow/page.js",
+  "frontend/static/features/institutional-rebalance/page.js",
+  "frontend/static/features/sector-entry/page.js",
   "frontend/index.html",
   "backend/app.py",
   "WORKFLOW.md"

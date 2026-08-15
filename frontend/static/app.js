@@ -15501,272 +15501,37 @@
     }
   }
 
-  function StockNewsPage() {
-    const savedState = loadStockNewsState();
-    const [query, setQuery] = useState(savedState.query || "");
-    const [suggestions, setSuggestions] = useState([]);
-    const [activeIndex, setActiveIndex] = useState(0);
-    const [selected, setSelected] = useState(savedState.selected || null);
-    const [days, setDays] = useState(savedState.days || 365);
-    const [payload, setPayload] = useState(savedState.payload || null);
-    const [loadingSearch, setLoadingSearch] = useState(false);
-    const [loadingNews, setLoadingNews] = useState(false);
-    const [message, setMessage] = useState("");
-    const searchTimerRef = useRef(null);
+  const stockNewsPageModule = getStockAppModule("stockNewsPage");
 
-    useEffect(function () {
-      return function () {
-        if (searchTimerRef.current) {
-          clearTimeout(searchTimerRef.current);
-        }
-      };
-    }, []);
-
-    useEffect(function () {
-      persistStockNewsState({
-        query: query,
-        selected: selected,
-        days: days,
-        payload: payload,
-      });
-    }, [query, selected, days, payload]);
-
-    useEffect(function () {
-      const stock = (payload || {}).stock || selected || {};
-      const detail = stock.name || query || "";
-      emitWindowTitleDetail("stock-news", detail ? "뉴스: " + detail : "");
-    }, [query, selected, payload]);
-
-    function runAutocomplete(value) {
-      setQuery(value);
-      setSelected(null);
-      setMessage("");
-      if (searchTimerRef.current) {
-        clearTimeout(searchTimerRef.current);
-      }
-      if (!String(value || "").trim()) {
-        setSuggestions([]);
-        return;
-      }
-      searchTimerRef.current = setTimeout(function () {
-        setLoadingSearch(true);
-        fetchJson("/api/stocks/autocomplete?q=" + encodeURIComponent(value.trim()) + "&limit=10")
-          .then(function (nextPayload) {
-            setSuggestions(ensureArray(nextPayload.items));
-            setActiveIndex(0);
-          })
-          .catch(function () {
-            setSuggestions([]);
-          })
-          .finally(function () {
-            setLoadingSearch(false);
-          });
-      }, 160);
-    }
-
-    function searchNews(target) {
-      const searchText = String((target && target.name) || query || "").trim();
-      if (!searchText) {
-        setMessage("검색어를 입력해 주세요.");
-        return;
-      }
-      setSuggestions([]);
-      setLoadingNews(true);
-      setMessage("");
-      fetchJson(
-        "/api/news/search?q=" + encodeURIComponent(searchText) +
-          "&days=" + encodeURIComponent(days) +
-          "&limit=40",
-        { noCache: true }
+  function StockNewsPageModuleUnavailable() {
+    return h("div", { className: "page stock-news-page" },
+      h("section", { className: "panel" },
+        h(SectionTitle, null, "뉴스 검색기"),
+        h("div", { className: "notice-box error" }, "페이지 모듈을 불러오지 못했습니다. 앱을 새로고침해 주세요.")
       )
-        .then(function (nextPayload) {
-          setPayload(nextPayload);
-          if (target) {
-            setSelected(target);
-            setQuery(target.name + (target.code ? " (" + target.code + ")" : ""));
-          }
-          if (!ensureArray(nextPayload.items).length) {
-            setMessage("중요 뉴스로 분류된 결과가 없습니다. 기간을 넓히거나 다른 종목명으로 검색해 보세요.");
-          }
-        })
-        .catch(function (err) {
-          setMessage(err.message || String(err));
-        })
-        .finally(function () {
-          setLoadingNews(false);
-        });
-    }
-
-    function chooseStock(stock) {
-      if (!stock) {
-        return;
-      }
-      setSelected(stock);
-      setQuery(stock.name + (stock.code ? " (" + stock.code + ")" : ""));
-      searchNews(stock);
-    }
-
-    function handleKeyDown(event) {
-      const items = ensureArray(suggestions);
-      if (event.key === "ArrowDown" && items.length) {
-        event.preventDefault();
-        setActiveIndex(function (index) { return Math.min(index + 1, items.length - 1); });
-      } else if (event.key === "ArrowUp" && items.length) {
-        event.preventDefault();
-        setActiveIndex(function (index) { return Math.max(index - 1, 0); });
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        if (items.length) {
-          chooseStock(items[activeIndex || 0]);
-        } else {
-          searchNews(null);
-        }
-      } else if (event.key === "Escape") {
-        setSuggestions([]);
-      }
-    }
-
-    const newsItems = ensureArray((payload || {}).items);
-    const stock = (payload || {}).stock || selected || {};
-
-    return h(
-      React.Fragment,
-      null,
-      h(
-        "div",
-        { className: "panel hero-panel stock-news-hero" },
-        h("div", { className: "eyebrow" }, "Stock News"),
-        h("h1", { className: "page-title" }, "지수/가격동향"),
-        h("p", { className: "page-copy compact-copy" }, "네이버 뉴스와 구글 뉴스에서 종목 관련 뉴스를 가져온 뒤 시세 단신과 중복 기사를 걷어내고 이벤트성 뉴스만 날짜순으로 보여줍니다."),
-        h(
-          "div",
-          { className: "stock-news-search-row" },
-          h(
-            "div",
-            { className: "global-search-wrap stock-news-search-wrap" },
-            h("input", {
-              className: "global-search-input",
-              value: query,
-              placeholder: "예: 삼성전자, HD현대에너지솔루션, 005930",
-              onChange: function (event) { runAutocomplete(event.target.value); },
-              onKeyDown: handleKeyDown,
-              onFocus: selectTextOnFocus,
-              onBlur: function () { setTimeout(function () { setSuggestions([]); }, 160); },
-            }),
-            loadingSearch ? h("span", { className: "global-search-status" }, "종목 찾는 중") : null,
-            suggestions.length
-              ? h(
-                  "div",
-                  { className: "autocomplete-list global-autocomplete" },
-                  suggestions.map(function (item, index) {
-                    return h(
-                      "button",
-                      {
-                        key: item.code || item.name,
-                        type: "button",
-                        className: "autocomplete-item" + (index === activeIndex ? " active" : ""),
-                        onMouseDown: function (event) {
-                          event.preventDefault();
-                          chooseStock(item);
-                        },
-                      },
-                      h("strong", null, item.name),
-                      h("span", null, item.code || "-"),
-                      h("em", null, item.market || "")
-                    );
-                  })
-                )
-              : null
-          ),
-          h(
-            "select",
-            {
-              className: "select-input stock-news-days",
-              value: days,
-              onChange: function (event) { setDays(Number(event.target.value)); },
-            },
-            h("option", { value: 30 }, "최근 1개월"),
-            h("option", { value: 90 }, "최근 3개월"),
-            h("option", { value: 365 }, "최근 1년"),
-            h("option", { value: 1095 }, "최근 3년")
-          ),
-          h(
-            "button",
-            {
-              type: "button",
-              className: "primary-button",
-              disabled: loadingNews,
-              onClick: function () { searchNews(selected); },
-            },
-            loadingNews ? "검색 중" : "뉴스 검색"
-          )
-        ),
-        message ? h("div", { className: "summary-help text-danger" }, message) : null
-      ),
-      payload
-        ? h(
-            "div",
-            { className: "panel stock-news-results-panel" },
-            h(
-              "div",
-              { className: "section-toolbar" },
-              h("div", null,
-                h(SectionTitle, null, (stock.name || query || "종목") + " 뉴스"),
-                h("div", { className: "summary-help" },
-                  "원본 " + numberFormat((payload || {}).raw_count || 0, 0) +
-                    "건 중 중요/중복 필터 후 " + numberFormat(newsItems.length, 0) + "건"
-                )
-              ),
-              stock.code ? h("span", { className: "telegram-status-pill" }, stock.code) : null
-            ),
-            newsItems.length
-              ? h(
-                  "div",
-                  { className: "stock-news-list" },
-                  newsItems.map(function (item, index) {
-                    return h(
-                      "article",
-                      { key: (item.url || item.title || "") + index, className: "stock-news-card" },
-                      h(
-                        "div",
-                        { className: "stock-news-meta" },
-                        h("span", null, item.published_date || "-"),
-                        h("span", null, item.source || "-"),
-                        h("span", null, item.source_type || "")
-                      ),
-                      h(
-                        "a",
-                        {
-                          className: "stock-news-title",
-                          href: item.url || "#",
-                          target: "_blank",
-                          rel: "noreferrer",
-                        },
-                        item.title || "제목 없음"
-                      ),
-                      item.summary ? h("p", { className: "stock-news-summary" }, item.summary) : null,
-                      ensureArray(item.reason_tags).length
-                        ? h(
-                            "div",
-                            { className: "stock-news-tags" },
-                            ensureArray(item.reason_tags).map(function (tag) {
-                              return h("span", { key: tag }, tag);
-                            })
-                          )
-                        : null
-                    );
-                  })
-                )
-              : h(EmptyState, { compact: true, message: "표시할 뉴스가 없습니다." })
-          )
-        : h(
-            "div",
-            { className: "panel stock-news-empty-panel" },
-            h(EmptyState, { compact: true, message: "종목명을 입력하고 Enter 또는 뉴스 검색을 눌러 주세요." })
-          )
     );
   }
 
+  let StockNewsPage = StockNewsPageModuleUnavailable;
+  if (typeof stockNewsPageModule.createPage === "function") {
+    try {
+      StockNewsPage = stockNewsPageModule.createPage({
+        React: React,
+        emitWindowTitleDetail: emitWindowTitleDetail,
+        EmptyState: EmptyState,
+        ensureArray: ensureArray,
+        fetchJson: fetchJson,
+        h: h,
+        loadStockNewsState: loadStockNewsState,
+        numberFormat: numberFormat,
+        persistStockNewsState: persistStockNewsState,
+        SectionTitle: SectionTitle,
+        selectTextOnFocus: selectTextOnFocus,
+      });
+    } catch (error) {
+      console.error("Failed to initialize stock-news page module.", error);
+    }
+  }
   const globalCompanyPageModule = getStockAppModule("globalCompanyPage");
 
   function GlobalCompanyModuleUnavailable() {
@@ -15896,347 +15661,37 @@
     localStorage.setItem(SECTOR_SNAPSHOT_KEY, JSON.stringify(clean));
   }
 
-  function GlobalIndicesPage() {
-    const globalIndexGroups = ["\uad6d\uac00\ubcc4 \uc9c0\uc218", "\ud55c\uad6d\uc8fc\uc2ddETF", "\uc6d0\uc790\uc7ac", "KOMIS \uc218\ucd9c\uc785\uc9c0\uc218", "PPI", "\ud658\uc728", "\ucf54\uc778/\ucc44\uad8c", "\uad6d\ucc44\uae08\ub9ac"];
-    const globalIndexSymbolAliases = {
-      "^GSPC": "US500",
-      "^IXIC": "IXIC",
-      "^DJI": "DJI",
-      "^RUT": "RUT",
-      "^KS11": "KS11",
-      "^KQ11": "KQ11",
-      "^N225": "N225",
-      "^HSI": "HSI",
-      "TWII": "^TWII",
-      "TAIEX": "^TWII",
-      "^TAIEX": "^TWII",
-      "000001.SS": "SSEC",
-      "^GDAXI": "GDAXI",
-      "^FTSE": "FTSE",
-      "HG=F": "CMCU3",
-      "ALI=F": "CMAL3",
-    };
-    function normalizeGlobalIndexSymbols(symbols) {
-      const seen = {};
-      return ensureArray(symbols).map(function (symbol) {
-        return globalIndexSymbolAliases[symbol] || symbol;
-      }).filter(function (symbol) {
-        if (!symbol || seen[symbol]) {
-          return false;
-        }
-        seen[symbol] = true;
-        return true;
-      });
-    }
-    const [activeGroup, setActiveGroup] = useState(function () {
-      return localStorage.getItem("stock-dashboard-global-indices-group") || "국가별 지수";
-    });
-    const activeGroupName = globalIndexGroups.indexOf(activeGroup) >= 0 ? activeGroup : "국가별 지수";
-    const request = useFetchJson("/api/global-indices?group=" + encodeURIComponent(activeGroupName));
-    const dramRequest = useFetchJson("/api/dram/prices");
-    const ssdRequest = useFetchJson("/api/ssd/prices");
-    const [selectedSymbols, setSelectedSymbols] = useState(function () {
-      try {
-        const parsed = JSON.parse(localStorage.getItem("stock-dashboard-global-indices-selected") || "[]");
-        return Array.isArray(parsed) && parsed.length ? normalizeGlobalIndexSymbols(parsed) : ["US500", "IXIC", "KS11", "GC=F", "BTC-USD", "^TNX", "KRW=X", "JPY=X", "CNY=X", "DX-Y.NYB"];
-      } catch (error) {
-        return ["US500", "IXIC", "KS11", "GC=F", "BTC-USD", "^TNX", "KRW=X", "JPY=X", "CNY=X", "DX-Y.NYB"];
-      }
-    });
-    useEffect(function () {
-      localStorage.setItem("stock-dashboard-global-indices-group", activeGroup);
-    }, [activeGroup]);
-    useEffect(function () {
-      localStorage.setItem("stock-dashboard-global-indices-selected", JSON.stringify(selectedSymbols));
-    }, [selectedSymbols]);
-    if (request.loading) {
-      return LoadingPanel({ label: request.label });
-    }
-    if (request.error) {
-      return ErrorPanel({ message: request.error });
-    }
-    const data = request.data || {};
-    const dramPayload = dramRequest.data || {};
-    const ssdPayload = ssdRequest.data || {};
-    const items = ensureArray(data.items);
-    const groups = globalIndexGroups.slice();
-    ensureArray(data.groups).forEach(function (group) {
-      if (group && groups.indexOf(group) < 0) groups.push(group);
-    });
-    items.forEach(function (item) {
-      const group = item.group || "기타";
-      if (groups.indexOf(group) < 0) groups.push(group);
-    });
-    const activeItems = items.filter(function (item) { return (item.group || "기타") === activeGroupName; });
-    const selectedItems = items.filter(function (item) {
-      return selectedSymbols.indexOf(item.symbol) >= 0 && ensureArray(item.series).length > 0;
-    });
-    const validActiveSymbols = activeItems.filter(function (item) { return ensureArray(item.series).length > 0; }).map(function (item) { return item.symbol; });
-    function toggleSymbol(symbol) {
-      setSelectedSymbols(function (current) {
-        const next = ensureArray(current).slice();
-        const index = next.indexOf(symbol);
-        if (index >= 0) {
-          next.splice(index, 1);
-        } else {
-          next.push(symbol);
-        }
-        return next;
-      });
-    }
-    function setGroupSelection(symbols) {
-      setSelectedSymbols(function (current) {
-        const outside = ensureArray(current).filter(function (symbol) { return validActiveSymbols.indexOf(symbol) < 0; });
-        return outside.concat(symbols);
-      });
-    }
-    function metricText(value) {
-      return value == null ? "-" : formatPercent(value, 2);
-    }
-    function metricClass(value) {
-      const number = Number(value);
-      if (!Number.isFinite(number) || number === 0) return "flat";
-      return number > 0 ? "positive" : "negative";
-    }
-    function renderMetric(label, value) {
-      return h("em", { className: metricClass(value) }, label + " " + metricText(value));
-    }
-    const returnLabels = activeGroupName === "PPI"
-      ? { short: "MoM", medium: "3M", long: "YoY", chartTitle: "\ucd5c\uadfc 3\uac1c\uc6d4 PPI \ubcc0\ud654 \ucd94\uc774" }
-      : activeGroupName === "\ud55c\uad6d\uc8fc\uc2ddETF"
-        ? { short: "WoW", medium: "MoM", long: "1Y", chartTitle: "\ucd5c\uadfc 1\ub144 \ud55c\uad6d \uc8fc\uc2dd ETF \ubcc0\ud654 \ucd94\uc774" }
-      : { short: "WoW", medium: "MoM", long: "3M", chartTitle: "\ucd5c\uadfc 3\uac1c\uc6d4 \uac00\uaca9/\uc9c0\uc218 \ubcc0\ud654 \ucd94\uc774" };
-    function renderToplineMetric(item) {
-      return h(
-        "span",
-        { key: item.symbol },
-        item.name + " ",
-        h("strong", { className: metricClass(item.return_1w_pct) }, returnLabels.short + " " + metricText(item.return_1w_pct)),
-        " / ",
-        h("strong", { className: metricClass(item.return_1m_pct) }, returnLabels.medium + " " + metricText(item.return_1m_pct))
-      );
-    }
-    function renderGroupButton(group) {
-      return h(
-        "button",
-        {
-          key: group,
-          type: "button",
-          className: "global-tv-group-tab" + (activeGroupName === group ? " active" : ""),
-          onClick: function () { setActiveGroup(group); },
-        },
-        group
-      );
-    }
-    function renderItemButton(item) {
-      const checked = selectedSymbols.indexOf(item.symbol) >= 0;
-      const disabled = !ensureArray(item.series).length;
-      return h(
-        "button",
-        {
-          key: item.symbol,
-          type: "button",
-          className: "global-index-check" + (checked ? " checked" : "") + (disabled ? " muted-row" : ""),
-          disabled: disabled,
-          onClick: function () { if (!disabled) toggleSymbol(item.symbol); },
-          title: disabled ? (item.error || "가격 데이터를 불러오지 못했습니다.") : "",
-        },
-        h("input", { type: "checkbox", readOnly: true, checked: checked && !disabled, tabIndex: -1 }),
-        h("strong", null, item.symbol),
-        h("span", null, item.name),
-        item.source ? h("small", { className: "global-index-source" }, item.source_symbol ? item.source + " · " + item.source_symbol : item.source) : null,
-        h("div", { className: "global-index-metrics" }, renderMetric(returnLabels.short, item.return_1w_pct), renderMetric(returnLabels.medium, item.return_1m_pct))
-      );
-    }
-    function renderIndexRow(item) {
-      return h(
-        "tr",
-        { key: item.symbol, className: ensureArray(item.series).length ? "" : "muted-row" },
-        h("td", { className: "ticker-cell" }, item.symbol),
-        h("td", null, item.name),
-        h("td", null, item.group || "-"),
-        h("td", null, item.source_symbol || item.fetch_symbol || item.symbol),
-        h("td", null, item.last_close == null ? "-" : numberFormat(item.last_close, 2)),
-        h("td", { className: metricClass(item.return_1w_pct) }, metricText(item.return_1w_pct)),
-        h("td", { className: metricClass(item.return_1m_pct) }, metricText(item.return_1m_pct)),
-        h("td", { className: metricClass(item.return_3m_pct) }, metricText(item.return_3m_pct)),
-        h("td", { className: metricClass(item.return_ytd_pct) }, metricText(item.return_ytd_pct)),
-        h("td", null, item.last_date || "-")
-      );
-    }
-    function dramPricePriority(item) {
-      const label = String((item.section || "") + " " + (item.item || "")).toLowerCase();
-      if (label.indexOf("dram_spot") >= 0 && label.indexOf("ddr5") >= 0 && label.indexOf("16gb") >= 0) return 0;
-      if (label.indexOf("dram_spot") >= 0 && label.indexOf("ddr5") >= 0) return 1;
-      if (label.indexOf("module_spot") >= 0 && label.indexOf("ddr5") >= 0) return 2;
-      if (label.indexOf("ddr5") >= 0) return 3;
-      if (label.indexOf("dram_spot") >= 0) return 4;
-      if (label.indexOf("dram_contract") >= 0) return 5;
-      if (label.indexOf("ssd") >= 0) return 6;
-      return 9;
-    }
-    function renderDramTrendChart(item) {
-      const points = ensureArray(item.points).filter(function (point) {
-        return Number.isFinite(Number(point.value));
-      });
-      const width = 520;
-      const height = 180;
-      const pad = { top: 18, right: 54, bottom: 32, left: 48 };
-      const chartWidth = width - pad.left - pad.right;
-      const chartHeight = height - pad.top - pad.bottom;
-      if (!points.length) {
-        return h("div", { className: "dram-chart-empty" }, "누적된 가격 스냅샷이 없습니다.");
-      }
-      let minValue = Math.min.apply(null, points.map(function (point) { return Number(point.value); }));
-      let maxValue = Math.max.apply(null, points.map(function (point) { return Number(point.value); }));
-      if (minValue === maxValue) {
-        minValue *= 0.96;
-        maxValue *= 1.04;
-      }
-      const range = maxValue - minValue || 1;
-      function x(index) {
-        return pad.left + (points.length === 1 ? chartWidth : index / (points.length - 1) * chartWidth);
-      }
-      function y(value) {
-        return pad.top + (maxValue - Number(value)) / range * chartHeight;
-      }
-      const linePoints = points.map(function (point, index) {
-        return x(index).toFixed(1) + "," + y(point.value).toFixed(1);
-      }).join(" ");
-      const gridValues = [maxValue, minValue + range * 0.5, minValue];
-      return h(
-        "svg",
-        { className: "dram-trend-chart", viewBox: "0 0 " + width + " " + height, role: "img" },
-        gridValues.map(function (value, index) {
-          const lineY = y(value);
-          return h(
-            React.Fragment,
-            { key: "grid-" + index },
-            h("line", { x1: pad.left, x2: width - pad.right, y1: lineY, y2: lineY, className: "dram-chart-grid" }),
-            h("text", { x: width - 6, y: lineY + 4, className: "dram-chart-axis", textAnchor: "end" }, numberFormat(value, 2))
-          );
-        }),
-        h("polyline", { points: linePoints, className: "dram-chart-line" }),
-        points.map(function (point, index) {
-          return h("circle", {
-            key: point.date + "-" + index,
-            cx: x(index),
-            cy: y(point.value),
-            r: 3.2,
-            className: "dram-chart-dot",
-          }, h("title", null, String(point.date || "") + " · $" + numberFormat(point.value, 2)));
-        }),
-        h("text", { x: pad.left, y: height - 8, className: "dram-chart-axis" }, String(points[0].date || "").replace("Last Update ", "")),
-        h("text", { x: width - pad.right, y: height - 8, className: "dram-chart-axis", textAnchor: "end" }, String(points[points.length - 1].date || "").replace("Last Update ", ""))
-      );
-    }
-    function renderDramCard(item) {
-      const points = ensureArray(item.points);
-      const lastPoint = points.length ? points[points.length - 1] : null;
-      const current = Number(lastPoint && lastPoint.value);
-      const change = Number(lastPoint && lastPoint.change_pct);
-      const changeClass = Number.isFinite(change) && change < 0 ? "down" : Number.isFinite(change) && change > 0 ? "up" : "";
-      return h(
-        "div",
-        { key: item.key || item.item, className: "panel dram-price-card" },
-        h(
-          "div",
-          { className: "dram-price-head" },
-          h("div", null,
-            h("strong", null, item.item || "-"),
-            h("span", null, item.section_label || "DRAM Price")
-          ),
-          h("div", { className: "dram-current-price" }, "$" + numberFormat(current, 2))
-        ),
-        h(
-          "div",
-          { className: "dram-price-meta" },
-          h("span", null, "High $" + numberFormat(lastPoint && lastPoint.session_high, 2)),
-          h("span", null, "Low $" + numberFormat(lastPoint && lastPoint.session_low, 2)),
-          h("span", { className: changeClass }, "Change " + (Number.isFinite(change) ? formatPercent(change, 2) : "-"))
-        ),
-        renderDramTrendChart(item)
-      );
-    }
-    const memoryPriceHistory = ensureArray(dramPayload.history).concat(ensureArray(ssdPayload.history)).filter(function (item) {
-      return ensureArray(item.points).length > 0;
-    }).sort(function (a, b) {
-      const priorityDiff = dramPricePriority(a) - dramPricePriority(b);
-      if (priorityDiff !== 0) return priorityDiff;
-      return String(a.item || "").localeCompare(String(b.item || ""));
-    }).slice(0, 18);
-    if (!items.length) {
-      return ErrorPanel({ message: "지수/가격동향 데이터를 불러오지 못했습니다." });
-    }
-    return h(
-      React.Fragment,
-      null,
-      h(
-        "div",
-        { className: "panel hero-panel global-indices-hero" },
-        h("div", { className: "eyebrow" }, "Index & Price Trend"),
-        h("h1", { className: "page-title" }, "지수/가격동향"),
-        h("p", { className: "page-copy compact-copy" }, "국가별 지수, 원자재, 환율, 비트코인, 국채금리와 DRAM/SSD 가격 변화를 함께 봅니다.")
-      ),
-      h(
-        "div",
-        { className: "panel" },
-        h(
-          "div",
-          { className: "section-toolbar" },
-          h("div", null, h(SectionTitle, null, returnLabels.chartTitle), h("div", { className: "summary-help" }, data.source || "FinanceDataReader / Yahoo Finance")),
-          h("div", { className: "global-indices-topline" }, selectedItems.slice(0, 5).map(renderToplineMetric))
-        ),
-        selectedItems.length
-          ? h(GlobalIndicesChart, { items: selectedItems })
-          : h("div", { className: "notice-box compact" }, "선택된 항목이 없습니다. 아래에서 비교할 지수나 원자재를 선택해주세요.")
-      ),
-      h(
-        "div",
-        { className: "panel global-indices-picker" },
-        h("div", { className: "global-tv-group-tabs" }, groups.map(renderGroupButton)),
-        h(
-          "div",
-          { className: "global-indices-picker-actions" },
-          h("button", { type: "button", className: "mini-button", onClick: function () { setGroupSelection(validActiveSymbols); } }, "현재 탭 전체 선택"),
-          h("button", { type: "button", className: "mini-button", onClick: function () { setGroupSelection([]); } }, "현재 탭 선택 해제")
-        ),
-        h("div", { className: "global-indices-checkbox-grid" }, activeItems.map(renderItemButton))
-      ),
-      h(
-        "div",
-        { className: "panel trade-summary-panel" },
-        h(SectionTitle, null, "DRAM/SSD 가격 동향"),
-        h("div", { className: "summary-help" }, (dramPayload.source_label || "DramExchange / TrendForce") + " · DRAM " + (dramPayload.fetched_at || "-") + " · SSD " + (ssdPayload.fetched_at || "-")),
-        h("div", { className: "summary-help" }, "DDR5 Spot Price를 우선 표시하고, 공개 가격표를 로컬에 누적 저장해 변화 추이를 표시합니다.")
-      ),
-      dramRequest.loading && !memoryPriceHistory.length ? h(LoadingPanel, { label: dramRequest.label }) : null,
-      ssdRequest.loading && !memoryPriceHistory.length ? h(LoadingPanel, { label: ssdRequest.label }) : null,
-      dramRequest.error ? h("div", { className: "notice-box compact" }, "DRAM 가격 확인 필요: " + dramRequest.error) : null,
-      ssdRequest.error ? h("div", { className: "notice-box compact" }, "SSD 가격 확인 필요: " + ssdRequest.error) : null,
-      dramPayload.error ? h("div", { className: "notice-box compact" }, "DRAM 가격 확인 필요: " + dramPayload.error) : null,
-      ssdPayload.error ? h("div", { className: "notice-box compact" }, "SSD 가격 확인 필요: " + ssdPayload.error) : null,
-      memoryPriceHistory.length
-        ? h("div", { className: "dram-price-grid" }, memoryPriceHistory.map(renderDramCard))
-        : h(EmptyState, { message: "표시할 DRAM/SSD 가격 데이터가 없습니다." }),
-      h(
-        "div",
-        { className: "panel" },
-        h(SectionTitle, null, activeGroupName + " 지표 표"),
-        h(
-          "div",
-          { className: "global-indices-table-wrap" },
-          h(
-            "table",
-            { className: "data-table global-indices-table" },
-            h("thead", null, h("tr", null, h("th", null, "\ud2f0\ucee4"), h("th", null, "\uc774\ub984"), h("th", null, "\uadf8\ub8f9"), h("th", null, "\uae30\uc900"), h("th", null, "\ud604\uc7ac\uac00"), h("th", null, returnLabels.short), h("th", null, returnLabels.medium), h("th", null, returnLabels.long), h("th", null, "YTD"), h("th", null, "\uae30\uc900\uc77c"))),
-            h("tbody", null, items.map(renderIndexRow))
-          )
-        )
+  const globalIndicesPageModule = getStockAppModule("globalIndicesPage");
+
+  function GlobalIndicesPageModuleUnavailable() {
+    return h("div", { className: "page global-indices-page" },
+      h("section", { className: "panel" },
+        h(SectionTitle, null, "지수/가격동향"),
+        h("div", { className: "notice-box error" }, "페이지 모듈을 불러오지 못했습니다. 앱을 새로고침해 주세요.")
       )
     );
   }
 
+  let GlobalIndicesPage = GlobalIndicesPageModuleUnavailable;
+  if (typeof globalIndicesPageModule.createPage === "function") {
+    try {
+      GlobalIndicesPage = globalIndicesPageModule.createPage({
+        React: React,
+        EmptyState: EmptyState,
+        ensureArray: ensureArray,
+        ErrorPanel: ErrorPanel,
+        formatPercent: formatPercent,
+        GlobalIndicesChart: GlobalIndicesChart,
+        h: h,
+        LoadingPanel: LoadingPanel,
+        numberFormat: numberFormat,
+        SectionTitle: SectionTitle,
+        useFetchJson: useFetchJson,
+      });
+    } catch (error) {
+      console.error("Failed to initialize global-indices page module.", error);
+    }
+  }
   function correlationClassName(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return "metric-flat";
@@ -16339,780 +15794,111 @@
     return h("div", { className: "pair-correlation-chart" }, h("canvas", { ref: canvasRef }));
   }
 
-  function PairCorrelationPage() {
-    const [leftQuery, setLeftQuery] = useState("");
-    const [rightQuery, setRightQuery] = useState("");
-    const [leftSuggestions, setLeftSuggestions] = useState([]);
-    const [rightSuggestions, setRightSuggestions] = useState([]);
-    const [leftSelected, setLeftSelected] = useState(null);
-    const [rightSelected, setRightSelected] = useState(null);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState("");
-    const [data, setData] = useState(null);
-    const leftTimerRef = useRef(null);
-    const rightTimerRef = useRef(null);
-    const requestSeqRef = useRef(0);
-    const autoRunRef = useRef(false);
+  const pairCorrelationPageModule = getStockAppModule("pairCorrelationPage");
 
-    useEffect(function () {
-      try {
-        const saved = JSON.parse(localStorage.getItem(PAIR_CORRELATION_KEY) || "{}");
-        if (saved && saved.left) {
-          setLeftSelected(saved.left);
-          setLeftQuery(formatCorrelationAssetLabel(saved.left));
-        }
-        if (saved && saved.right) {
-          setRightSelected(saved.right);
-          setRightQuery(formatCorrelationAssetLabel(saved.right));
-        }
-      } catch (error) {
-      }
-    }, []);
-
-    useEffect(function () {
-      try {
-        localStorage.setItem(PAIR_CORRELATION_KEY, JSON.stringify({
-          left: leftSelected || null,
-          right: rightSelected || null,
-        }));
-      } catch (error) {
-      }
-    }, [leftSelected, rightSelected]);
-
-    useEffect(function () {
-      if (leftSelected && rightSelected && !autoRunRef.current) {
-        autoRunRef.current = true;
-        runCorrelation();
-      }
-    }, [leftSelected, rightSelected]);
-
-    useEffect(function () {
-      return function () {
-        if (leftTimerRef.current) clearTimeout(leftTimerRef.current);
-        if (rightTimerRef.current) clearTimeout(rightTimerRef.current);
-      };
-    }, []);
-
-    function queueSearch(side, value) {
-      const trimmed = String(value || "").trim();
-      const setSuggestions = side === "left" ? setLeftSuggestions : setRightSuggestions;
-      const timerRef = side === "left" ? leftTimerRef : rightTimerRef;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-      if (!trimmed) {
-        setSuggestions([]);
-        return;
-      }
-      timerRef.current = setTimeout(async function () {
-        try {
-          const payload = await fetchJson("/api/correlation/assets/search?q=" + encodeURIComponent(trimmed) + "&limit=12");
-          setSuggestions(ensureArray(payload.items));
-        } catch (fetchError) {
-          setSuggestions([]);
-        }
-      }, 160);
-    }
-
-    function handleLeftInput(value) {
-      setLeftQuery(value);
-      setLeftSelected(null);
-      setData(null);
-      setError("");
-      autoRunRef.current = true;
-      queueSearch("left", value);
-    }
-
-    function handleRightInput(value) {
-      setRightQuery(value);
-      setRightSelected(null);
-      setData(null);
-      setError("");
-      autoRunRef.current = true;
-      queueSearch("right", value);
-    }
-
-    function selectAsset(side, item) {
-      const normalized = {
-        id: item.id,
-        kind: item.kind,
-        value: item.value,
-        code: item.code || "",
-        symbol: item.symbol || item.value || "",
-        name: item.name || item.symbol || item.value || "",
-        market: item.market || "",
-        badge: item.badge || "",
-        source: item.source || "",
-      };
-      if (side === "left") {
-        setLeftSelected(normalized);
-        setLeftQuery(formatCorrelationAssetLabel(normalized));
-        setLeftSuggestions([]);
-      } else {
-        setRightSelected(normalized);
-        setRightQuery(formatCorrelationAssetLabel(normalized));
-        setRightSuggestions([]);
-      }
-      setData(null);
-      setError("");
-    }
-
-    async function runCorrelation() {
-      if (!leftSelected || !rightSelected) {
-        setError("좌우 자산을 모두 선택해 주세요.");
-        setData(null);
-        return;
-      }
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      setLoading(true);
-      setError("");
-      try {
-        const params = new URLSearchParams({
-          left_kind: leftSelected.kind,
-          left_value: leftSelected.value,
-          left_name: leftSelected.name || "",
-          right_kind: rightSelected.kind,
-          right_value: rightSelected.value,
-          right_name: rightSelected.name || "",
-          window_days: "31",
-        });
-        const payload = await fetchJson("/api/correlation/pair?" + params.toString(), { noCache: true });
-        if (requestSeqRef.current !== requestSeq) {
-          return;
-        }
-        setData(payload);
-        emitWindowTitleDetail("pair-correlation", (payload.left ? payload.left.name : "") + " vs " + (payload.right ? payload.right.name : ""));
-      } catch (fetchError) {
-        if (requestSeqRef.current !== requestSeq) {
-          return;
-        }
-        setError(fetchError.message || String(fetchError));
-        setData(null);
-      } finally {
-        if (requestSeqRef.current === requestSeq) {
-          setLoading(false);
-        }
-      }
-    }
-
-    function renderSuggestionList(items, side) {
-      const rows = ensureArray(items);
-      if (!rows.length) return null;
-      return h(
-        "div",
-        { className: "autocomplete-list pair-correlation-suggestions" },
-        rows.map(function (item) {
-          return h(
-            "button",
-            {
-              key: side + ":" + (item.id || item.kind + ":" + item.value),
-              type: "button",
-              className: "autocomplete-item pair-correlation-item",
-              onClick: function () { selectAsset(side, item); },
-            },
-            h("strong", null, item.name || item.symbol || item.value || "-"),
-            h("span", null, [
-              item.symbol || item.code || item.value || "",
-              item.market || item.badge || "",
-              item.kind === "index" ? "지수" : (item.kind === "kr_stock" ? "국내" : "해외"),
-            ].filter(Boolean).join(" · "))
-          );
-        })
-      );
-    }
-
-    function renderSelectedMeta(item) {
-      if (!item) {
-        return h("div", { className: "summary-help" }, "국내/해외 종목 또는 지수를 검색해 선택하세요.");
-      }
-      return h(
-        "div",
-        { className: "pair-correlation-selected" },
-        h("strong", null, formatCorrelationAssetLabel(item)),
-        h("span", null, [item.market || item.badge || "", item.kind === "index" ? "지수" : (item.kind === "kr_stock" ? "국내 종목" : "해외 종목"), item.source || ""].filter(Boolean).join(" · "))
-      );
-    }
-
-    const payload = data || {};
-    const corrValue = Number(payload.correlation);
-    const priceCorrValue = Number(payload.price_correlation);
-    return h(
-      React.Fragment,
-      null,
-      h(
-        "div",
-        { className: "panel hero-panel alt" },
-        h("div", { className: "eyebrow" }, "PAIR CORRELATION"),
-        h("h1", { className: "page-title" }, "최근 1개월 주가 상관관계"),
-        h("p", { className: "page-copy compact-copy" }, "국내/해외 종목과 주요 지수 두 개를 선택해 최근 1개월 공통 거래일 기준 상관관계를 계산합니다.")
-      ),
-      h(
-        "div",
-        { className: "pair-correlation-layout" },
-        h(
-          "div",
-          { className: "panel pair-correlation-search-panel" },
-          h(SectionTitle, null, "왼쪽 자산"),
-          h("label", { className: "form-field" },
-            h("input", {
-              value: leftQuery,
-              onChange: function (event) { handleLeftInput(event.target.value); },
-              placeholder: "종목명, 티커, 지수명 검색",
-              onFocus: selectTextOnFocus,
-            })
-          ),
-          renderSuggestionList(leftSuggestions, "left"),
-          renderSelectedMeta(leftSelected)
-        ),
-        h(
-          "div",
-          { className: "panel pair-correlation-search-panel" },
-          h(SectionTitle, null, "오른쪽 자산"),
-          h("label", { className: "form-field" },
-            h("input", {
-              value: rightQuery,
-              onChange: function (event) { handleRightInput(event.target.value); },
-              placeholder: "종목명, 티커, 지수명 검색",
-              onFocus: selectTextOnFocus,
-            })
-          ),
-          renderSuggestionList(rightSuggestions, "right"),
-          renderSelectedMeta(rightSelected)
-        )
-      ),
-      h(
-        "div",
-        { className: "panel pair-correlation-action-panel" },
-        h("div", { className: "summary-help" }, "상관계수는 최근 1개월 공통 거래일 종가의 일별 수익률 Pearson 기준입니다."),
-        h("button", { type: "button", className: "primary-button", onClick: runCorrelation, disabled: loading || !leftSelected || !rightSelected }, loading ? "계산 중..." : "상관관계 계산")
-      ),
-      error ? h("div", { className: "notice-box error" }, error) : null,
-      loading && !data ? LoadingPanel({ label: "주가 상관관계 계산" }) : null,
-      data
-        ? h(
-            React.Fragment,
-            null,
-            h(
-              "div",
-              { className: "summary-grid summary-grid-small" },
-              h(SummaryCard, { label: "상관계수", value: h("span", { className: correlationClassName(corrValue) }, numberFormat(corrValue, 4)) }),
-              h(SummaryCard, { label: "가격 동조화", value: h("span", { className: correlationClassName(priceCorrValue) }, numberFormat(priceCorrValue, 4)) }),
-              h(SummaryCard, { label: "공통 거래일", value: numberFormat(payload.observation_count, 0) + "일" }),
-              h(SummaryCard, { label: "해석", value: describeCorrelation(corrValue) })
-            ),
-            h(
-              "div",
-              { className: "pair-correlation-layout" },
-              h(
-                "div",
-                { className: "panel" },
-                h(SectionTitle, null, "정규화 주가 비교"),
-                h("div", { className: "summary-help" }, (payload.start_date || "-") + " ~ " + (payload.end_date || "-") + " · 기준값 100"),
-                h(PairCorrelationChart, { rows: payload.rows, left: payload.left, right: payload.right })
-              ),
-              h(
-                "div",
-                { className: "panel pair-correlation-summary-panel" },
-                h(SectionTitle, null, "자산 요약"),
-                h("div", { className: "pair-correlation-asset-card" },
-                  h("strong", null, formatCorrelationAssetLabel(payload.left)),
-                  h("span", null, [payload.left && payload.left.market, payload.left && payload.left.kind === "index" ? "지수" : payload.left && payload.left.kind === "kr_stock" ? "국내 종목" : "해외 종목"].filter(Boolean).join(" · ")),
-                  h("div", { className: "pair-correlation-asset-metrics" },
-                    h("span", null, "종가 " + numberFormat(payload.left && payload.left.last_close, 2)),
-                    h("span", { className: Number((payload.left && payload.left.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, "1개월 " + formatPercent(payload.left && payload.left.period_return_pct, 2))
-                  )
-                ),
-                h("div", { className: "pair-correlation-asset-card" },
-                  h("strong", null, formatCorrelationAssetLabel(payload.right)),
-                  h("span", null, [payload.right && payload.right.market, payload.right && payload.right.kind === "index" ? "지수" : payload.right && payload.right.kind === "kr_stock" ? "국내 종목" : "해외 종목"].filter(Boolean).join(" · ")),
-                  h("div", { className: "pair-correlation-asset-metrics" },
-                    h("span", null, "종가 " + numberFormat(payload.right && payload.right.last_close, 2)),
-                    h("span", { className: Number((payload.right && payload.right.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, "1개월 " + formatPercent(payload.right && payload.right.period_return_pct, 2))
-                  )
-                ),
-                h("div", { className: "summary-help" }, payload.method || "")
-              )
-            )
-          )
-        : null
-    );
-  }
-
-  function EtfFlowPage() {
-    const [query, setQuery] = useState("");
-    const [suggestions, setSuggestions] = useState([]);
-    const [selected, setSelected] = useState(null);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState("");
-    const [data, setData] = useState(null);
-    const timerRef = useRef(null);
-    const requestSeqRef = useRef(0);
-
-    useEffect(function () {
-      try {
-        const saved = JSON.parse(localStorage.getItem(ETF_FLOW_PAGE_KEY) || "{}");
-        if (saved && saved.selected) {
-          setSelected(saved.selected);
-          setQuery(formatCorrelationAssetLabel(saved.selected));
-        }
-      } catch (error) {
-      }
-    }, []);
-
-    useEffect(function () {
-      try {
-        localStorage.setItem(ETF_FLOW_PAGE_KEY, JSON.stringify({ selected: selected || null }));
-      } catch (error) {
-      }
-    }, [selected]);
-
-    useEffect(function () {
-      return function () {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-        }
-      };
-    }, []);
-
-    function queueSearch(value) {
-      const trimmed = String(value || "").trim();
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-      if (!trimmed) {
-        setSuggestions([]);
-        return;
-      }
-      timerRef.current = setTimeout(async function () {
-        try {
-          const payload = await fetchJson("/api/etf-flow/assets/search?q=" + encodeURIComponent(trimmed) + "&limit=12");
-          setSuggestions(ensureArray(payload.items));
-        } catch (fetchError) {
-          setSuggestions([]);
-        }
-      }, 160);
-    }
-
-    function handleInput(value) {
-      setQuery(value);
-      setSelected(null);
-      setSuggestions([]);
-      setData(null);
-      setError("");
-      queueSearch(value);
-    }
-
-    function selectAsset(item) {
-      const normalized = {
-        id: item.id,
-        kind: item.kind,
-        value: item.value,
-        code: item.code || "",
-        symbol: item.symbol || item.value || "",
-        name: item.name || item.symbol || item.value || "",
-        market: item.market || "",
-        label: item.label || "",
-      };
-      setSelected(normalized);
-      setQuery(formatCorrelationAssetLabel(normalized));
-      setSuggestions([]);
-      setData(null);
-      setError("");
-    }
-
-    async function runEstimate() {
-      if (!selected) {
-        setError("종목을 먼저 선택해 주세요.");
-        setData(null);
-        return;
-      }
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      setLoading(true);
-      setError("");
-      try {
-        const params = new URLSearchParams({
-          kind: selected.kind,
-          value: selected.value,
-          name: selected.name || "",
-        });
-        const payload = await fetchJson("/api/etf-flow/estimate?" + params.toString(), { noCache: true });
-        if (requestSeqRef.current !== requestSeq) {
-          return;
-        }
-        setData(payload);
-        emitWindowTitleDetail("etf-flow", payload && payload.asset ? payload.asset.name || payload.asset.symbol || "" : "");
-      } catch (fetchError) {
-        if (requestSeqRef.current !== requestSeq) {
-          return;
-        }
-        setError(fetchError.message || String(fetchError));
-        setData(null);
-      } finally {
-        if (requestSeqRef.current === requestSeq) {
-          setLoading(false);
-        }
-      }
-    }
-
-    function renderSuggestionList() {
-      const rows = ensureArray(suggestions);
-      if (!rows.length) return null;
-      return h(
-        "div",
-        { className: "autocomplete-list pair-correlation-suggestions" },
-        rows.map(function (item) {
-          return h(
-            "button",
-            {
-              key: item.id || item.kind + ":" + item.value,
-              type: "button",
-              className: "autocomplete-item pair-correlation-item",
-              onClick: function () { selectAsset(item); },
-            },
-            h("strong", null, item.name || item.symbol || item.value || "-"),
-            h("span", null, [item.symbol || item.code || item.value || "", item.market || "", item.label || ""].filter(Boolean).join(" · "))
-          );
-        })
-      );
-    }
-
-    const payload = data || {};
-    const rows = ensureArray(payload.rows);
-    return h(
-      React.Fragment,
-      null,
-      h(
-        "div",
-        { className: "panel hero-panel alt" },
-        h("div", { className: "eyebrow" }, "ETF FLOW"),
-        h("h1", { className: "page-title" }, "ETF 자금 추정"),
-        h("p", { className: "page-copy compact-copy" }, "국내 또는 미국 종목을 검색하면 추적 중인 대표 ETF 바스켓 기준으로 현재 편입 비중, 1년 ETF 순유입, 종목별 추정 유입 영향을 역산합니다.")
-      ),
-      h(
-        "div",
-        { className: "pair-correlation-layout" },
-        h(
-          "div",
-          { className: "panel pair-correlation-search-panel" },
-          h(SectionTitle, null, "종목 검색"),
-          h("label", { className: "form-field" },
-            h("input", {
-              value: query,
-              onChange: function (event) { handleInput(event.target.value); },
-              placeholder: "국내 종목명/코드 또는 미국 티커/기업명 검색",
-              onFocus: selectTextOnFocus,
-            })
-          ),
-          renderSuggestionList(),
-          selected
-            ? h("div", { className: "pair-correlation-selected" },
-                h("strong", null, formatCorrelationAssetLabel(selected)),
-                h("span", null, [selected.market || "", selected.kind === "kr_stock" ? "국내 종목" : "미국 종목"].filter(Boolean).join(" · "))
-              )
-            : h("div", { className: "summary-help" }, "국내 상장 종목과 미국 상장 종목을 대상으로 합니다.")
-        ),
-        h(
-          "div",
-          { className: "panel pair-correlation-action-panel" },
-          h(SectionTitle, null, "계산 방식"),
-          h("div", { className: "summary-help" }, "대표 ETF 바스켓 기준입니다. 1년 ETF 순유입 금액 × 편입 비중으로 종목별 추정 유입액을 계산하고, AUM × 편입 비중으로 현재 보유 노출액도 함께 보여줍니다."),
-          h("button", { type: "button", className: "primary-button", onClick: runEstimate, disabled: loading || !selected }, loading ? "계산 중..." : "ETF 자금 추정")
-        )
-      ),
-      error ? h("div", { className: "notice-box error" }, error) : null,
-      loading && !data ? LoadingPanel({ label: "ETF 자금 추정" }) : null,
-      data
-        ? h(
-            React.Fragment,
-            null,
-            h(
-              "div",
-              { className: "summary-grid summary-grid-small" },
-              h(SummaryCard, { label: "추적 ETF 수", value: numberFormat(payload.tracked_etf_count, 0) + "개" }),
-              h(SummaryCard, { label: "편입 ETF 수", value: numberFormat(payload.matched_etf_count, 0) + "개" }),
-              h(SummaryCard, { label: "1년 추정 순유입", value: formatMoneyByCurrency(payload.total_estimated_stock_flow_1y, payload.market_scope === "KR" ? "KRW" : "USD", true) }),
-              h(SummaryCard, { label: "현재 보유 노출액", value: formatMoneyByCurrency(payload.total_holding_exposure, payload.market_scope === "KR" ? "KRW" : "USD", true) })
-            ),
-            h("div", { className: "summary-help", style: { marginTop: "8px" } }, payload.coverage_note || ""),
-            rows.length
-              ? h(
-                  "div",
-                  { className: "panel", style: { marginTop: "14px" } },
-                  h(SectionTitle, null, "ETF별 추정 내역"),
-                  h("div", { className: "summary-help" }, (payload.asset && payload.asset.name ? payload.asset.name : "-") + " · 기준일 " + (payload.as_of || "-")),
-                  h(SortableDataTable, {
-                    rows: rows,
-                    compact: true,
-                    columns: [
-                      { key: "etf_symbol", label: "ETF", render: function (row) { return (row.etf_name || row.etf_symbol || "-") + " (" + (row.etf_symbol || "-") + ")"; } },
-                      { key: "theme", label: "분류", render: function (row) { return row.theme || "-"; } },
-                      { key: "weight_pct", label: "비중", render: function (row) { return formatPercent(row.weight_pct, 2); } },
-                      { key: "flow_1y", label: "ETF 1Y 순유입", render: function (row) { return formatMoneyByCurrency(row.flow_1y, row.currency, true); } },
-                      { key: "estimated_stock_flow_1y", label: "종목 1Y 추정 유입", render: function (row) { return formatMoneyByCurrency(row.estimated_stock_flow_1y, row.currency, true); } },
-                      { key: "holding_exposure", label: "현재 보유 노출액", render: function (row) { return formatMoneyByCurrency(row.holding_exposure, row.currency, true); } },
-                      { key: "holding_rank", label: "편입순위", render: function (row) { return row.holding_rank ? numberFormat(row.holding_rank, 0) + "위" : "-"; } },
-                    ],
-                    sortState: { key: "estimated_stock_flow_1y", direction: "desc" },
-                  })
-                )
-              : h(EmptyState, { message: "추적 중인 ETF 바스켓에서 이 종목을 찾지 못했습니다.", compact: true }),
-            ensureArray(payload.failures).length
-              ? h("div", { className: "summary-help", style: { marginTop: "10px" } }, "일부 ETF는 수집 실패가 있어 제외되었습니다.")
-              : null
-          )
-        : null
-    );
-  }
-
-  function InstitutionalRebalancePage() {
-    const request = useFetchJson("/api/institutional-rebalance");
-    const aiRequest = useFetchJson("/api/institutional-rebalance/ai-brief", { enabled: !!request.data });
-    function metricClass(value) {
-      const number = Number(value);
-      if (!Number.isFinite(number) || number === 0) return "";
-      return number > 0 ? "positive" : "negative";
-    }
-    function scoreText(value) {
-      const number = Number(value);
-      if (!Number.isFinite(number)) return "-";
-      return (number > 0 ? "+" : "") + numberFormat(number, 1) + "점";
-    }
-    if (request.loading && !request.data) {
-      return LoadingPanel({ label: request.label });
-    }
-    if (request.error) {
-      return ErrorPanel({ message: request.error });
-    }
-    const data = request.data || {};
-    const aiData = aiRequest.data || {};
-    const aiBrief = aiData.brief || {};
-    const cards = ensureArray(data.cards);
-    const regionalRows = ensureArray(data.regional_rows);
-    const scheduleRows = ensureArray(data.schedule);
-    const assets = ensureArray(data.assets).filter(function (item) {
-      return item && item.category === "index";
-    });
-    return h(
-      React.Fragment,
-      null,
-      h(
-        "div",
-        { className: "panel hero-panel alt" },
-        h("div", { className: "eyebrow" }, "INSTITUTIONAL REBALANCE"),
-        h("h1", { className: "page-title" }, "기관 리밸런싱 추정"),
-        h("p", { className: "page-copy compact-copy" }, data.subtitle || "공개 가격·일정 데이터 기반의 규칙형 추정입니다."),
-        h("div", { className: "summary-help" }, "기준일 " + (data.as_of || "-") + " · 생성 " + (data.generated_at || "-"))
-      ),
-      h(
-        "div",
-        { className: "panel institutional-ai-panel" },
-        h(
-          "div",
-          { className: "section-toolbar" },
-          h("div", null,
-            h("div", { className: "eyebrow" }, "Gemini Commentary"),
-            h(SectionTitle, null, aiBrief.title || "오늘의 기관 수급 해설"),
-            h("div", { className: "summary-help" }, aiBrief.market_regime || "기관 수급 관점 시장 해설")
-          ),
-          h("button", {
-            type: "button",
-            className: "mini-button",
-            onClick: function () { aiRequest.refresh(true); },
-            disabled: aiRequest.loading,
-          }, aiRequest.loading ? "AI 생성 중..." : "AI 새로고침")
-        ),
-        aiRequest.loading && !aiRequest.data
-          ? h(LoadingBlock, { compact: true, title: "Gemini 해설 생성 중", label: aiRequest.label })
-          : aiRequest.error
-            ? h("div", { className: "notice-box error" }, aiRequest.error)
-            : h(
-                React.Fragment,
-                null,
-                h("div", { className: "institutional-ai-one-liner" }, aiBrief.one_liner || "오늘 공개 데이터 기준으로 기관 리밸런싱 가능성을 요약합니다."),
-                h("p", { className: "institutional-ai-summary" }, aiBrief.executive_summary || ""),
-                h(
-                  "div",
-                  { className: "institutional-ai-grid" },
-                  h(
-                    "div",
-                    { className: "institutional-ai-card" },
-                    h("h3", null, "수급 해석"),
-                    ensureArray(aiBrief.flow_summary).length
-                      ? h("div", { className: "institutional-ai-flow-list" }, ensureArray(aiBrief.flow_summary).map(function (item, index) {
-                          return h("div", { key: "flow-" + index, className: "institutional-ai-flow-item" },
-                            h("strong", null, item.name || "-"),
-                            h("em", null, item.view || "-"),
-                            h("p", null, item.reason || "-")
-                          );
-                        }))
-                      : h(EmptyState, { compact: true, message: "AI 해설이 아직 없습니다." })
-                  ),
-                  h(
-                    "div",
-                    { className: "institutional-ai-card" },
-                    h("h3", null, "타이밍"),
-                    h("ul", { className: "institutional-rebalance-reasons" },
-                      ensureArray(aiBrief.timing_points).map(function (item, index) {
-                        return h("li", { key: "timing-" + index }, item);
-                      })
-                    ),
-                    h("h3", null, "액션 포인트"),
-                    h("ul", { className: "institutional-rebalance-reasons" },
-                      ensureArray(aiBrief.action_points).map(function (item, index) {
-                        return h("li", { key: "action-" + index }, item);
-                      })
-                    )
-                  ),
-                  h(
-                    "div",
-                    { className: "institutional-ai-card" },
-                    h("h3", null, "시나리오"),
-                    h("div", { className: "institutional-ai-scenario" },
-                      h("strong", null, "강세"),
-                      h("p", null, (aiBrief.scenarios || {}).bull || "-")
-                    ),
-                    h("div", { className: "institutional-ai-scenario" },
-                      h("strong", null, "기본"),
-                      h("p", null, (aiBrief.scenarios || {}).base || "-")
-                    ),
-                    h("div", { className: "institutional-ai-scenario" },
-                      h("strong", null, "약세"),
-                      h("p", null, (aiBrief.scenarios || {}).bear || "-")
-                    ),
-                    h("h3", null, "리스크"),
-                    h("ul", { className: "institutional-rebalance-reasons" },
-                      ensureArray(aiBrief.risks).map(function (item, index) {
-                        return h("li", { key: "risk-" + index }, item);
-                      })
-                    ),
-                    h("div", { className: "summary-help institutional-ai-footnote" }, (aiBrief.model || "") + (aiData.cached_at ? " · " + aiData.cached_at : ""))
-                  )
-                )
-              )
-      ),
-      h(
-        "div",
-        { className: "panel" },
-        h(
-          "div",
-          { className: "section-toolbar" },
-          h("div", null, h(SectionTitle, null, "핵심 추정"), h("div", { className: "summary-help" }, "CTA, 옵션 만기, 패시브, 매크로 관점에서 리밸런싱 가능성을 요약합니다.")),
-          h("button", { type: "button", className: "mini-button", onClick: function () { request.refresh(true); } }, request.loading ? "새로고침 중..." : "새로고침")
-        ),
-        h(
-          "div",
-          { className: "summary-grid summary-grid-small" },
-          cards.map(function (card) {
-            return h(SummaryCard, {
-              key: card.key,
-              label: card.label,
-              value: scoreText(card.score),
-              help: (card.direction || "중립") + " · " + (card.window || "-"),
-            });
-          })
-        )
-      ),
-      h(
-        "div",
-        { className: "institutional-rebalance-card-grid" },
-        cards.map(function (card) {
-          return h(
-            "div",
-            { key: card.key, className: "panel institutional-rebalance-card" },
-            h("div", { className: "section-toolbar" },
-              h("div", null,
-                h("div", { className: "section-title" }, card.label || "-"),
-                h("div", { className: "summary-help" }, card.summary || "")
-              ),
-              h("strong", { className: metricClass(card.score) }, scoreText(card.score))
-            ),
-            h("div", { className: "summary-help" }, (card.direction || "중립") + " · " + (card.window || "-")),
-            h("ul", { className: "institutional-rebalance-reasons" },
-              ensureArray(card.reasons).map(function (reason, index) {
-                return h("li", { key: card.key + "-" + index }, reason);
-              })
-            )
-          );
-        })
-      ),
-      h(
-        "div",
-        { className: "panel" },
-        h(SectionTitle, null, "시장별 추정"),
-        h(DataTable, {
-          compact: true,
-          rows: regionalRows,
-          columns: [
-            { key: "market", label: "시장" },
-            { key: "focus", label: "대상 자금" },
-            { key: "score", label: "점수", render: function (row) { return h("strong", { className: metricClass(row.score) }, scoreText(row.score)); } },
-            { key: "direction", label: "방향" },
-            { key: "window", label: "예상 시점" },
-            { key: "one_week", label: "1W", render: function (row) { return h("span", { className: metricClass(row.one_week) }, formatPercent(row.one_week, 2)); } },
-            { key: "one_month", label: "1M", render: function (row) { return h("span", { className: metricClass(row.one_month) }, formatPercent(row.one_month, 2)); } },
-            { key: "three_month", label: "3M", render: function (row) { return h("span", { className: metricClass(row.three_month) }, formatPercent(row.three_month, 2)); } },
-            { key: "summary", label: "근거" },
-          ],
-          emptyMessage: "표시할 시장별 추정 데이터가 없습니다.",
-        })
-      ),
-      h(
-        "div",
-        { className: "panel" },
-        h(SectionTitle, null, "다가오는 일정"),
-        h(DataTable, {
-          compact: true,
-          rows: scheduleRows,
-          columns: [
-            { key: "date", label: "날짜" },
-            { key: "market", label: "시장" },
-            { key: "category", label: "분류" },
-            { key: "title", label: "이벤트" },
-            { key: "days_left", label: "D-Day", render: function (row) { return "D" + (Number(row.days_left) > 0 ? "-" + numberFormat(row.days_left, 0) : Number(row.days_left) === 0 ? "-0" : "+" + numberFormat(Math.abs(Number(row.days_left)), 0)); } },
-            { key: "note", label: "비고" },
-          ],
-          emptyMessage: "표시할 일정이 없습니다.",
-        })
-      ),
-      h(
-        "div",
-        { className: "panel" },
-        h(SectionTitle, null, "지수 근거 데이터"),
-        h(DataTable, {
-          compact: true,
-          rows: assets,
-          columns: [
-            { key: "market", label: "시장" },
-            { key: "name", label: "지수" },
-            { key: "trend_score", label: "추세점수", render: function (row) { return h("strong", { className: metricClass(row.trend_score) }, scoreText(row.trend_score)); } },
-            { key: "return_1w_pct", label: "1W", render: function (row) { return h("span", { className: metricClass(row.return_1w_pct) }, formatPercent(row.return_1w_pct, 2)); } },
-            { key: "return_1m_pct", label: "1M", render: function (row) { return h("span", { className: metricClass(row.return_1m_pct) }, formatPercent(row.return_1m_pct, 2)); } },
-            { key: "return_3m_pct", label: "3M", render: function (row) { return h("span", { className: metricClass(row.return_3m_pct) }, formatPercent(row.return_3m_pct, 2)); } },
-            { key: "ma20_gap_pct", label: "20일선 괴리", render: function (row) { return h("span", { className: metricClass(row.ma20_gap_pct) }, formatPercent(row.ma20_gap_pct, 2)); } },
-            { key: "ma200_gap_pct", label: "200일선 괴리", render: function (row) { return h("span", { className: metricClass(row.ma200_gap_pct) }, formatPercent(row.ma200_gap_pct, 2)); } },
-            { key: "trend_direction", label: "판정" },
-          ],
-          emptyMessage: "표시할 지수 데이터가 없습니다.",
-        })
-      ),
-      h(
-        "div",
-        { className: "panel" },
-        h(SectionTitle, null, "판정 기준"),
-        h("ul", { className: "institutional-rebalance-reasons" },
-          ensureArray(data.method_notes).map(function (note, index) {
-            return h("li", { key: "note-" + index }, note);
-          })
-        ),
-        ensureArray(data.errors).length
-          ? h("div", { className: "notice-box compact" }, "일부 보조 데이터는 제외되었습니다: " + ensureArray(data.errors).slice(0, 4).join(" / "))
-          : null
+  function PairCorrelationPageModuleUnavailable() {
+    return h("div", { className: "page pair-correlation-page" },
+      h("section", { className: "panel" },
+        h(SectionTitle, null, "주가 상관관계"),
+        h("div", { className: "notice-box error" }, "페이지 모듈을 불러오지 못했습니다. 앱을 새로고침해 주세요.")
       )
     );
   }
 
+  let PairCorrelationPage = PairCorrelationPageModuleUnavailable;
+  if (typeof pairCorrelationPageModule.createPage === "function") {
+    try {
+      PairCorrelationPage = pairCorrelationPageModule.createPage({
+        React: React,
+        correlationClassName: correlationClassName,
+        describeCorrelation: describeCorrelation,
+        emitWindowTitleDetail: emitWindowTitleDetail,
+        ensureArray: ensureArray,
+        fetchJson: fetchJson,
+        formatCorrelationAssetLabel: formatCorrelationAssetLabel,
+        formatPercent: formatPercent,
+        h: h,
+        LoadingPanel: LoadingPanel,
+        numberFormat: numberFormat,
+        PAIR_CORRELATION_KEY: PAIR_CORRELATION_KEY,
+        PairCorrelationChart: PairCorrelationChart,
+        SectionTitle: SectionTitle,
+        selectTextOnFocus: selectTextOnFocus,
+        SummaryCard: SummaryCard,
+      });
+    } catch (error) {
+      console.error("Failed to initialize pair-correlation page module.", error);
+    }
+  }
+  const etfFlowPageModule = getStockAppModule("etfFlowPage");
+
+  function EtfFlowPageModuleUnavailable() {
+    return h("div", { className: "page etf-flow-page" },
+      h("section", { className: "panel" },
+        h(SectionTitle, null, "ETF 자금 추정"),
+        h("div", { className: "notice-box error" }, "페이지 모듈을 불러오지 못했습니다. 앱을 새로고침해 주세요.")
+      )
+    );
+  }
+
+  let EtfFlowPage = EtfFlowPageModuleUnavailable;
+  if (typeof etfFlowPageModule.createPage === "function") {
+    try {
+      EtfFlowPage = etfFlowPageModule.createPage({
+        React: React,
+        emitWindowTitleDetail: emitWindowTitleDetail,
+        EmptyState: EmptyState,
+        ensureArray: ensureArray,
+        ETF_FLOW_PAGE_KEY: ETF_FLOW_PAGE_KEY,
+        fetchJson: fetchJson,
+        formatCorrelationAssetLabel: formatCorrelationAssetLabel,
+        formatMoneyByCurrency: formatMoneyByCurrency,
+        formatPercent: formatPercent,
+        h: h,
+        LoadingPanel: LoadingPanel,
+        numberFormat: numberFormat,
+        SectionTitle: SectionTitle,
+        selectTextOnFocus: selectTextOnFocus,
+        SortableDataTable: SortableDataTable,
+        SummaryCard: SummaryCard,
+      });
+    } catch (error) {
+      console.error("Failed to initialize etf-flow page module.", error);
+    }
+  }
+  const institutionalRebalancePageModule = getStockAppModule("institutionalRebalancePage");
+
+  function InstitutionalRebalancePageModuleUnavailable() {
+    return h("div", { className: "page institutional-rebalance-page" },
+      h("section", { className: "panel" },
+        h(SectionTitle, null, "기관 리밸런싱 추정"),
+        h("div", { className: "notice-box error" }, "페이지 모듈을 불러오지 못했습니다. 앱을 새로고침해 주세요.")
+      )
+    );
+  }
+
+  let InstitutionalRebalancePage = InstitutionalRebalancePageModuleUnavailable;
+  if (typeof institutionalRebalancePageModule.createPage === "function") {
+    try {
+      InstitutionalRebalancePage = institutionalRebalancePageModule.createPage({
+        React: React,
+        DataTable: DataTable,
+        EmptyState: EmptyState,
+        ensureArray: ensureArray,
+        ErrorPanel: ErrorPanel,
+        formatPercent: formatPercent,
+        h: h,
+        LoadingBlock: LoadingBlock,
+        LoadingPanel: LoadingPanel,
+        numberFormat: numberFormat,
+        SectionTitle: SectionTitle,
+        SummaryCard: SummaryCard,
+        useFetchJson: useFetchJson,
+      });
+    } catch (error) {
+      console.error("Failed to initialize institutional-rebalance page module.", error);
+    }
+  }
   function SectorEntryLeaderChips(props) {
     const stocks = ensureArray(props.stocks);
     const betaLabel = props.betaLabel || "";
@@ -17154,595 +15940,44 @@
     );
   }
 
-  function SectorEntrySignalPage() {
-    const [betaWindow, setBetaWindow] = useState(63);
-    const [chartPopup, setChartPopup] = useState({
-      open: false,
-      row: null,
-      loading: false,
-      error: "",
-      data: null,
-      openingExternal: false,
-      externalMessage: "",
-    });
-    const [expandedFormulaMap, setExpandedFormulaMap] = useState({});
-    const chartRequestSeqRef = useRef(0);
-    const betaWindowLabel = betaWindow <= 100 ? "3개월" : "1년";
-    const request = useFetchJson("/api/sector-snapshot/entry-signals?lookback_days=80&min_score=50&trading_rank_limit=20&min_avg_score=55&min_strong_count=2&min_stock_count=1&beta_window=" + betaWindow);
-    const radarRequest = useFetchJson("/api/sector-snapshot/signal-radar?lookback_days=120&max_stocks=30&min_score=50&max_history_events=180");
-    const data = request.data || {};
-    const radarData = radarRequest.data || {};
-    const summary = data.summary || {};
-    const radarSummary = radarData.summary || {};
-    const params = data.params || {};
-    const latestActive = ensureArray(data.latest_active);
-    const rows = ensureArray(data.rows);
-    const radarRows = ensureArray(radarData.signals);
-    const radarPerformanceRows = ensureArray((radarData.performance || {}).rows);
-    const radarDefinitionMap = {};
-    ensureArray(radarData.definitions).forEach(function (item) {
-      if (item && item.key) {
-        radarDefinitionMap[item.key] = item;
-      }
-    });
-    const entrySignalColumns = [
-      { key: "date", label: "날짜" },
-      { key: "entry_phase", label: "\uad6d\uba74", render: function (row) { return row.entry_phase || row.signal || "-"; } },
-      { key: "signal_level", label: "신호" },
-      { key: "sector", label: "섹터" },
-      { key: "trading_rank", label: "거래대금 순위", render: function (row) { return numberFormat(row.trading_rank, 0) + "위"; } },
-      { key: "avg_5d_trading_value_100m", label: "5일 거래대금(억)", render: function (row) { return numberFormat(row.avg_5d_trading_value_100m, 0); } },
-      { key: "avg_score", label: "평균점수", render: function (row) { return numberFormat(row.avg_score, 1); } },
-      { key: "strong_count", label: "70점 이상", render: function (row) { return numberFormat(row.strong_count, 0); } },
-      { key: "entry_score", label: "진입점수", render: function (row) { return scoreSpan(row.entry_score); } },
-      { key: "formula", label: "산식", render: function (row) { return renderEntryFormulaToggle(row, "table"); } },
-      { key: "leader_stocks", label: "대표 종목 β순", render: function (row) { return h(SectorEntryLeaderChips, { stocks: row.leader_stocks, betaLabel: betaWindowLabel, onOpenChart: openSectorEntryStockChart }); } },
-    ];
+  const sectorEntryPageModule = getStockAppModule("sectorEntryPage");
 
-    function entryFormulaKey(item, scope) {
-      return [
-        scope || "entry",
-        item.date || summary.latest_date || "",
-        item.sector || "",
-        item.trading_rank || "",
-      ].join("|");
-    }
-
-    function toggleEntryFormulaDetails(item, scope, event) {
-      if (event && event.stopPropagation) {
-        event.stopPropagation();
-      }
-      const key = entryFormulaKey(item, scope);
-      setExpandedFormulaMap(function (current) {
-        return Object.assign({}, current, { [key]: !current[key] });
-      });
-    }
-
-    function formulaMetric(label, value, detail, tone) {
-      return h(
-        "div",
-        { className: "sector-entry-formula-metric" + (tone ? " " + tone : "") },
-        h("span", null, label),
-        h("strong", null, value),
-        detail ? h("em", null, detail) : null
-      );
-    }
-
-    function renderEntryFormulaDetails(item) {
-      const tradingRankLimit = Number(params.trading_rank_limit || 20);
-      const avgScore = Number(item.avg_score || 0);
-      const maxScore = Number(item.max_score || 0);
-      const stockCount = Number(item.stock_count || 0);
-      const strongCount = Number(item.strong_count || 0);
-      const tradingRank = Number(item.trading_rank || 9999);
-      const turnoverRatioPct = Number(item.turnover_ratio_pct || 0);
-      const maxScoreBonus = maxScore * 0.18;
-      const stockCountBonus = Math.min(stockCount, 12) * 1.4;
-      const turnoverStrengthBonus = Math.min(turnoverRatioPct, 30);
-      const calculatedStrengthScore = avgScore + maxScoreBonus + stockCountBonus + turnoverStrengthBonus;
-      const rankBonus = Math.max(0, tradingRankLimit + 1 - tradingRank) * 2;
-      const turnoverEntryBonus = Math.min(turnoverRatioPct, 10) * 1.2;
-      const calculatedEntryScore = calculatedStrengthScore + rankBonus + turnoverEntryBonus;
-      const breadthRatio = Number(item.breadth_ratio);
-      const avgDisparity = Number(item.avg_disparity);
-      const breadthPass = Number.isFinite(breadthRatio) && breadthRatio >= 60;
-      const fullLeverage = breadthPass && Number.isFinite(avgDisparity) && avgDisparity <= 105;
-      const entryLeverage = breadthPass && Number.isFinite(avgDisparity) && avgDisparity <= 110;
-      return h(
-        "div",
-        { className: "sector-entry-formula-detail" },
-        h("div", { className: "sector-entry-formula-title" }, "1차 필터"),
-        h(
-          "div",
-          { className: "sector-entry-formula-grid" },
-          formulaMetric("거래대금 순위", numberFormat(item.trading_rank, 0) + "위", "<= " + tradingRankLimit + "위", tradingRank <= tradingRankLimit ? "pass" : "fail"),
-          formulaMetric("평균점수", numberFormat(item.avg_score, 2), ">= " + numberFormat(params.min_avg_score || 55, 0), avgScore >= Number(params.min_avg_score || 55) ? "pass" : "fail"),
-          formulaMetric("70점 이상", numberFormat(strongCount, 0) + "개", ">= " + numberFormat(params.min_strong_count || 2, 0) + "개", strongCount >= Number(params.min_strong_count || 2) ? "pass" : "fail"),
-          formulaMetric("종목 수", numberFormat(stockCount, 0) + "개", ">= " + numberFormat(params.min_stock_count || 1, 0) + "개", stockCount >= Number(params.min_stock_count || 1) ? "pass" : "fail")
-        ),
-        h("div", { className: "sector-entry-formula-title" }, "섹터 강도 점수"),
-        h(
-          "div",
-          { className: "sector-entry-formula-code" },
-          "strength_score = 평균 점수 + 최고 점수×0.18 + min(종목수,12)×1.4 + min(거래대금/시총%,30)"
-        ),
-        h(
-          "div",
-          { className: "sector-entry-formula-grid" },
-          formulaMetric("평균점수", numberFormat(avgScore, 2), "기본값"),
-          formulaMetric("최고점 보너스", numberFormat(maxScoreBonus, 2), numberFormat(maxScore, 2) + " × 0.18"),
-          formulaMetric("종목수 보너스", numberFormat(stockCountBonus, 2), "min(" + numberFormat(stockCount, 0) + ",12) × 1.4"),
-          formulaMetric("거래회전 보너스", numberFormat(turnoverStrengthBonus, 2), "min(" + numberFormat(turnoverRatioPct, 2) + "%,30)")
-        ),
-        h(
-          "div",
-          { className: "sector-entry-formula-result" },
-          h("span", null, "최종 진입점수"),
-          h("strong", null, numberFormat(calculatedStrengthScore, 2)),
-          h("em", null, "서버값 " + numberFormat(item.strength_score, 2))
-        ),
-        h("div", { className: "sector-entry-formula-title" }, "최종 진입점수"),
-        h(
-          "div",
-          { className: "sector-entry-formula-code" },
-          "entry_score = strength_score + (21 - 거래대금순위)×2 + min(거래대금/시총%,10)×1.2"
-        ),
-        h(
-          "div",
-          { className: "sector-entry-formula-grid" },
-          formulaMetric("강도점수", numberFormat(calculatedStrengthScore, 2), "위 계산값"),
-          formulaMetric("순위 보너스", numberFormat(rankBonus, 2), "(" + (tradingRankLimit + 1) + " - " + numberFormat(tradingRank, 0) + ") × 2"),
-          formulaMetric("회전율 보너스", numberFormat(turnoverEntryBonus, 2), "min(" + numberFormat(turnoverRatioPct, 2) + "%,10) × 1.2")
-        ),
-        h(
-          "div",
-          { className: "sector-entry-formula-result primary" },
-          h("span", null, "최종 진입점수"),
-          h("strong", null, numberFormat(calculatedEntryScore, 2)),
-          h("em", null, "서버값 " + numberFormat(item.entry_score, 2))
-        ),
-        h("div", { className: "sector-entry-formula-title" }, "20일선 확산/이격도"),
-        h(
-          "div",
-          { className: "sector-entry-formula-grid" },
-          formulaMetric("Breadth", Number.isFinite(breadthRatio) ? formatPercent(breadthRatio, 1) : "-", "20일선 위 종목 비율 >= 60%", breadthPass ? "pass" : "fail"),
-          formulaMetric("평균 이격도", Number.isFinite(avgDisparity) ? formatPercent(avgDisparity, 2) : "-", "FULL <=105%, ENTRY <=110%", fullLeverage ? "pass" : entryLeverage ? "warn" : "fail"),
-          formulaMetric("기술 필터", item.leverage_label || "-", item.leverage_status || "watch", item.entry_pass ? "pass" : "warn")
-        )
-      );
-    }
-
-    function renderEntryFormulaToggle(item, scope) {
-      const key = entryFormulaKey(item, scope);
-      const open = !!expandedFormulaMap[key];
-      return h(
-        "div",
-        { className: "sector-entry-formula-wrap " + (scope || "") },
-        h(
-          "button",
-          {
-            type: "button",
-            className: "mini-button sector-entry-formula-toggle" + (open ? " active" : ""),
-            onClick: function (event) { toggleEntryFormulaDetails(item, scope, event); },
-          },
-          open ? "산식 접기" : "산식 보기"
-        ),
-        open ? renderEntryFormulaDetails(item) : null
-      );
-    }
-
-    function signalBadge(signalKey) {
-      const definition = radarDefinitionMap[signalKey] || {};
-      const label = definition.short_label || definition.label || signalKey;
-      return h("span", { key: signalKey, className: "radar-signal-badge " + signalKey }, label);
-    }
-
-    function signedMetric(value, digits) {
-      const number = Number(value);
-      if (!Number.isFinite(number)) {
-        return "-";
-      }
-      return (number > 0 ? "+" : "") + numberFormat(number, digits == null ? 2 : digits) + "%";
-    }
-
-    function renderRadarReturn(value) {
-      const number = Number(value);
-      return h("span", { className: number > 0 ? "metric-up" : number < 0 ? "metric-down" : "" }, signedMetric(value, 2));
-    }
-
-    function renderRadarPerformanceCell(row, horizon) {
-      const avg = row["avg_return_" + horizon + "d_pct"];
-      const win = row["win_rate_" + horizon + "d_pct"];
-      const mdd = row["mdd_" + horizon + "d_pct"];
-      return h(
-        "div",
-        { className: "radar-performance-cell" },
-        h("strong", null, renderRadarReturn(avg)),
-        h("span", null, "\uc2b9\ub960 " + (win == null ? "-" : numberFormat(win, 1) + "%")),
-        h("em", null, "MDD " + (mdd == null ? "-" : signedMetric(mdd, 2)))
-      );
-    }
-
-    function renderRadarFlow(row) {
-      const flow = row.flow || {};
-      const smart = Number(flow.smart_money);
-      const individual = Number(flow.individual);
-      if (!flow.date && !Number.isFinite(smart) && !Number.isFinite(individual)) {
-        return row.flow_error ? h("span", { className: "summary-help" }, "\uc218\uae09 \uc870\ud68c \uc2e4\ud328") : h("span", { className: "summary-help" }, "-");
-      }
-      return h(
-        "div",
-        { className: "radar-flow-mini" },
-        h("span", null, "\uc678\uc778 " + numberFormat(flow.foreigner, 0)),
-        h("span", null, "\uae30\uad00 " + numberFormat(flow.institution, 0)),
-        h("span", { className: smart > 0 ? "metric-up" : smart < 0 ? "metric-down" : "" }, "\uc2a4\ub9c8\ud2b8 " + numberFormat(smart, 0)),
-        h("em", null, flow.date || "")
-      );
-    }
-
-    function renderRadarStockButton(row) {
-      const label = row.stock_name || row.stock_code || "-";
-      return h(
-        "button",
-        {
-          type: "button",
-          className: "table-link-button radar-stock-link",
-          onClick: function () { openSectorEntryStockChart(row); },
-          title: "페이지 새로고침",
-        },
-        label
-      );
-    }
-
-    function renderSignalRadarPanel() {
-      const radarColumns = [
-        { key: "stock_name", label: "\uc885\ubaa9", render: renderRadarStockButton },
-        { key: "sector", label: "섹터" },
-        { key: "signals", label: "\uc2dc\uadf8\ub110 \uc0c1\ud0dc", render: function (row) { return h("div", { className: "radar-signal-badges" }, ensureArray(row.signals).map(signalBadge)); } },
-        { key: "score", label: "\uc2dc\uadf8\ub110\uc810\uc218", render: function (row) { return scoreSpan(row.score); } },
-        { key: "flow", label: "\uc218\uae09 \ud750\ub984", render: renderRadarFlow },
-        { key: "change_pct", label: "\ub4f1\ub77d\ub960", render: function (row) { return renderRadarReturn(row.change_pct); } },
-        { key: "trading_value_100m", label: "\uac70\ub798\ub300\uae08(\uc5b5)", render: function (row) { return numberFormat(row.trading_value_100m, 0); } },
-      ];
-      const performanceColumns = [
-        { key: "label", label: "\uad6c\ubd84" },
-        { key: "event_count", label: "\ubc1c\uc0dd \ud69f\uc218", render: function (row) { return numberFormat(row.event_count, 0) + "\ud68c"; } },
-        { key: "d5", label: "5\uac70\ub798\uc77c", render: function (row) { return renderRadarPerformanceCell(row, 5); } },
-        { key: "d20", label: "20\uac70\ub798\uc77c", render: function (row) { return renderRadarPerformanceCell(row, 20); } },
-        { key: "d60", label: "60\uac70\ub798\uc77c", render: function (row) { return renderRadarPerformanceCell(row, 60); } },
-      ];
-      return h(
-        "div",
-        { className: "panel signal-radar-panel" },
-        h(
-          "div",
-          { className: "section-toolbar" },
-          h("div", null,
-            h(SectionTitle, null, "편입/편출 시그널 레이더"),
-            h("div", { className: "summary-help" }, radarData.description || "\ud3b8\uc785\uacfc \ud3b8\ucd9c \uc2dc\uadf8\ub110\uc744 \ud55c \ubc88\uc5d0 \ud655\uc778\ud560 \uc218 \uc788\ub294 \uc694\uc57d \ud328\ub110\uc785\ub2c8\ub2e4.")
-          ),
-          h(
-            "div",
-            { className: "radar-summary-pills" },
-            h("span", null, "\uae30\uc900\uc77c " + (radarData.date || "-")),
-            h("span", null, "\uc2e0\ud638 \uc218 " + numberFormat(radarSummary.signal_count, 0) + "\uac1c"),
-            h("span", null, "\ud3ec\ud2b8\ud3f4\ub9ac\uc624 " + numberFormat(radarSummary.portfolio_hit_count, 0) + "\uac1c"),
-            h("span", null, "\uad00\uc2ec\uc885\ubaa9 " + numberFormat(radarSummary.watch_hit_count, 0) + "\uac1c")
-          )
-        ),
-        radarRequest.loading && !radarRequest.data
-          ? h(LoadingBlock, { compact: true, title: "\ud3b8\uc785/\ud3b8\ucd9c \uc2dc\uadf8\ub110 \ub808\uc774\ub354 \ubd88\ub7ec\uc624\ub294 \uc911", label: radarRequest.label })
-          : radarRequest.error
-            ? h(ErrorPanel, { message: radarRequest.error })
-            : h(
-                React.Fragment,
-                null,
-                h(
-                  "div",
-                  { className: "radar-definition-scroll" },
-                  h(
-                    "div",
-                    { className: "radar-definition-grid" },
-                    ensureArray(radarData.definitions).map(function (definition) {
-                      return h(
-                        "div",
-                        { key: definition.key, className: "radar-definition-card " + definition.key },
-                        h("div", { className: "radar-definition-top" },
-                          h("strong", null, definition.label || definition.key),
-                          h("span", null, numberFormat(definition.today_count, 0))
-                        ),
-                        h("p", null, definition.description || "")
-                      );
-                    })
-                  )
-                ),
-                h(
-                  "div",
-                  { className: "radar-table-section" },
-                  h("div", { className: "radar-subhead" },
-                    h("div", { className: "subsection-title" }, "시그널 발생 종목"),
-                    h("span", null, numberFormat(radarRows.length, 0) + "\uc885\ubaa9")
-                  ),
-                  h(
-                    "div",
-                    { className: "radar-table-scroll radar-signal-scroll" },
-                    h(SortableDataTable, {
-                      rows: radarRows,
-                      columns: radarColumns,
-                      emptyMessage: "해당 시그널 종목 데이터가 없습니다.",
-                      rowClassName: function (row) {
-                        return (row.is_portfolio ? "radar-owned-row " : "") + (row.is_watch ? "radar-watch-row" : "");
-                      },
-                    })
-                  )
-                ),
-                h(
-                  "div",
-                  { className: "radar-table-section compact" },
-                  h("div", { className: "radar-subhead" },
-                    h("div", { className: "subsection-title" }, "신호별 평균 성과"),
-                    h("span", null, "5/20/60\uac70\ub798\uc77c")
-                  ),
-                  h("div", { className: "summary-help" }, "오늘의 주도주 DB에서 각 신호가 발생했던 종목을 집계하고, 신호별 평균 성과를 요약합니다."),
-                  h(
-                    "div",
-                    { className: "radar-table-scroll radar-performance-scroll" },
-                    h(SortableDataTable, {
-                      rows: radarPerformanceRows,
-                      columns: performanceColumns,
-                      emptyMessage: "해당 섹터의 종목 데이터가 없습니다.",
-                    })
-                  )
-                )
-              )
-      );
-    }
-
-    function closeSectorEntryStockChart() {
-      chartRequestSeqRef.current += 1;
-      setChartPopup({ open: false, row: null, loading: false, error: "", data: null, openingExternal: false, externalMessage: "" });
-    }
-
-    function openSectorEntryStockChart(stock) {
-      const row = stock || {};
-      const code = String(row.stock_code || row.code || "").replace(/\D/g, "").padStart(6, "0");
-      const stockName = row.stock_name || row.resolved_name || "";
-      const cacheKey = code && code !== "000000" ? code : stockName;
-      chartRequestSeqRef.current += 1;
-      const requestSeq = chartRequestSeqRef.current;
-      setChartPopup({
-        open: true,
-        row: row,
-        loading: true,
-        error: "",
-        data: null,
-        openingExternal: false,
-        externalMessage: "",
-      });
-      if (cacheKey && CHART_PREVIEW_CACHE[cacheKey]) {
-        setChartPopup({
-          open: true,
-          row: row,
-          loading: false,
-          error: "",
-          data: CHART_PREVIEW_CACHE[cacheKey],
-          openingExternal: false,
-          externalMessage: "",
-        });
-        return;
-      }
-      const params = new URLSearchParams();
-      if (code && code !== "000000") {
-        params.set("code", code);
-      }
-      if (stockName) {
-        params.set("name", stockName);
-      }
-      params.set("months", "3");
-      fetchJson("/api/stocks/chart-preview?" + params.toString())
-        .then(function (payload) {
-          if (cacheKey) {
-            CHART_PREVIEW_CACHE[cacheKey] = payload;
-          }
-          if (chartRequestSeqRef.current !== requestSeq) {
-            return;
-          }
-          setChartPopup({
-            open: true,
-            row: row,
-            loading: false,
-            error: "",
-            data: payload,
-            openingExternal: false,
-            externalMessage: "",
-          });
-        })
-        .catch(function (error) {
-          if (chartRequestSeqRef.current !== requestSeq) {
-            return;
-          }
-          setChartPopup({
-            open: true,
-            row: row,
-            loading: false,
-            error: error.message || String(error),
-            data: null,
-            openingExternal: false,
-            externalMessage: "",
-          });
-        });
-    }
-
-    function openSectorEntryStockInTradingView() {
-      const row = chartPopup.row || {};
-      const code = String(row.stock_code || row.code || "").replace(/\D/g, "").padStart(6, "0");
-      const stockName = row.stock_name || row.resolved_name || "";
-      setChartPopup(function (current) {
-        return Object.assign({}, current, { openingExternal: true, externalMessage: "" });
-      });
-      postJson("/api/tradingview/open", {
-        stock_code: code && code !== "000000" ? code : null,
-        stock_name: stockName || null,
-      }).then(function (payload) {
-        setChartPopup(function (current) {
-          return Object.assign({}, current, {
-            openingExternal: false,
-            externalMessage: (payload && payload.message) || "TradingView 열기 요청을 보냈습니다.",
-          });
-        });
-      }).catch(function (error) {
-        setChartPopup(function (current) {
-          return Object.assign({}, current, {
-            openingExternal: false,
-            externalMessage: "TradingView 열기 실패: " + (error.message || String(error)),
-          });
-        });
-      });
-    }
-
-    function renderSectorEntryStockChartPopup() {
-      if (!chartPopup.open) {
-        return null;
-      }
-      const row = chartPopup.row || {};
-      const code = String(row.stock_code || row.code || "").replace(/\D/g, "").padStart(6, "0");
-      const label = row.stock_name || row.resolved_name || "종목";
-      return h(
-        "div",
-        {
-          className: "modal-backdrop theme-stock-chart-backdrop",
-          onClick: closeSectorEntryStockChart,
-        },
-        h(
-          "div",
-          {
-            className: "modal-panel theme-stock-chart-modal",
-            onClick: function (event) { event.stopPropagation(); },
-          },
-          h(
-            "div",
-            { className: "modal-head" },
-            h("div", null,
-              h("div", { className: "eyebrow" }, "3개월 주가"),
-              h("h2", null, label + (code && code !== "000000" ? " (" + code + ")" : ""))
-            ),
-            h(
-              "div",
-              { className: "theme-stock-chart-actions" },
-              h("button", {
-                type: "button",
-                className: "mini-button tradingview-open-button",
-                onClick: openSectorEntryStockInTradingView,
-                disabled: chartPopup.openingExternal,
-              }, chartPopup.openingExternal ? "여는 중..." : "TradingView 앱에서 열기"),
-              h("button", { type: "button", className: "mini-button", onClick: closeSectorEntryStockChart }, "닫기")
-            )
-          ),
-          chartPopup.externalMessage
-            ? h("div", { className: "summary-help theme-stock-chart-message" }, chartPopup.externalMessage)
-            : null,
-          h(StockChartPreview, {
-            label: label,
-            loading: chartPopup.loading,
-            error: chartPopup.error,
-            data: chartPopup.data,
-          })
-        )
-      );
-    }
-
-    return h(
-      React.Fragment,
-      null,
-      renderSectorEntryStockChartPopup(),
-      h(
-        "div",
-        { className: "panel hero-panel alt" },
-        h("div", { className: "eyebrow" }, "Sector Entry Signal"),
-        h("h1", { className: "page-title" }, "섹터 비교 테이블"),
-        h("p", { className: "page-copy" }, "최근 5거래일 섹터 거래대금 평균 순위와 오늘의 주도주 점수로, 잡주 꼬리 대신 신규 진입할 주도 섹터를 찾습니다."),
-        data.start_date
-          ? h(
-              "div",
-              { className: "summary-grid summary-grid-small" },
-              h(SummaryCard, { label: "조회 기간", value: (data.start_date || "") + " ~ " + (data.end_date || "") }),
-              h(SummaryCard, { label: "신규 진입", value: numberFormat(summary.signal_count, 0) + "건" }),
-              h(SummaryCard, { label: "최근 활성 섹터", value: numberFormat(summary.latest_active_count, 0) + "개" })
-            )
-          : null
-      ),
-      renderSignalRadarPanel(),
-      h(
-        "div",
-        { className: "panel sector-entry-signal-panel" },
-        h(
-          "div",
-          { className: "section-toolbar" },
-          h("div", null,
-            h(SectionTitle, null, "진입 신호 후보"),
-            h("div", { className: "summary-help" }, data.description || "진입 신호를 계산합니다.")
-          ),
-          h(
-            "div",
-            { className: "toggle-group" },
-            h("button", {
-              type: "button",
-              className: "mini-button" + (betaWindow <= 100 ? " active" : ""),
-              onClick: function () { setBetaWindow(63); },
-            }, "β 3개월"),
-            h("button", {
-              type: "button",
-              className: "mini-button" + (betaWindow > 100 ? " active" : ""),
-              onClick: function () { setBetaWindow(252); },
-            }, "β 1년"),
-            data.start_date
-              ? h("span", { className: "telegram-status-pill" }, (data.start_date || "") + " ~ " + (data.end_date || ""))
-              : null
-          )
-        ),
-        request.loading && !request.data
-          ? h(LoadingBlock, { compact: true, title: "섹터 진입 신호 계산 중", label: request.label })
-          : request.error
-            ? h(ErrorPanel, { message: request.error })
-            : h(
-                React.Fragment,
-                null,
-                latestActive.length
-                  ? h(
-                      "div",
-                      { className: "sector-entry-card-grid" },
-                      latestActive.map(function (item) {
-                        return h(
-                          "div",
-                          { key: item.sector, className: "sector-entry-card" },
-                          h("div", { className: "sector-entry-card-head" },
-                            h("strong", null, item.sector),
-                            h("span", null, item.entry_phase || item.signal_level || "\uad6d\uba74")
-                          ),
-                          h("div", { className: "sector-entry-score" }, numberFormat(item.entry_score, 1)),
-                          h("div", { className: "summary-help" }, "권장 후보 비중 " + formatPercent(item.suggested_weight_pct, 1)),
-                          h("div", { className: "sector-entry-meta" },
-                            h("span", null, "거래대금 " + numberFormat(item.trading_rank, 0) + "위"),
-                            h("span", null, "평균점수 " + numberFormat(item.avg_score, 1)),
-                            h("span", null, "70점+ " + numberFormat(item.strong_count, 0) + "개")
-                          ),
-                          h(SectorEntryLeaderChips, { stocks: item.leader_stocks, betaLabel: betaWindowLabel, onOpenChart: openSectorEntryStockChart }),
-                          renderEntryFormulaToggle(item, "card")
-                        );
-                      })
-                    )
-                  : h(EmptyState, { compact: true, message: "현재 조건을 만족하는 진입 후보가 없습니다." }),
-                h("div", { className: "subsection-title" }, "날짜별 신규 진입 신호"),
-                h(SortableDataTable, {
-                  rows: rows.slice(0, 120),
-                  columns: entrySignalColumns,
-                  emptyMessage: "아직 신규 진입 신호가 없습니다.",
-                })
-              )
+  function SectorEntrySignalPageModuleUnavailable() {
+    return h("div", { className: "page sector-entry-page" },
+      h("section", { className: "panel" },
+        h(SectionTitle, null, "섹터 진입 신호"),
+        h("div", { className: "notice-box error" }, "페이지 모듈을 불러오지 못했습니다. 앱을 새로고침해 주세요.")
       )
     );
   }
 
+  let SectorEntrySignalPage = SectorEntrySignalPageModuleUnavailable;
+  if (typeof sectorEntryPageModule.createPage === "function") {
+    try {
+      SectorEntrySignalPage = sectorEntryPageModule.createPage({
+        React: React,
+        CHART_PREVIEW_CACHE: CHART_PREVIEW_CACHE,
+        EmptyState: EmptyState,
+        ensureArray: ensureArray,
+        ErrorPanel: ErrorPanel,
+        fetchJson: fetchJson,
+        formatPercent: formatPercent,
+        h: h,
+        LoadingBlock: LoadingBlock,
+        numberFormat: numberFormat,
+        postJson: postJson,
+        scoreSpan: scoreSpan,
+        SectionTitle: SectionTitle,
+        SectorEntryLeaderChips: SectorEntryLeaderChips,
+        SortableDataTable: SortableDataTable,
+        StockChartPreview: StockChartPreview,
+        SummaryCard: SummaryCard,
+        useFetchJson: useFetchJson,
+      });
+    } catch (error) {
+      console.error("Failed to initialize sector-entry page module.", error);
+    }
+  }
   function SectorSnapshotPageV2() {
     const sectorDbRequest = useFetchJson("/api/sector-db");
     const [groups, setGroups] = useState([buildEmptySectorGroupV2()]);
