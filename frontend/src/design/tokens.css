@@ -1,0 +1,88 @@
+@font-face {
+  font-family: "NanumSquare";
+  src: url("../assets/fonts/NanumSquareR.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "NanumSquare";
+  src: url("../assets/fonts/NanumSquareB.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700 900;
+  font-display: swap;
+}
+
+:root,
+:root[data-theme="light"] {
+  --ui-canvas: #f5f7fa;
+  --ui-canvas-deep: #eef2f6;
+  --ui-surface: #ffffff;
+  --ui-surface-raised: rgba(255, 255, 255, 0.9);
+  --ui-surface-soft: #f8fafc;
+  --ui-surface-hover: #f2f6fb;
+  --ui-text: #191f28;
+  --ui-text-secondary: #4e5968;
+  --ui-text-muted: #8b95a1;
+  --ui-border: rgba(30, 41, 59, 0.08);
+  --ui-border-strong: rgba(30, 41, 59, 0.14);
+  --ui-brand: #3182f6;
+  --ui-brand-hover: #1b64da;
+  --ui-brand-soft: #e8f3ff;
+  --ui-positive: #00a878;
+  --ui-positive-soft: #e8faf4;
+  --ui-danger: #f04452;
+  --ui-danger-soft: #fff0f1;
+  --ui-shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.04), 0 4px 16px rgba(17, 24, 39, 0.04);
+  --ui-shadow-md: 0 16px 42px rgba(17, 24, 39, 0.08);
+  --ui-ring: 0 0 0 4px rgba(49, 130, 246, 0.14);
+
+  --bg: var(--ui-canvas);
+  --bg-alt: var(--ui-canvas-deep);
+  --panel: var(--ui-surface);
+  --panel-strong: var(--ui-surface);
+  --line: var(--ui-border);
+  --text: var(--ui-text);
+  --muted: var(--ui-text-muted);
+  --accent: var(--ui-brand);
+  --accent-2: var(--ui-positive);
+  --danger: var(--ui-danger);
+  --shadow: var(--ui-shadow-sm);
+}
+
+:root[data-theme="dark"] {
+  --ui-canvas: #0f1419;
+  --ui-canvas-deep: #0a0f13;
+  --ui-surface: #171e25;
+  --ui-surface-raised: rgba(23, 30, 37, 0.88);
+  --ui-surface-soft: #1d252d;
+  --ui-surface-hover: #232e38;
+  --ui-text: #f2f4f6;
+  --ui-text-secondary: #c4cbd2;
+  --ui-text-muted: #8f9aa5;
+  --ui-border: rgba(255, 255, 255, 0.08);
+  --ui-border-strong: rgba(255, 255, 255, 0.14);
+  --ui-brand: #5b9cff;
+  --ui-brand-hover: #82b5ff;
+  --ui-brand-soft: rgba(49, 130, 246, 0.16);
+  --ui-positive: #48cfa5;
+  --ui-positive-soft: rgba(72, 207, 165, 0.14);
+  --ui-danger: #ff6975;
+  --ui-danger-soft: rgba(255, 105, 117, 0.14);
+  --ui-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 12px 28px rgba(0, 0, 0, 0.18);
+  --ui-shadow-md: 0 20px 54px rgba(0, 0, 0, 0.32);
+  --ui-ring: 0 0 0 4px rgba(91, 156, 255, 0.18);
+
+  --bg: var(--ui-canvas);
+  --bg-alt: var(--ui-canvas-deep);
+  --panel: var(--ui-surface);
+  --panel-strong: var(--ui-surface);
+  --line: var(--ui-border);
+  --text: var(--ui-text);
+  --muted: var(--ui-text-muted);
+  --accent: var(--ui-brand);
+  --accent-2: var(--ui-positive);
+  --danger: var(--ui-danger);
+  --shadow: var(--ui-shadow-sm);
+}

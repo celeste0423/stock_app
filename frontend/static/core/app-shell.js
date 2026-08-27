@@ -10291,6 +10291,9 @@
       }
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
     });
+    const [colorTheme, setColorTheme] = useState(function () {
+      return window.StockAppTheme ? window.StockAppTheme.getTheme() : "light";
+    });
     const [draggingTabKey, setDraggingTabKey] = useState("");
     const appConfigRequest = useFetchJson("/api/app-config");
     const appConfig = appConfigRequest.data || {};
@@ -10307,6 +10310,16 @@
     useEffect(function () {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? "1" : "0");
     }, [sidebarCollapsed]);
+
+    useEffect(function () {
+      function handleThemeChange(event) {
+        setColorTheme(event && event.detail && event.detail.theme === "dark" ? "dark" : "light");
+      }
+      window.addEventListener("stock-dashboard:theme-change", handleThemeChange);
+      return function () {
+        window.removeEventListener("stock-dashboard:theme-change", handleThemeChange);
+      };
+    }, []);
 
     useEffect(function () {
       localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(normalizeTabOrder(tabOrder, defaultTabKeys)));
@@ -10617,7 +10630,17 @@
         h(
           "div",
           { className: "sidebar-head" },
-          h("div", { className: "brand" }, "Stock Dashboard"),
+          h(
+            "div",
+            { className: "brand" },
+            h("span", { className: "brand-mark", "aria-hidden": "true" }),
+            h(
+              "span",
+              { className: "brand-copy" },
+              h("span", { className: "brand-title" }, "Stock Dashboard"),
+              h("span", { className: "brand-caption" }, "Market intelligence")
+            )
+          ),
           h(
             "div",
             { className: "sidebar-actions" },
@@ -10637,9 +10660,21 @@
                 type: "button",
                 className: "sidebar-icon-button",
                 title: "페이지 새로고침",
+                "aria-label": "페이지 새로고침",
                 onClick: function () { window.location.reload(); },
               },
-              "?"
+              h("span", { className: "refresh-icon", "aria-hidden": "true" })
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "sidebar-icon-button theme-toggle-button",
+                title: colorTheme === "dark" ? "라이트 모드" : "다크 모드",
+                "aria-label": colorTheme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환",
+                onClick: function () { if (window.StockAppTheme) { window.StockAppTheme.toggleTheme(); } },
+              },
+              h("span", { className: "theme-icon", "aria-hidden": "true" })
             )
           )
         ),
@@ -10701,8 +10736,19 @@
                   title: "\ud398\uc774\uc9c0 \uc0c8\ub85c\uace0\uce68",
                   onClick: function () { window.location.reload(); },
                 },
-                "?",
+                h("span", { className: "refresh-icon", "aria-hidden": "true" }),
                 h("span", null, "새로고침")
+              ),
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "content-menu-button theme-toggle-button",
+                  title: colorTheme === "dark" ? "라이트 모드" : "다크 모드",
+                  onClick: function () { if (window.StockAppTheme) { window.StockAppTheme.toggleTheme(); } },
+                },
+                h("span", { className: "theme-icon", "aria-hidden": "true" }),
+                h("span", null, colorTheme === "dark" ? "라이트" : "다크")
               )
             )
           : null,

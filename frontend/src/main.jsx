@@ -3,11 +3,15 @@ import { createRoot } from "react-dom/client";
 
 import "../static/styles.css";
 import "./boot.css";
+import "./design/tokens.css";
+import "./design/shell.css";
 import { legacyScripts } from "./legacy-manifest";
+import { initializeTheme } from "./design/theme";
 
 window.React = React;
 window.ReactDOM = { createRoot };
 window.__STOCK_APP_VITE__ = true;
+initializeTheme();
 
 function showBootError(error) {
   const root = document.getElementById("root");
