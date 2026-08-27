@@ -25,6 +25,7 @@
 
   function SectorWatchBoardPage() {
     const request = useFetchJson("/api/sector-watch-board?limit_per_sector=80");
+    const [slowLoading, setSlowLoading] = useState(false);
     const [selectedStock, setSelectedStock] = useState(null);
     const [chartState, setChartState] = useState({ loading: false, error: "", data: null });
     const [orderedSectors, setOrderedSectors] = useState([]);
@@ -38,6 +39,17 @@
     useEffect(function () {
       setOrderedSectors(ensureArray(data.sectors));
     }, [request.data]);
+
+    useEffect(function () {
+      if (!request.loading) {
+        setSlowLoading(false);
+        return;
+      }
+      const timer = window.setTimeout(function () {
+        setSlowLoading(true);
+      }, 1800);
+      return function () { window.clearTimeout(timer); };
+    }, [request.loading]);
 
     useEffect(function () {
       if (!selectedStock) {
@@ -320,8 +332,29 @@
       );
     }
 
-    if (request.loading && !sectors.length) {
+    if (request.loading && !sectors.length && !slowLoading) {
       return LoadingPanel({ label: request.label });
+    }
+    if (request.loading && !sectors.length) {
+      return h(
+        React.Fragment,
+        null,
+        h(KrxMarketMapPanel),
+        h(
+          "div",
+          { className: "panel sector-watch-hero" },
+          h(
+            "div",
+            { className: "sector-watch-hero-head" },
+            h("div", null,
+              h("div", { className: "eyebrow" }, "Watch Board"),
+              h("h1", { className: "page-title" }, "관심종목 보드"),
+              h("p", { className: "page-copy compact-copy" }, "관심종목 데이터 응답을 기다리는 동안 KRX 시장 맵을 먼저 표시합니다.")
+            )
+          )
+        ),
+        LoadingPanel({ label: request.label, detail: "섹터별 종목과 현재가 데이터가 도착하면 이 영역이 자동으로 보드로 전환됩니다." })
+      );
     }
     if (request.error) {
       return ErrorPanel({ message: request.error });
