@@ -40,8 +40,6 @@
     "sector-watch",
     "portfolio",
     "themes",
-    "global-themes",
-    "asia-themes",
     "telegram",
     "disclosure",
     "stock-news",
@@ -342,4 +340,3 @@
     normalizeAllocationLabel,
   };
 })(window);
-

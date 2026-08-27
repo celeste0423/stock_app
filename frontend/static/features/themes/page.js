@@ -52,6 +52,7 @@
     const requestPageNavigation = deps.requestPageNavigation;
     const ScoreHistoryChart = deps.ScoreHistoryChart;
     const SectionTitle = deps.SectionTitle;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const SectorMarketCapChart = deps.SectorMarketCapChart;
     const shiftIsoDate = deps.shiftIsoDate;
     const shiftMonth = deps.shiftMonth;
@@ -806,22 +807,26 @@
     };
     const sortKey = themeTableSortState.key || "score";
     const isRank52Mode = sortKey === "rank" && rankFilterMode === "high52";
-    const isRankNear52Mode = sortKey === "rank" && rankFilterMode === "high20";
-    const preserveCompositeRank = sectorFilter !== "all" || isRank52Mode || isRankNear52Mode;
+    const isRank60Mode = sortKey === "rank" && rankFilterMode === "high60";
+    const isRank20Mode = sortKey === "rank" && rankFilterMode === "high20";
+    const preserveCompositeRank = sectorFilter !== "all" || isRank52Mode || isRank60Mode || isRank20Mode;
     const baseVisibleRows = sortKey === "rank"
       ? visibleRows.filter(function (row) {
           if (isRank52Mode) {
             return isTradableHigh52(row);
           }
-          if (isRankNear52Mode) {
-            return isTradableHigh20(row) && Number(row && row.pct_to_52w_high) <= 30;
+          if (isRank60Mode) {
+            return isTradableHigh60(row);
+          }
+          if (isRank20Mode) {
+            return isTradableHigh20(row);
           }
           return true;
         })
       : visibleRows;
     const sortedVisibleRows = baseVisibleRows.slice().sort(function (left, right) {
       if (sortKey === "rank") {
-        const rankModeScoreKey = (isRank52Mode || isRankNear52Mode) ? "score" : "score_o";
+        const rankModeScoreKey = (isRank52Mode || isRank60Mode || isRank20Mode) ? "score" : "score_o";
         const primaryGap = Number(right[rankModeScoreKey] || 0) - Number(left[rankModeScoreKey] || 0);
         if (primaryGap !== 0) {
           return primaryGap;
@@ -905,16 +910,16 @@
     const isRankSort = themeTableSortState.key === "rank";
     const isDailyScoreSort = themeTableSortState.key === "score_o";
     const captureTitle = isRankSort
-      ? (isRankNear52Mode ? "종목 추세 순위 · 20일 신고가 · 52주 신고가 30% 이내" : (isRank52Mode ? "종목 추세 순위 · 52주 신고가" : "종목 추세 순위"))
+      ? (isRank20Mode ? "종목 추세 순위 · 20일 종가 신고가" : (isRank60Mode ? "종목 추세 순위 · 60일 종가 신고가" : (isRank52Mode ? "종목 추세 순위 · 52주 종가 신고가" : "종목 추세 순위")))
       : (isDailyScoreSort ? "종목 추세 순위 · 당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상" : "종목 추세 순위 · 종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상");
     const captureButtonLabel = isRankSort
-      ? (isRankNear52Mode ? "20일 신고가 · 52주 30% 이내 캡쳐" : (isRank52Mode ? "52주 신고가 캡쳐" : "전체 캡쳐"))
+      ? (isRank20Mode ? "20일 종가 신고가 캡쳐" : (isRank60Mode ? "60일 종가 신고가 캡쳐" : (isRank52Mode ? "52주 종가 신고가 캡쳐" : "전체 캡쳐")))
       : (isDailyScoreSort ? "당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상 캡쳐" : "종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상 캡쳐");
     const captureSummaryLabel = isRankSort
-      ? (isRankNear52Mode ? "20일 신고가 · 52주 신고가 30% 이내" : (isRank52Mode ? "52주 신고가" : "전체"))
+      ? (isRank20Mode ? "20일 종가 신고가" : (isRank60Mode ? "60일 종가 신고가" : (isRank52Mode ? "52주 종가 신고가" : "전체")))
       : (isDailyScoreSort ? "당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상" : "종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상");
     const captureEmptyMessage = isRankSort
-      ? (isRankNear52Mode ? "20일 신고가이면서 52주 신고가까지 30% 이내인 종목이 없습니다." : (isRank52Mode ? "52주 신고가 종목이 없습니다." : "표시할 종목이 없습니다."))
+      ? (isRank20Mode ? "20일 종가 신고가 종목이 없습니다." : (isRank60Mode ? "60일 종가 신고가 종목이 없습니다." : (isRank52Mode ? "52주 종가 신고가 종목이 없습니다." : "표시할 종목이 없습니다.")))
       : (isDailyScoreSort ? "당일점수 " + numberFormat(dailyCaptureScoreThreshold, 0) + "점 이상 종목이 없습니다." : "종합점수 " + numberFormat(krCaptureScoreThreshold, 0) + "점 이상 종목이 없습니다.");
     const scoreCaptureRows = (isRankSort ? sortedVisibleRows : sortedVisibleRows
       .filter(function (row) {
@@ -928,12 +933,12 @@
         return Object.assign({}, row, { __display_rank: displayRank });
       });
     const rankHighCountLabel = isRank52Mode
-      ? "52주 신고가 " + numberFormat(rows.filter(isTradableHigh52).length, 0) + "개"
-      : (isRankNear52Mode
-        ? "조건 종목 " + numberFormat(rows.filter(function (row) {
-            return isTradableHigh20(row) && Number(row && row.pct_to_52w_high) <= 30;
-          }).length, 0) + "개"
-        : "");
+      ? "52주 종가 신고가 " + numberFormat(rows.filter(isTradableHigh52).length, 0) + "개"
+      : (isRank60Mode
+        ? "60일 종가 신고가 " + numberFormat(rows.filter(isTradableHigh60).length, 0) + "개"
+        : (isRank20Mode
+          ? "20일 종가 신고가 " + numberFormat(rows.filter(isTradableHigh20).length, 0) + "개"
+          : ""));
     const maxLeadCount = sortedVisibleRows.reduce(function (maxValue, row) {
       return Math.max(maxValue, Math.abs(Number(row.lead_count || 0)));
     }, 0);
@@ -949,6 +954,11 @@
           return;
         }
         if (rankFilterMode === "high52") {
+          setRankFilterMode("high60");
+          setThemeTableSortState({ key: "rank", direction: "desc" });
+          return;
+        }
+        if (rankFilterMode === "high60") {
           setRankFilterMode("high20");
           setThemeTableSortState({ key: "rank", direction: "desc" });
           return;
@@ -1620,6 +1630,17 @@
         && Number((row && row.score_o) || 0) > 0;
     }
 
+    function isHigh60(value) {
+      const normalized = String(value || "").trim().toUpperCase();
+      return normalized === "O" || normalized === "Y" || normalized === "TRUE" || normalized === "1";
+    }
+
+    function isTradableHigh60(row) {
+      return isHigh60(row && row.is_60d_high)
+        && Number((row && row.trading_value_100m) || 0) > 0
+        && Number((row && row.score_o) || 0) > 0;
+    }
+
     function isHigh20(value) {
       const normalized = String(value || "").trim().toUpperCase();
       return normalized === "O" || normalized === "Y" || normalized === "TRUE" || normalized === "1";
@@ -1633,14 +1654,15 @@
 
     function renderRankCell(row, rankValue) {
       const high52 = isHigh52(row.is_52w_high);
+      const high60 = isHigh60(row.is_60d_high);
       const high20 = isHigh20(row.is_20d_high);
-      const near52 = high20 && Number(row && row.pct_to_52w_high) <= 30;
       const displayRank = Number(rankValue != null ? rankValue : (row && row.__display_rank != null ? row.__display_rank : row.rank));
+      const highTitle = high52 ? "52주 종가 신고가" : (high60 ? "60일 종가 신고가" : (high20 ? "20일 종가 신고가" : ""));
       return h(
         "span",
         {
-          className: "rank-cell" + (high52 ? " high52" : "") + (!high52 && near52 ? " high20" : ""),
-          title: high52 ? "52주 신고가" : (near52 ? "20일 신고가 · 52주 신고가까지 30% 이내" : (high20 ? "20일 신고가" : "")),
+          className: "rank-cell" + (high52 ? " high52" : "") + (!high52 && (high60 || high20) ? " high20" : ""),
+          title: highTitle,
         },
         numberFormat(displayRank, 0)
       );
@@ -3527,22 +3549,39 @@
       ),
       h(
         "div",
-        { className: "panel hero-panel alt themes-compact-hero" + (themeBoxExpanded ? " expanded" : " collapsed") },
+        {
+          className: "panel hero-panel alt themes-compact-hero" + (themeBoxExpanded ? " expanded" : " collapsed"),
+          role: "button",
+          tabIndex: 0,
+          onClick: function () {
+            if (!themeBoxExpanded) {
+              setThemeBoxExpanded(true);
+            }
+          },
+          onKeyDown: function (event) {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setThemeBoxExpanded(function (value) { return !value; });
+            }
+          },
+          "aria-expanded": themeBoxExpanded ? "true" : "false",
+        },
         h(
           "div",
-          { className: "themes-compact-titlebar" },
+          {
+            className: "themes-compact-titlebar",
+            onClick: function (event) {
+              event.stopPropagation();
+              setThemeBoxExpanded(function (value) { return !value; });
+            },
+          },
           h(
             "div",
             { className: "themes-compact-titlebar-main" },
             h(
-              "button",
-              {
-                type: "button",
-                className: "theme-box-toggle",
-                onClick: function () { setThemeBoxExpanded(function (value) { return !value; }); },
-                "aria-expanded": themeBoxExpanded ? "true" : "false",
-              },
-              h("span", { className: "calendar-arrow", "aria-hidden": "true" }, themeBoxExpanded ? "?" : "?"),
+              "div",
+              { className: "theme-box-toggle" },
+              h("span", { className: "calendar-arrow" + (themeBoxExpanded ? " expanded" : ""), "aria-hidden": "true" }),
               h("span", { className: "theme-box-title-text" },
                 h("span", { className: "eyebrow" }, "Daily Theme Radar"),
                 h("span", { className: "page-title" }, themePageTitle)
@@ -3554,16 +3593,16 @@
               h("button", {
                 type: "button",
                 className: "mini-button" + (!isEtfUniverse ? " active" : ""),
-                onClick: function () { setUniverseMode("stock"); },
+                onClick: function (event) { event.stopPropagation(); setUniverseMode("stock"); },
               }, "주식"),
               h("button", {
                 type: "button",
                 className: "mini-button" + (isEtfUniverse ? " active" : ""),
-                onClick: function () { setUniverseMode("etf"); },
+                onClick: function (event) { event.stopPropagation(); setUniverseMode("etf"); },
               }, "국내 ETF")
             )
           ),
-          h("div", { className: "summary-help" }, themeBoxExpanded ? themeUniverseHelp : "접힘 · 화살표를 누르면 조회 파일과 요약을 볼 수 있습니다"),
+          h("div", { className: "summary-help" }, themeBoxExpanded ? themeUniverseHelp : "클릭하면 조회 날짜와 캘린더를 볼 수 있습니다"),
         ),
         themeBoxExpanded
           ? h(

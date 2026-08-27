@@ -284,6 +284,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("pragma table_info(screening_rows)").fetchall()}
     if "is_52w_high" not in cols:
         conn.execute("ALTER TABLE screening_rows ADD COLUMN is_52w_high INTEGER")
+    if "is_60d_high" not in cols:
+        conn.execute("ALTER TABLE screening_rows ADD COLUMN is_60d_high INTEGER")
     if "is_20d_high" not in cols:
         conn.execute("ALTER TABLE screening_rows ADD COLUMN is_20d_high INTEGER")
     if "avg_1m" not in cols:
@@ -415,14 +417,14 @@ def _fetch_missing_daily_closes(
 def _build_high_flags(conn: sqlite3.Connection) -> pd.DataFrame:
     rows = pd.read_sql_query(
         """
-        SELECT file_date_key, stock_code, COALESCE(high_price, close_price) AS ref_price
+        SELECT file_date_key, stock_code, close_price AS ref_price
         FROM daily_close_cache
         ORDER BY stock_code, file_date_key
         """,
         conn,
     )
     if rows.empty:
-        return pd.DataFrame(columns=["file_date_key", "stock_code", "is_52w_high", "is_20d_high"])
+        return pd.DataFrame(columns=["file_date_key", "stock_code", "is_52w_high", "is_60d_high", "is_20d_high"])
 
     rows["ref_price"] = pd.to_numeric(rows["ref_price"], errors="coerce")
     rows = rows.dropna(subset=["ref_price"]).copy()
@@ -439,11 +441,19 @@ def _build_high_flags(conn: sqlite3.Connection) -> pd.DataFrame:
         .max()
         .reset_index(level=0, drop=True)
     )
+    rolling_60d_high = (
+        rows.groupby("stock_code", sort=False)["ref_price"]
+        .rolling(window=60, min_periods=1)
+        .max()
+        .reset_index(level=0, drop=True)
+    )
     rows["rolling_52w_high"] = rolling_52w_high
+    rows["rolling_60d_high"] = rolling_60d_high
     rows["rolling_20d_high"] = rolling_20d_high
     rows["is_52w_high"] = (rows["ref_price"] >= (rows["rolling_52w_high"] - 1e-9)).astype(int)
+    rows["is_60d_high"] = (rows["ref_price"] >= (rows["rolling_60d_high"] - 1e-9)).astype(int)
     rows["is_20d_high"] = (rows["ref_price"] >= (rows["rolling_20d_high"] - 1e-9)).astype(int)
-    return rows[["file_date_key", "stock_code", "is_52w_high", "is_20d_high"]].copy()
+    return rows[["file_date_key", "stock_code", "is_52w_high", "is_60d_high", "is_20d_high"]].copy()
 
 
 def main() -> int:
@@ -544,6 +554,7 @@ def main() -> int:
                 file_date_key TEXT NOT NULL,
                 stock_code TEXT NOT NULL,
                 is_52w_high INTEGER,
+                is_60d_high INTEGER,
                 is_20d_high INTEGER,
                 PRIMARY KEY (file_date_key, stock_code)
             )
@@ -557,6 +568,12 @@ def main() -> int:
             SET
                 is_52w_high = (
                     SELECT f.is_52w_high
+                    FROM _flags f
+                    WHERE f.file_date_key = screening_rows.file_date_key
+                      AND f.stock_code = screening_rows.stock_code
+                ),
+                is_60d_high = (
+                    SELECT f.is_60d_high
                     FROM _flags f
                     WHERE f.file_date_key = screening_rows.file_date_key
                       AND f.stock_code = screening_rows.stock_code
@@ -601,6 +618,7 @@ def main() -> int:
                 avg_1m,
                 sortino_norm,
                 COALESCE(is_52w_high, 0) AS is_52w_high,
+                COALESCE(is_60d_high, 0) AS is_60d_high,
                 COALESCE(is_20d_high, 0) AS is_20d_high
             FROM screening_rows
             ORDER BY stock_code, file_date_key
@@ -623,9 +641,10 @@ def main() -> int:
             message=f"국내 점수 원본 행 로드 완료 ({len(df):,}행)",
         )
 
-        for col in ("market_cap_100m", "trading_value_100m", "change_pct", "avg_1w", "avg_1m", "sortino_norm", "is_52w_high", "is_20d_high"):
+        for col in ("market_cap_100m", "trading_value_100m", "change_pct", "avg_1w", "avg_1m", "sortino_norm", "is_52w_high", "is_60d_high", "is_20d_high"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df["is_52w_high"] = df["is_52w_high"].fillna(0).astype(int)
+        df["is_60d_high"] = df["is_60d_high"].fillna(0).astype(int)
         df["is_20d_high"] = df["is_20d_high"].fillna(0).astype(int)
 
         marcap = df["market_cap_100m"].fillna(0.0)
@@ -821,7 +840,7 @@ def main() -> int:
             df = df[df["file_date_key"].astype(str) >= update_start_key].copy()
 
         upd = df[
-            ["file_date_key", "stock_code", "is_52w_high", "is_20d_high", "score_o_new", "atr_20_new", "avg_1w_new", "avg_1m_new", "avg_3m_new", "sortino_norm_new", "score_s_new"]
+            ["file_date_key", "stock_code", "is_52w_high", "is_60d_high", "is_20d_high", "score_o_new", "atr_20_new", "avg_1w_new", "avg_1m_new", "avg_3m_new", "sortino_norm_new", "score_s_new"]
         ].copy()
         upd = upd.rename(
             columns={
@@ -853,6 +872,7 @@ def main() -> int:
                 file_date_key TEXT NOT NULL,
                 stock_code TEXT NOT NULL,
                 is_52w_high INTEGER,
+                is_60d_high INTEGER,
                 is_20d_high INTEGER,
                 score_o REAL,
                 atr_20 REAL,
@@ -872,6 +892,7 @@ def main() -> int:
             UPDATE screening_rows
             SET
                 is_52w_high = (SELECT u.is_52w_high FROM _upd u WHERE u.file_date_key = screening_rows.file_date_key AND u.stock_code = screening_rows.stock_code),
+                is_60d_high = (SELECT u.is_60d_high FROM _upd u WHERE u.file_date_key = screening_rows.file_date_key AND u.stock_code = screening_rows.stock_code),
                 is_20d_high = (SELECT u.is_20d_high FROM _upd u WHERE u.file_date_key = screening_rows.file_date_key AND u.stock_code = screening_rows.stock_code),
                 score_o = (SELECT u.score_o FROM _upd u WHERE u.file_date_key = screening_rows.file_date_key AND u.stock_code = screening_rows.stock_code),
                 atr_20 = (SELECT u.atr_20 FROM _upd u WHERE u.file_date_key = screening_rows.file_date_key AND u.stock_code = screening_rows.stock_code),

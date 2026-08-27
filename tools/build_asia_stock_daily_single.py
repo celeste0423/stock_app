@@ -214,6 +214,8 @@ def _to_yahoo_symbol(exchange_code: str, symbol: str) -> str:
         return f"{base}.SS"
     if exchange_code == "SZSE":
         return f"{base}.SZ"
+    if exchange_code == "HKEX":
+        return f"{base.zfill(4)}.HK" if base.isdigit() else f"{base}.HK"
     return base
 
 
@@ -263,9 +265,13 @@ def _load_asia_listing() -> pd.DataFrame:
     except Exception:
         pass
     frames: list[pd.DataFrame] = []
-    market_specs = [("TSE", "JP"), ("SSE", "CN"), ("SZSE", "CN")]
+    market_specs = [("TSE", "JP"), ("SSE", "CN"), ("SZSE", "CN"), ("HKEX", "HK")]
     for exchange_code, region in market_specs:
-        listing = fdr.StockListing(exchange_code).copy()
+        try:
+            listing = fdr.StockListing(exchange_code).copy()
+        except Exception as exc:
+            print(f"[WARN] skip {exchange_code} listing: {exc}", file=sys.stderr)
+            continue
         listing["Symbol"] = listing["Symbol"].map(lambda value: str(value or "").strip().upper())
         listing = listing[listing["Symbol"] != ""].copy()
         listing["raw_symbol"] = listing["Symbol"]

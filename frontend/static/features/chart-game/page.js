@@ -23,7 +23,7 @@
     const LoadingPanel = deps.LoadingPanel;
     const numberFormat = deps.numberFormat;
     const persistChartGameState = deps.persistChartGameState;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const SummaryCard = deps.SummaryCard;
 
   function ChartGamePage() {

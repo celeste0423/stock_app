@@ -30,7 +30,7 @@
     const postJson = deps.postJson;
     const requestPageNavigation = deps.requestPageNavigation;
     const SectionTitle = deps.SectionTitle;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const stashThemeStockNavigation = deps.stashThemeStockNavigation;
     const StockNewsBriefPanel = deps.StockNewsBriefPanel;
     const TelegramChatFeed = deps.TelegramChatFeed;
@@ -965,8 +965,12 @@
       if (!company) {
         throw new Error("기업명을 입력해 주세요.");
       }
-      const payload = await fetchJson("/api/stocks/autocomplete?q=" + encodeURIComponent(company) + "&limit=1", { noCache: true });
-      const item = ensureArray(payload.items)[0];
+      const payload = await fetchJson("/api/stocks/autocomplete?q=" + encodeURIComponent(company) + "&limit=10", { noCache: true });
+      const items = ensureArray(payload.items);
+      const normalizedQuery = company.replace(/\s+/g, "").toLowerCase();
+      const item = items.find(function (candidate) {
+        return String((candidate && candidate.name) || "").replace(/\s+/g, "").toLowerCase() === normalizedQuery;
+      }) || items[0];
       const code = String((item && item.code) || "").replace(/\D/g, "").padStart(6, "0");
       if (!item || !code || code.length !== 6) {
         throw new Error("해당 기업의 종목코드를 찾지 못했습니다.");
@@ -979,14 +983,6 @@
       setEarningsMessage("");
       try {
         const stock = await resolveCompanyStockForLinks();
-        if (site === "tradingview") {
-          const payload = await postJson("/api/tradingview/open", {
-            stock_code: stock.code,
-            stock_name: stock.name,
-          });
-          setEarningsMessage(payload.message || ((payload.stock_name || stock.name) + " 차트를 TradingView에서 열었습니다."));
-          return;
-        }
         const url = site === "wisereport"
           ? "https://comp.wisereport.co.kr/company/c1010001.aspx?cn=&cmp_cd=" + encodeURIComponent(stock.code)
           : site === "irgo"
@@ -994,6 +990,25 @@
             : "https://comp.wisereport.co.kr/company/c1010001.aspx?cn=&cmp_cd=" + encodeURIComponent(stock.code);
         await openUrlInDefaultBrowser(url);
         setEarningsMessage(stock.name + " 정보를 " + (site === "wisereport" ? "WiseReport" : site === "irgo" ? "IRGO" : "외부 사이트") + "에서 열었습니다.");
+      } catch (err) {
+        setEarningsMessage(err.message || String(err));
+      } finally {
+        setCompanyLinkLoading("");
+      }
+    }
+
+    async function openCompanyIrMaterials() {
+      const stockName = (stockOverview && stockOverview.stock_name) || String(earningsQuery || "").trim() || "기업";
+      const irMaterialsUrl = stockOverview && stockOverview.ir_materials_url;
+      if (!irMaterialsUrl) {
+        setEarningsMessage("연결 가능한 IR자료실을 찾지 못했습니다.");
+        return;
+      }
+      setCompanyLinkLoading("ir-materials");
+      setEarningsMessage("");
+      try {
+        await openUrlInDefaultBrowser(irMaterialsUrl);
+        setEarningsMessage(stockName + " IR자료실을 열었습니다.");
       } catch (err) {
         setEarningsMessage(err.message || String(err));
       } finally {
@@ -1442,11 +1457,13 @@
               onClick: function () { openCompanyInfoSite("irgo"); },
               disabled: !!companyLinkLoading || !String(earningsQuery || "").trim(),
             }, companyLinkLoading === "irgo" ? "조회 중..." : "IRGO"),
-            h("button", {
-              className: "earnings-action-button",
-              onClick: function () { openCompanyInfoSite("tradingview"); },
-              disabled: !!companyLinkLoading || !String(earningsQuery || "").trim(),
-            }, companyLinkLoading === "tradingview" ? "조회 중..." : "TradingView"),
+            stockOverview && stockOverview.ir_materials_url
+              ? h("button", {
+                  className: "earnings-action-button",
+                  onClick: openCompanyIrMaterials,
+                  disabled: !!companyLinkLoading,
+                }, companyLinkLoading === "ir-materials" ? "조회 중..." : "IR자료실")
+              : null,
             h("button", {
               className: "earnings-action-button",
               onClick: openInvestorFlowPopup,

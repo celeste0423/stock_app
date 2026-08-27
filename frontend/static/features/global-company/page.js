@@ -86,7 +86,7 @@
     const LoadingPanel = deps.LoadingPanel;
     const numberFormat = deps.numberFormat;
     const SectionTitle = deps.SectionTitle;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const StockNewsBriefPanel = deps.StockNewsBriefPanel;
     const SummaryCard = deps.SummaryCard;
     const TradingViewEmbed = deps.TradingViewEmbed;

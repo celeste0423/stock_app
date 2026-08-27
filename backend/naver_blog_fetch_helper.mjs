@@ -55,6 +55,32 @@ async function gotoNeighborFeed(page) {
   throw new Error("Failed to open NAVER blog neighbor feed.");
 }
 
+async function isLoggedOutPage(page) {
+  try {
+    const bodyText = await page.locator("body").innerText();
+    return /로그아웃 상태입니다|로그인하여 이웃새글을 확인해보세요/.test(String(bodyText || ""));
+  } catch (error) {
+    return false;
+  }
+}
+
+async function selectPreferredBuddyGroup(page) {
+  const dropdown = page.locator("a.present_selected._buddy_dropdown_menu").first();
+  if (!(await dropdown.count())) {
+    return;
+  }
+  await dropdown.click().catch(() => {});
+  await page.waitForTimeout(500);
+  for (const label of ["주식투자", "증권", "투자", "전체이웃"]) {
+    const option = page.locator("a.item", { hasText: label }).first();
+    if (await option.count()) {
+      await option.click().catch(() => {});
+      await page.waitForTimeout(1500);
+      return;
+    }
+  }
+}
+
 async function waitForNeighborCards(page) {
   const selectors = [
     "a.desc_inner[href]",
@@ -164,6 +190,20 @@ async function main() {
   const page = await context.newPage();
   try {
     const sourceUrl = await gotoNeighborFeed(page);
+    if (await isLoggedOutPage(page)) {
+      const payload = {
+        ok: false,
+        fetched_at: new Date().toISOString(),
+        source_url: sourceUrl,
+        login_required: true,
+        item_count: 0,
+        items: [],
+      };
+      fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2), "utf8");
+      console.log(JSON.stringify({ ok: false, login_required: true, output_path: outputPath, item_count: 0 }));
+      return;
+    }
+    await selectPreferredBuddyGroup(page);
     await page.waitForTimeout(2500);
     await waitForNeighborCards(page);
     const items = uniqueBy(await extractPosts(page, limit * 3), (item) => item.url).slice(0, limit);

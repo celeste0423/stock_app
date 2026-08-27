@@ -27,7 +27,7 @@
     const postJson = deps.postJson;
     const requestPageNavigation = deps.requestPageNavigation;
     const SectionTitle = deps.SectionTitle;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const shiftIsoDate = deps.shiftIsoDate;
     const stashThemeStockNavigation = deps.stashThemeStockNavigation;
     const TelegramEarningsResults = deps.TelegramEarningsResults;
@@ -39,6 +39,10 @@
 
   function DisclosurePage() {
     const savedState = loadDisclosurePageState();
+    const savedMarketPayload = savedState.marketPayload
+      && Number(savedState.marketPayload.result_count || 0) > 100
+      ? savedState.marketPayload
+      : null;
     const statusRequest = useFetchJson("/api/telegram/status");
     const status = statusRequest.data || {};
     const [earningsQuery, setEarningsQuery] = useState(savedState.earningsQuery || "");
@@ -50,32 +54,29 @@
     const [disclosureCategory, setDisclosureCategory] = useState(savedState.disclosureCategory || "earnings");
     const [disclosureNextOffsetId, setDisclosureNextOffsetId] = useState(Number(savedState.disclosureNextOffsetId || 0));
     const [disclosureHasMore, setDisclosureHasMore] = useState(!!savedState.disclosureHasMore);
-    const [marketPayload, setMarketPayload] = useState(savedState.marketPayload || null);
+    const [marketPayload, setMarketPayload] = useState(savedMarketPayload);
     const [marketLoading, setMarketLoading] = useState(false);
     const [marketMessage, setMarketMessage] = useState("");
-    const [marketScope, setMarketScope] = useState("kr");
+    const [marketScope, setMarketScope] = useState(savedState.marketScope || "kr");
+    const [marketForeignPayload, setMarketForeignPayload] = useState(savedState.marketForeignPayload || null);
+    const [marketForeignLoading, setMarketForeignLoading] = useState(false);
+    const [marketForeignMessage, setMarketForeignMessage] = useState(savedState.marketForeignMessage || "");
     const [financialTrend, setFinancialTrend] = useState(savedState.financialTrend || null);
     const [financialTrendLoading, setFinancialTrendLoading] = useState(false);
     const [financialTrendMessage, setFinancialTrendMessage] = useState(savedState.financialTrendMessage || "");
-    const [upcomingScope, setUpcomingScope] = useState("kr");
+    const [upcomingScope, setUpcomingScope] = useState(savedState.upcomingScope || "kr");
+    const [upcomingPayloads, setUpcomingPayloads] = useState(savedState.upcomingPayloads || {});
+    const [upcomingErrors, setUpcomingErrors] = useState(savedState.upcomingErrors || {});
+    const [upcomingLoading, setUpcomingLoading] = useState(false);
     const earningsTimerRef = useRef(null);
     const earningsSuggestWrapRef = useRef(null);
-    const marketLoadedRef = useRef(!!savedState.marketPayload);
     const marketScrollBoxRef = useRef(null);
     const marketScrollTopRef = useRef(Number(savedState.marketScrollTop || 0));
     const marketScrollSaveTimerRef = useRef(null);
     const upcomingStart = shiftIsoDate(todayIsoDate(), 1);
     const upcomingTabConfig = UPCOMING_EARNINGS_TABS.find(function (item) { return item.key === upcomingScope; }) || UPCOMING_EARNINGS_TABS[0];
-    const marketForeignRequest = useFetchJson(
-      "/api/disclosure/recent-foreign-earnings?days=" + encodeURIComponent(14)
-      + "&min_market_cap_100m=" + encodeURIComponent(10000)
-    );
-    const upcomingRequest = useFetchJson(
-      "/api/disclosure/upcoming-earnings?start=" + encodeURIComponent(upcomingStart)
-      + "&days=" + encodeURIComponent(14)
-      + "&scope=" + encodeURIComponent(upcomingScope)
-      + "&min_market_cap_100m=" + encodeURIComponent(upcomingTabConfig.minMarketCap100m || 0)
-    );
+    const currentUpcomingPayload = upcomingPayloads && upcomingPayloads[upcomingScope] ? upcomingPayloads[upcomingScope] : null;
+    const currentUpcomingError = upcomingErrors && upcomingErrors[upcomingScope] ? upcomingErrors[upcomingScope] : "";
 
     useEffect(function () {
       return function () {
@@ -112,23 +113,22 @@
         disclosureNextOffsetId: disclosureNextOffsetId,
         disclosureHasMore: disclosureHasMore,
         marketPayload: marketPayload,
+        marketScope: marketScope,
+        marketForeignPayload: marketForeignPayload,
+        marketForeignMessage: marketForeignMessage,
         marketScrollTop: marketScrollTopRef.current,
+        upcomingScope: upcomingScope,
+        upcomingPayloads: upcomingPayloads,
+        upcomingErrors: upcomingErrors,
         financialTrend: financialTrend,
         financialTrendMessage: financialTrendMessage,
       });
-    }, [earningsQuery, earningsResults, earningsMessage, disclosureCategory, disclosureNextOffsetId, disclosureHasMore, marketPayload, financialTrend, financialTrendMessage]);
+    }, [earningsQuery, earningsResults, earningsMessage, disclosureCategory, disclosureNextOffsetId, disclosureHasMore, marketPayload, marketScope, marketForeignPayload, marketForeignMessage, upcomingScope, upcomingPayloads, upcomingErrors, financialTrend, financialTrendMessage]);
 
     useEffect(function () {
       const categoryLabel = disclosureTabLabel(disclosureCategory);
       emitWindowTitleDetail("disclosure", earningsQuery ? categoryLabel + ": " + earningsQuery : "");
     }, [earningsQuery, disclosureCategory]);
-
-    useEffect(function () {
-      if (status.authorized && !marketLoadedRef.current && !marketLoading) {
-        marketLoadedRef.current = true;
-        loadMarketEarnings();
-      }
-    }, [status.authorized]);
 
     useEffect(function () {
       if (!marketScrollBoxRef.current || !marketPayload) {
@@ -163,7 +163,13 @@
           disclosureNextOffsetId: disclosureNextOffsetId,
           disclosureHasMore: disclosureHasMore,
           marketPayload: marketPayload,
+          marketScope: marketScope,
+          marketForeignPayload: marketForeignPayload,
+          marketForeignMessage: marketForeignMessage,
           marketScrollTop: marketScrollTopRef.current,
+          upcomingScope: upcomingScope,
+          upcomingPayloads: upcomingPayloads,
+          upcomingErrors: upcomingErrors,
           financialTrend: financialTrend,
           financialTrendMessage: financialTrendMessage,
         });
@@ -423,8 +429,8 @@
       try {
         const payload = await postJson("/api/telegram/market_earnings", {
           days: 1095,
-          limit: 100,
-          scan_limit: 5000,
+          limit: 1000,
+          scan_limit: 20000,
         });
         setMarketPayload(payload);
         setMarketMessage(payload.message || "");
@@ -432,6 +438,57 @@
         setMarketMessage(err.message || String(err));
       } finally {
         setMarketLoading(false);
+      }
+    }
+
+    async function loadMarketForeignEarnings() {
+      if (marketForeignLoading) {
+        return;
+      }
+      setMarketForeignLoading(true);
+      setMarketForeignMessage("");
+      try {
+        const payload = await fetchJson(
+          "/api/disclosure/recent-foreign-earnings?days=" + encodeURIComponent(14)
+          + "&min_market_cap_100m=" + encodeURIComponent(10000),
+          { noCache: true }
+        );
+        setMarketForeignPayload(payload);
+        setMarketForeignMessage(payload.message || "");
+      } catch (err) {
+        setMarketForeignMessage(err.message || String(err));
+      } finally {
+        setMarketForeignLoading(false);
+      }
+    }
+
+    async function loadUpcomingEarnings(scopeOverride) {
+      const scope = scopeOverride || upcomingScope;
+      const tabConfig = UPCOMING_EARNINGS_TABS.find(function (item) { return item.key === scope; }) || UPCOMING_EARNINGS_TABS[0];
+      if (upcomingLoading) {
+        return;
+      }
+      setUpcomingLoading(true);
+      setUpcomingErrors(function (current) {
+        return Object.assign({}, current || {}, { [scope]: "" });
+      });
+      try {
+        const payload = await fetchJson(
+          "/api/disclosure/upcoming-earnings?start=" + encodeURIComponent(upcomingStart)
+          + "&days=" + encodeURIComponent(14)
+          + "&scope=" + encodeURIComponent(scope)
+          + "&min_market_cap_100m=" + encodeURIComponent(tabConfig.minMarketCap100m || 0),
+          { noCache: true }
+        );
+        setUpcomingPayloads(function (current) {
+          return Object.assign({}, current || {}, { [scope]: payload });
+        });
+      } catch (err) {
+        setUpcomingErrors(function (current) {
+          return Object.assign({}, current || {}, { [scope]: err.message || String(err) });
+        });
+      } finally {
+        setUpcomingLoading(false);
       }
     }
 
@@ -592,10 +649,10 @@
               marketScope === "kr"
                 ? (marketPayload
                   ? "최근 " + numberFormat(marketPayload.days, 0) + "일 · " + numberFormat(marketPayload.result_count, 0) + "건 · 스캔 " + numberFormat(marketPayload.scanned_count, 0) + "개 메시지"
-                  : "텔레그램 공시 채널에서 실적 공시를 날짜순으로 모읍니다.")
-                : (marketForeignRequest.data
-                  ? (marketForeignRequest.data.start || "") + " ~ " + (marketForeignRequest.data.end || "") + " · 실적 " + numberFormat(marketForeignRequest.data.result_count, 0) + "개"
-                  : "최근 2주간 시총 1조 이상 해외 발표 실적을 보여줍니다.")
+                  : "저장된 결과가 없으면 새로고침으로 불러옵니다.")
+                : (marketForeignPayload
+                  ? (marketForeignPayload.start || "") + " ~ " + (marketForeignPayload.end || "") + " · 실적 " + numberFormat(marketForeignPayload.result_count, 0) + "개"
+                  : "저장된 결과가 없으면 새로고침으로 불러옵니다.")
             )
           ),
           h("button", {
@@ -604,13 +661,13 @@
               if (marketScope === "kr") {
                 loadMarketEarnings();
               } else {
-                marketForeignRequest.refresh(true);
+                loadMarketForeignEarnings();
               }
             },
-            disabled: marketScope === "kr" ? (marketLoading || !status.authorized) : marketForeignRequest.loading,
+            disabled: marketScope === "kr" ? (marketLoading || !status.authorized) : marketForeignLoading,
           }, marketScope === "kr"
             ? (marketLoading ? "불러오는 중..." : "새로고침")
-            : (marketForeignRequest.loading ? "새로고침 중..." : "새로고침"))
+            : (marketForeignLoading ? "새로고침 중..." : "새로고침"))
         ),
         h(
           "div",
@@ -629,8 +686,11 @@
           })
         ),
         marketScope === "kr" && marketMessage ? h("div", { className: "notice-box compact" }, marketMessage) : null,
-        marketScope === "foreign" && ensureArray(marketForeignRequest.data && marketForeignRequest.data.errors).length
-          ? h("div", { className: "notice-box compact warning" }, ensureArray(marketForeignRequest.data.errors).join(" / "))
+        marketScope === "foreign" && marketForeignMessage
+          ? h("div", { className: "notice-box compact warning" }, marketForeignMessage)
+          : null,
+        marketScope === "foreign" && ensureArray(marketForeignPayload && marketForeignPayload.errors).length
+          ? h("div", { className: "notice-box compact warning" }, ensureArray(marketForeignPayload.errors).join(" / "))
           : null,
         h(
           "div",
@@ -641,15 +701,15 @@
                 ? h(LoadingBlock, { compact: true, title: "실적 공시 수집 중", label: "최근 메시지를 훑어 시총 2000억 이상 종목과 매칭합니다." })
                 : h(MarketEarningsTable, {
                     rows: ensureArray(marketPayload && marketPayload.results),
-                    emptyMessage: status.authorized ? "조건에 맞는 실적 공시가 아직 없습니다." : "텔레그램 연결 후 확인할 수 있습니다.",
+                    emptyMessage: status.authorized ? "저장된 실적 공시가 없습니다. 새로고침을 눌러 불러오세요." : "텔레그램 연결 후 확인할 수 있습니다.",
                   })
             )
             : (
-              marketForeignRequest.loading && !ensureArray(marketForeignRequest.data && marketForeignRequest.data.rows).length
+              marketForeignLoading && !ensureArray(marketForeignPayload && marketForeignPayload.rows).length
                 ? h(LoadingBlock, { compact: true, title: "해외 발표 실적 수집 중", label: "최근 2주간 Yahoo 발표 실적과 시총 데이터를 정리하고 있습니다." })
                 : h(ForeignReportedEarningsTable, {
-                    rows: ensureArray(marketForeignRequest.data && marketForeignRequest.data.rows),
-                    emptyMessage: "조건에 맞는 최근 해외 발표 실적이 없습니다.",
+                    rows: ensureArray(marketForeignPayload && marketForeignPayload.rows),
+                    emptyMessage: "저장된 해외 실적이 없습니다. 새로고침을 눌러 불러오세요.",
                   })
             )
         )
@@ -666,17 +726,17 @@
           h("div", null,
             h(SectionTitle, null, "예정 실적 달력"),
             h("div", { className: "summary-help" },
-              upcomingRequest.data
-                ? (upcomingRequest.data.start || upcomingStart) + " ~ " + (upcomingRequest.data.end || "") + " · 날짜 " + numberFormat(upcomingRequest.data.date_count, 0) + "일 · 일정 " + numberFormat(upcomingRequest.data.result_count, 0) + "개"
-                : "다음날부터 국내 KIND IR 일정과 해외 Yahoo 실적 일정을 날짜별로 묶어 보여줍니다."
+              currentUpcomingPayload
+                ? (currentUpcomingPayload.start || upcomingStart) + " ~ " + (currentUpcomingPayload.end || "") + " · 날짜 " + numberFormat(currentUpcomingPayload.date_count, 0) + "일 · 일정 " + numberFormat(currentUpcomingPayload.result_count, 0) + "개"
+                : "저장된 결과가 없으면 새로고침으로 불러옵니다."
             )
           ),
           h("div", { className: "upcoming-earnings-actions" },
             h("button", {
               className: "mini-button",
-              onClick: function () { upcomingRequest.refresh(true); },
-              disabled: upcomingRequest.loading,
-            }, upcomingRequest.loading ? "새로고침 중..." : "새로고침")
+              onClick: function () { loadUpcomingEarnings(); },
+              disabled: upcomingLoading,
+            }, upcomingLoading ? "새로고침 중..." : "새로고침")
           )
         ),
         h(
@@ -701,13 +761,13 @@
               : "다음날부터 2주간, 시총 1조 이상 해외 예정 실적만 표시합니다.")
           )
         ),
-        ensureArray(upcomingRequest.data && upcomingRequest.data.errors).length
-          ? h("div", { className: "notice-box compact warning" }, ensureArray(upcomingRequest.data.errors).join(" / "))
+        ensureArray(currentUpcomingPayload && currentUpcomingPayload.errors).length
+          ? h("div", { className: "notice-box compact warning" }, ensureArray(currentUpcomingPayload.errors).join(" / "))
           : null,
         h(UpcomingEarningsCalendarPanel, {
-          payload: upcomingRequest.data,
-          loading: upcomingRequest.loading,
-          error: upcomingRequest.error,
+          payload: currentUpcomingPayload,
+          loading: upcomingLoading,
+          error: currentUpcomingError || (!currentUpcomingPayload && !upcomingLoading ? "저장된 예정 실적이 없습니다. 새로고침을 눌러 불러오세요." : ""),
         })
       )
     );

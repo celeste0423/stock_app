@@ -28,7 +28,7 @@
     const SectionTitle = deps.SectionTitle;
     const SECTOR_SNAPSHOT_BUILDER_COLLAPSED_KEY = deps.SECTOR_SNAPSHOT_BUILDER_COLLAPSED_KEY;
     const SECTOR_SNAPSHOT_KEY = deps.SECTOR_SNAPSHOT_KEY;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const SortableDataTable = deps.SortableDataTable;
     const SummaryCard = deps.SummaryCard;
     const useFetchJson = deps.useFetchJson;

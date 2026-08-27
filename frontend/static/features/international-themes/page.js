@@ -38,7 +38,7 @@
     const renderHighDrawdownPercent = deps.renderHighDrawdownPercent;
     const ScoreHistoryChart = deps.ScoreHistoryChart;
     const SectionTitle = deps.SectionTitle;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const shiftIsoDate = deps.shiftIsoDate;
     const shiftMonth = deps.shiftMonth;
     const StockChartPreview = deps.StockChartPreview;
@@ -53,6 +53,12 @@
     const [sectorFilter, setSectorFilter] = useState("all");
     const [selectedRegion, setSelectedRegion] = useState(function () {
       const options = ensureArray(config.regionOptions);
+      const initialRegion = String(config.initialRegion || "").trim().toLowerCase();
+      if (initialRegion && options.some(function (option) {
+        return String(option.code || "").trim().toLowerCase() === initialRegion;
+      })) {
+        return initialRegion;
+      }
       return options.length ? String(options[0].code || "all") : "all";
     });
     const [calendarMode, setCalendarMode] = useState("week");
@@ -136,6 +142,19 @@
     useEffect(function () {
         emitWindowTitleDetail(config.pageKey, selectedFileDate || "전체");
     }, [selectedFileDate]);
+
+    useEffect(function () {
+      const options = ensureArray(config.regionOptions);
+      const nextRegion = String(config.initialRegion || "").trim().toLowerCase();
+      if (!nextRegion || selectedRegion === nextRegion) {
+        return;
+      }
+      if (options.some(function (option) {
+        return String(option.code || "").trim().toLowerCase() === nextRegion;
+      })) {
+        setSelectedRegion(nextRegion);
+      }
+    }, [config.initialRegion, config.regionOptions, selectedRegion]);
 
     useEffect(function () {
       if (!themesRequest.data || !themesRequest.data.file_date) {
@@ -342,13 +361,20 @@
           return String(item.code || "") === String(selectedRegion || "");
         }) || {}).label || "아시아")
       : "미국";
-    const captureTitle = captureRegionLabel + " 주도주 · 종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상";
-    const captureButtonLabel = captureRegionLabel + " 종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상 캡쳐";
-    const captureEmptyMessage = "종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상 종목이 없습니다.";
+    const isHighCaptureMode = isRank52Mode;
+    const captureTitle = isHighCaptureMode
+      ? captureRegionLabel + " 주도주 · 52주 신고가"
+      : captureRegionLabel + " 주도주 · 종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상";
+    const captureButtonLabel = isHighCaptureMode
+      ? "52주 신고가 캡쳐"
+      : captureRegionLabel + " 종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상 캡쳐";
+    const captureEmptyMessage = isHighCaptureMode
+      ? "52주 신고가 종목이 없습니다."
+      : "종합점수 " + numberFormat(captureScoreThreshold, 0) + "점 이상 종목이 없습니다.";
     const captureRows = sortedVisibleRows.map(function (row, index) {
-      return Object.assign({ __display_rank: index + 1 }, row);
+      return Object.assign({ __display_rank: isHighCaptureMode ? Number(row.rank || index + 1) : index + 1 }, row);
     }).filter(function (row) {
-      return Number(row.score || 0) >= captureScoreThreshold;
+      return isHighCaptureMode || Number(row.score || 0) >= captureScoreThreshold;
     });
 
     function normalizeStockSearchText(value) {
@@ -625,6 +651,28 @@
       });
     }
 
+    function normalizeBuildDateLabel(value) {
+      const raw = String(value || "").replace(/\D/g, "");
+      if (raw.length === 8) {
+        return raw.slice(0, 4) + "-" + raw.slice(4, 6) + "-" + raw.slice(6, 8);
+      }
+      return String(value || "");
+    }
+
+    function formatBuildTodayMessage(payload) {
+      const build = (payload && payload.today_excel_build) || {};
+      const startDate = normalizeBuildDateLabel(build.start_date);
+      const endDate = normalizeBuildDateLabel(build.date || payload && payload.file_date);
+      const count = Number(build.dates || 0);
+      if (build.mode === "cache") {
+        return (endDate || "최근 거래일") + " 데이터가 이미 저장되어 있습니다.";
+      }
+      if (startDate && endDate && count > 1) {
+        return startDate + " ~ " + endDate + " 데이터 " + count + "일 생성/로드 완료";
+      }
+      return (endDate || "오늘자") + " 데이터 생성/로드 완료";
+    }
+
     function refreshThemeData() {
       setReloading(true);
       setReloadMessage("");
@@ -653,10 +701,10 @@
           if (payload && payload.file_date) {
             setSelectedFileDate(payload.file_date);
           }
-          setReloadMessage(((payload && payload.today_excel_build && payload.today_excel_build.date) || "") + " 데이터 생성/로드 완료");
+          setReloadMessage(formatBuildTodayMessage(payload));
         })
         .catch(function (error) {
-          setReloadMessage("오늘자 데이터 생성 결과 반영 실패: " + (error.message || String(error)));
+          setReloadMessage("오늘자 데이터 생성 실패: " + (error.message || String(error)));
         })
         .finally(function () {
           setReloading(false);
@@ -1861,12 +1909,14 @@
                         h("th", null, "섹터"),
                         showTickerColumn ? h("th", null, config.codeLabel || "티커") : null,
                         h("th", null, "종목"),
+                        h("th", null, "Sortino"),
+                        h("th", null, "% ATR(20)"),
                         h("th", null, config.marketCapLabel),
                         h("th", null, config.tradingValueLabel),
+                        h("th", null, "고점대비"),
                         h("th", null, "등락률"),
                         h("th", null, "당일점수"),
                         h("th", null, "종합점수"),
-                        h("th", null, "Sortino"),
                         showMarketColumn ? h("th", null, config.marketColumnLabel) : null
                       )
                     ),
@@ -1883,14 +1933,15 @@
                           h("td", null, numberFormat(row.__display_rank, 0)),
                           h("td", { className: "theme-sector-cell", style: { borderLeft: "4px solid " + color } }, sector),
                           showTickerColumn ? h("td", null, row.stock_code || "-") : null,
-                          showAdrColumn ? h("td", null, row.is_adr ? (config.adrLabel || "ADR") : "-") : null,
                           h("td", null, renderNameCell(captureRow)),
+                          h("td", null, renderNumberCell(row.sortino_norm, 4)),
+                          h("td", null, formatPercent(row.atr_20_pct != null ? row.atr_20_pct : row.atr_20, 2)),
                           h("td", null, renderMarketValueCell(row.market_cap_100m)),
                           h("td", null, renderMarketValueCell(row.trading_value_100m)),
+                          h("td", null, renderHighDrawdownPercent(row)),
                           h("td", null, renderSignedPercent(row.change_pct)),
                           h("td", null, renderNumberCell(row.score_o, 2)),
                           h("td", null, renderNumberCell(row.score, 2)),
-                          h("td", null, renderNumberCell(row.sortino_norm, 4)),
                           showMarketColumn ? h("td", null, row.industry || "-") : null
                         );
                       })
@@ -1904,7 +1955,7 @@
       renderScoreHistoryPopup(),
       renderScoreFormulaModal(),
       renderChartPopup(),
-      ensureArray(config.regionOptions).length
+      ensureArray(config.regionOptions).length > 1
         ? h(
             "div",
             { className: "panel", style: { padding: "16px 20px" } },
@@ -2031,27 +2082,47 @@
       ),
       h(
         "div",
-        { className: "panel hero-panel alt themes-compact-hero expanded" },
+        {
+          className: "panel hero-panel alt themes-compact-hero" + (themeBoxExpanded ? " expanded" : " collapsed"),
+          role: "button",
+          tabIndex: 0,
+          onClick: function () {
+            if (!themeBoxExpanded) {
+              setThemeBoxExpanded(true);
+            }
+          },
+          onKeyDown: function (event) {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setThemeBoxExpanded(function (value) { return !value; });
+            }
+          },
+          "aria-expanded": themeBoxExpanded ? "true" : "false",
+        },
         h(
           "div",
-          { className: "hero-panel-head" },
+          {
+            className: "themes-compact-titlebar",
+            onClick: function (event) {
+              event.stopPropagation();
+              setThemeBoxExpanded(function (value) { return !value; });
+            },
+          },
           h(
             "div",
-            null,
-            h("div", { className: "eyebrow" }, config.eyebrow),
-            h("h1", { className: "page-title" }, config.title)
-          ),
-          h(
-            "button",
-            {
-              type: "button",
-              className: "mini-button",
-              onClick: function () { setThemeBoxExpanded(!themeBoxExpanded); },
-            },
-            themeBoxExpanded ? "닫기" : "펼치기"
+            { className: "themes-compact-titlebar-main" },
+            h(
+              "div",
+              { className: "theme-box-toggle" },
+              h("span", { className: "calendar-arrow" + (themeBoxExpanded ? " expanded" : ""), "aria-hidden": "true" }),
+              h("span", { className: "theme-box-title-text" },
+                h("span", { className: "eyebrow" }, config.eyebrow),
+                h("span", { className: "page-title" }, config.title)
+              )
+            )
           )
         ),
-        h("div", { className: "summary-help" }, config.copy),
+        h("div", { className: "summary-help" }, themeBoxExpanded ? config.copy : "클릭하면 조회 날짜와 캘린더를 볼 수 있습니다"),
         themeBoxExpanded
           ? h(
               React.Fragment,
@@ -2379,7 +2450,29 @@
     });
   }
 
-  function AsiaThemesPage() {
+  function AsiaThemesPage(props) {
+    const allRegionOptions = [
+      { code: "jp", label: "일본" },
+      { code: "cn", label: "중국" },
+      { code: "hk", label: "홍콩" },
+      { code: "tw", label: "대만" }
+    ];
+    const requestedRegion = String((props && props.region) || "").trim().toLowerCase();
+    const fixedRegion = allRegionOptions.find(function (option) {
+      return option.code === requestedRegion;
+    });
+    const regionOptions = fixedRegion ? [fixedRegion] : allRegionOptions;
+    const regionTitle = fixedRegion ? fixedRegion.label + " 주도주" : "아시아 주도주";
+    const regionCopy = fixedRegion
+      ? fixedRegion.label + " 시장 데이터를 같은 점수 체계로 확인합니다."
+      : "일본, 중국, 홍콩, 대만 시장을 분리해서 같은 점수 체계로 비교하고 강한 종목 흐름을 확인합니다.";
+    const regionUniverseHelp = fixedRegion ? fixedRegion.label + " 주요 종목" : "일본/중국/홍콩/대만 주요 종목";
+    const regionCalendarTitle = fixedRegion ? "날짜별 " + fixedRegion.label + " 주도 섹터 흐름" : "날짜별 아시아 주도 섹터 흐름";
+    const regionCalendarEmptyMessage = fixedRegion
+      ? "표시할 " + fixedRegion.label + " 주도주 데이터가 없습니다. 오늘자 데이터를 먼저 로드해 주세요."
+      : "표시할 아시아 주도주 데이터가 없습니다. 오늘자 데이터를 먼저 로드해 주세요.";
+    const regionTableTitle = fixedRegion ? fixedRegion.label + " 점수 테이블" : "아시아 점수 테이블";
+    const regionTableEmptyMessage = fixedRegion ? "조건에 맞는 " + fixedRegion.label + " 주도주 데이터가 없습니다." : "조건에 맞는 아시아 주도주 데이터가 없습니다.";
     return h(InternationalThemesBoardPage, {
       pageKey: "asia-themes",
       apiPrefix: "/api/asia-themes/",
@@ -2388,27 +2481,24 @@
       buildTodayUrl: "/api/asia-themes/build-today-data",
       calendarUrl: "/api/asia-theme-sector-calendar",
       eyebrow: "Asia Daily Theme Radar",
-      title: "아시아 주도주",
-      copy: "일본, 중국, 대만 시장을 분리해서 같은 점수 체계로 비교하고 강한 종목 흐름을 확인합니다.",
-      universeHelp: "일본/중국/대만 주요 종목",
+      title: regionTitle,
+      copy: regionCopy,
+      universeHelp: regionUniverseHelp,
       groupHelp: "국가별 대분류 Industry 기준",
-      calendarTitle: "날짜별 아시아 주도 섹터 흐름",
+      calendarTitle: regionCalendarTitle,
       calendarHelp: "선택한 시장의 Industry 기준 상위 5개 흐름",
       calendarLoadingTitle: "아시아 캘린더 불러오는 중",
-      calendarEmptyMessage: "표시할 아시아 주도주 데이터가 없습니다. 오늘자 데이터를 먼저 로드해 주세요.",
-      tableTitle: "아시아 점수 테이블",
-      tableEmptyMessage: "조건에 맞는 아시아 주도주 데이터가 없습니다.",
+      calendarEmptyMessage: regionCalendarEmptyMessage,
+      tableTitle: regionTableTitle,
+      tableEmptyMessage: regionTableEmptyMessage,
       codeLabel: "티커",
       marketColumnLabel: "시장",
       marketCapLabel: "시총(현지억)",
       tradingValueLabel: "거래대금(현지억)",
       chartEyebrow: "Asia 3개월 주가",
       regionTabTitle: "아시아 시장 선택",
-      regionOptions: [
-        { code: "jp", label: "일본" },
-        { code: "cn", label: "중국" },
-        { code: "tw", label: "대만" }
-      ],
+      regionOptions: regionOptions,
+      initialRegion: fixedRegion ? fixedRegion.code : "",
     });
   }
 

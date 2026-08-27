@@ -22,7 +22,7 @@
     const PAIR_CORRELATION_KEY = deps.PAIR_CORRELATION_KEY;
     const PairCorrelationChart = deps.PairCorrelationChart;
     const SectionTitle = deps.SectionTitle;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
     const SummaryCard = deps.SummaryCard;
 
   function PairCorrelationPage() {
@@ -32,6 +32,7 @@
     const [rightSuggestions, setRightSuggestions] = useState([]);
     const [leftSelected, setLeftSelected] = useState(null);
     const [rightSelected, setRightSelected] = useState(null);
+    const [windowDays, setWindowDays] = useState("31");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [data, setData] = useState(null);
@@ -51,6 +52,9 @@
           setRightSelected(saved.right);
           setRightQuery(formatCorrelationAssetLabel(saved.right));
         }
+        if (saved && ["7", "31", "92", "183", "366"].indexOf(String(saved.windowDays)) >= 0) {
+          setWindowDays(String(saved.windowDays));
+        }
       } catch (error) {
       }
     }, []);
@@ -60,10 +64,11 @@
         localStorage.setItem(PAIR_CORRELATION_KEY, JSON.stringify({
           left: leftSelected || null,
           right: rightSelected || null,
+          windowDays: windowDays,
         }));
       } catch (error) {
       }
-    }, [leftSelected, rightSelected]);
+    }, [leftSelected, rightSelected, windowDays]);
 
     useEffect(function () {
       if (leftSelected && rightSelected && !autoRunRef.current) {
@@ -143,7 +148,27 @@
       setError("");
     }
 
-    async function runCorrelation() {
+    function periodLabel(days) {
+      return {
+        "7": "1주",
+        "31": "1개월",
+        "92": "1분기",
+        "183": "반기",
+        "366": "1년",
+      }[String(days)] || "1개월";
+    }
+
+    function handleWindowChange(value) {
+      const nextWindowDays = String(value);
+      setWindowDays(nextWindowDays);
+      setData(null);
+      setError("");
+      if (leftSelected && rightSelected) {
+        runCorrelation(nextWindowDays);
+      }
+    }
+
+    async function runCorrelation(windowDaysOverride) {
       if (!leftSelected || !rightSelected) {
         setError("좌우 자산을 모두 선택해 주세요.");
         setData(null);
@@ -161,7 +186,7 @@
           right_kind: rightSelected.kind,
           right_value: rightSelected.value,
           right_name: rightSelected.name || "",
-          window_days: "31",
+          window_days: String(windowDaysOverride || windowDays),
         });
         const payload = await fetchJson("/api/correlation/pair?" + params.toString(), { noCache: true });
         if (requestSeqRef.current !== requestSeq) {
@@ -223,6 +248,7 @@
     const payload = data || {};
     const corrValue = Number(payload.correlation);
     const priceCorrValue = Number(payload.price_correlation);
+    const selectedPeriodLabel = periodLabel(windowDays);
     return h(
       React.Fragment,
       null,
@@ -230,8 +256,8 @@
         "div",
         { className: "panel hero-panel alt" },
         h("div", { className: "eyebrow" }, "PAIR CORRELATION"),
-        h("h1", { className: "page-title" }, "최근 1개월 주가 상관관계"),
-        h("p", { className: "page-copy compact-copy" }, "국내/해외 종목과 주요 지수 두 개를 선택해 최근 1개월 공통 거래일 기준 상관관계를 계산합니다.")
+        h("h1", { className: "page-title" }, "기간별 주가 상관관계"),
+        h("p", { className: "page-copy compact-copy" }, "국내/해외 종목과 주요 지수 두 개를 선택해 선택 기간의 공통 거래일 기준 상관관계를 계산합니다.")
       ),
       h(
         "div",
@@ -270,7 +296,19 @@
       h(
         "div",
         { className: "panel pair-correlation-action-panel" },
-        h("div", { className: "summary-help" }, "상관계수는 최근 1개월 공통 거래일 종가의 일별 수익률 Pearson 기준입니다."),
+        h("label", { className: "form-field pair-correlation-period-field" },
+          h("span", null, "조회 기간"),
+          h("select", {
+            value: windowDays,
+            onChange: function (event) { handleWindowChange(event.target.value); },
+          },
+          h("option", { value: "7" }, "1주"),
+          h("option", { value: "31" }, "1개월"),
+          h("option", { value: "92" }, "1분기 (3개월)"),
+          h("option", { value: "183" }, "반기 (6개월)"),
+          h("option", { value: "366" }, "1년"))
+        ),
+        h("div", { className: "summary-help pair-correlation-period-help" }, "상관계수는 최근 " + selectedPeriodLabel + " 공통 거래일 종가의 일별 수익률 Pearson 기준입니다."),
         h("button", { type: "button", className: "primary-button", onClick: runCorrelation, disabled: loading || !leftSelected || !rightSelected }, loading ? "계산 중..." : "상관관계 계산")
       ),
       error ? h("div", { className: "notice-box error" }, error) : null,
@@ -306,7 +344,7 @@
                   h("span", null, [payload.left && payload.left.market, payload.left && payload.left.kind === "index" ? "지수" : payload.left && payload.left.kind === "kr_stock" ? "국내 종목" : "해외 종목"].filter(Boolean).join(" · ")),
                   h("div", { className: "pair-correlation-asset-metrics" },
                     h("span", null, "종가 " + numberFormat(payload.left && payload.left.last_close, 2)),
-                    h("span", { className: Number((payload.left && payload.left.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, "1개월 " + formatPercent(payload.left && payload.left.period_return_pct, 2))
+                    h("span", { className: Number((payload.left && payload.left.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, selectedPeriodLabel + " " + formatPercent(payload.left && payload.left.period_return_pct, 2))
                   )
                 ),
                 h("div", { className: "pair-correlation-asset-card" },
@@ -314,7 +352,7 @@
                   h("span", null, [payload.right && payload.right.market, payload.right && payload.right.kind === "index" ? "지수" : payload.right && payload.right.kind === "kr_stock" ? "국내 종목" : "해외 종목"].filter(Boolean).join(" · ")),
                   h("div", { className: "pair-correlation-asset-metrics" },
                     h("span", null, "종가 " + numberFormat(payload.right && payload.right.last_close, 2)),
-                    h("span", { className: Number((payload.right && payload.right.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, "1개월 " + formatPercent(payload.right && payload.right.period_return_pct, 2))
+                    h("span", { className: Number((payload.right && payload.right.period_return_pct) || 0) >= 0 ? "metric-up" : "metric-down" }, selectedPeriodLabel + " " + formatPercent(payload.right && payload.right.period_return_pct, 2))
                   )
                 ),
                 h("div", { className: "summary-help" }, payload.method || "")

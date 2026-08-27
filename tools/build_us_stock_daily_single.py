@@ -97,6 +97,18 @@ def _date_key_to_datetime_utc(date_key: str) -> datetime:
     return datetime.strptime(str(date_key), "%Y%m%d").replace(tzinfo=timezone.utc)
 
 
+def to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return float(default)
+        result = float(value)
+        if not math.isfinite(result):
+            return float(default)
+        return result
+    except Exception:
+        return float(default)
+
+
 def _load_formula_config() -> dict[str, Any]:
     FORMULA_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not FORMULA_CONFIG_PATH.exists():
@@ -693,10 +705,20 @@ def _fetch_us_snapshots(listing: pd.DataFrame, max_workers: int, target_date: st
             executor.submit(_fetch_snapshot_for_symbol, row.Symbol, str(row.Name or row.Symbol), target_date): row.Symbol
             for row in listing.itertuples(index=False)
         }
+        failures = 0
         for future in as_completed(futures):
-            payload = future.result()
+            symbol = str(futures.get(future) or "")
+            try:
+                payload = future.result()
+            except Exception as exc:
+                failures += 1
+                if failures <= 10:
+                    print(f"[WARN] US snapshot skipped {symbol}: {exc}", file=sys.stderr, flush=True)
+                continue
             if payload:
                 rows.append(payload)
+        if failures:
+            print(f"[WARN] US snapshot skipped {failures} symbols", file=sys.stderr, flush=True)
     return pd.DataFrame(rows)
 
 
@@ -822,7 +844,7 @@ def _build_range_frames(
 
     frames: list[pd.DataFrame] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 _fetch_history_for_symbol,
                 str(row.Symbol),
@@ -834,13 +856,23 @@ def _build_range_frames(
                 sortino_min_obs,
                 insufficient_value,
                 sortino_scale,
-            )
+            ): str(row.Symbol)
             for row in listing.itertuples(index=False)
-        ]
+        }
+        failures = 0
         for future in as_completed(futures):
-            payload = future.result()
+            symbol = str(futures.get(future) or "")
+            try:
+                payload = future.result()
+            except Exception as exc:
+                failures += 1
+                if failures <= 10:
+                    print(f"[WARN] US history skipped {symbol}: {exc}", file=sys.stderr, flush=True)
+                continue
             if payload is not None and not payload.empty:
                 frames.append(payload)
+        if failures:
+            print(f"[WARN] US history skipped {failures} symbols", file=sys.stderr, flush=True)
     if not frames:
         raise RuntimeError("US history fetch returned no rows.")
 

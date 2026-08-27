@@ -12,7 +12,7 @@
   const THEME_SECTOR_KEY = "stock-dashboard:theme-sector-state";
   const STOCK_NEWS_KEY = "stock-dashboard:stock-news-state";
   const DISCLOSURE_PAGE_KEY = "stock-dashboard:disclosure-page-state";
-  const DISCLOSURE_PAGE_STATE_VERSION = 5;
+  const DISCLOSURE_PAGE_STATE_VERSION = 7;
   const WINDOW_TITLE_DETAIL_EVENT = "stock-dashboard:title-detail";
   const PAGE_NAV_EVENT = "stock-dashboard:navigate-page";
   const TAB_ORDER_KEY = "stock-dashboard:tab-order-v1";
@@ -43,6 +43,7 @@
     "institutional-rebalance": "기관 리밸런싱 추정",
     "portfolio": "포트폴리오 수익",
     "sector-entry": "섹터 진입 신호",
+    "breakout-stats": "돌파 통계",
     "sector-snapshot": "섹터 비교 테이블",
     "trade-data": "수출입",
     "economy-cycle": "경기순환",
@@ -2654,15 +2655,16 @@
       const raw = localStorage.getItem(AUTO_DAILY_THEME_BUILD_KEY);
       const parsed = raw ? JSON.parse(raw) : null;
       if (!parsed || typeof parsed !== "object") {
-        return { date: "", kr: false, us: false };
+        return { date: "", kr: false, us: false, asia: false };
       }
       return {
         date: String(parsed.date || ""),
         kr: !!parsed.kr,
         us: !!parsed.us,
+        asia: !!parsed.asia,
       };
     } catch (error) {
-      return { date: "", kr: false, us: false };
+      return { date: "", kr: false, us: false, asia: false };
     }
   }
 
@@ -2672,6 +2674,7 @@
         date: String((nextState && nextState.date) || ""),
         kr: !!(nextState && nextState.kr),
         us: !!(nextState && nextState.us),
+        asia: !!(nextState && nextState.asia),
       }));
     } catch (error) {
     }
@@ -2716,7 +2719,9 @@
   function getAutoBuildDelayMs(market) {
     const config = market === "us"
       ? { timeZone: "America/New_York", closeHour: 16, closeMinute: 10 }
-      : { timeZone: "Asia/Seoul", closeHour: 15, closeMinute: 35 };
+      : market === "asia"
+        ? { timeZone: "Asia/Shanghai", closeHour: 15, closeMinute: 10 }
+        : { timeZone: "Asia/Seoul", closeHour: 15, closeMinute: 35 };
     const parts = getZonedDateParts(config.timeZone);
     if (!isWeekdayName(parts.weekday)) {
       return null;
@@ -4291,6 +4296,8 @@
     const portfolioSeriesRef = useRef(null);
     const benchmarkSeriesRefs = useRef({});
     const suppressRangeEventRef = useRef(false);
+    const resizeFrameRef = useRef(null);
+    const lastSizeRef = useRef({ width: 0, height: 0 });
 
     const labels = ensureArray(props.series).map(function (item) { return String(item.date || ""); });
 
@@ -4368,6 +4375,27 @@
         }
         const width = Math.max(Math.round(entry.contentRect.width || 0), 320);
         const height = Math.max(Math.round(entry.contentRect.height || 0), 280);
+        if (lastSizeRef.current.width === width && lastSizeRef.current.height === height) {
+          return;
+        }
+        if (resizeFrameRef.current && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(resizeFrameRef.current);
+        }
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          resizeFrameRef.current = window.requestAnimationFrame(function () {
+            resizeFrameRef.current = null;
+            if (!chartRef.current) {
+              return;
+            }
+            if (lastSizeRef.current.width === width && lastSizeRef.current.height === height) {
+              return;
+            }
+            lastSizeRef.current = { width: width, height: height };
+            chartRef.current.applyOptions({ width: width, height: height });
+          });
+          return;
+        }
+        lastSizeRef.current = { width: width, height: height };
         chartRef.current.applyOptions({ width: width, height: height });
       });
       resizeObserver.observe(container);
@@ -4378,10 +4406,15 @@
 
       return function () {
         resizeObserver.disconnect();
+        if (resizeFrameRef.current && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(resizeFrameRef.current);
+          resizeFrameRef.current = null;
+        }
         chart.remove();
         chartRef.current = null;
         portfolioSeriesRef.current = null;
         benchmarkSeriesRefs.current = {};
+        lastSizeRef.current = { width: 0, height: 0 };
       };
     }, []);
 
@@ -8349,6 +8382,55 @@
     return tab ? tab.label : "공시";
   }
 
+  function compactMarketMetricForCache(metric) {
+    if (!metric || typeof metric !== "object") {
+      return null;
+    }
+    return {
+      actual: metric.actual || "",
+      expected: metric.expected || "",
+      surprise: metric.surprise || "",
+      opm: metric.opm || "",
+      qoq: metric.qoq || "",
+      yoy: metric.yoy || "",
+    };
+  }
+
+  function compactMarketEarningsRowForCache(row) {
+    if (!row || typeof row !== "object") {
+      return null;
+    }
+    return {
+      chat_id: row.chat_id,
+      message_id: row.message_id,
+      date: row.date || "",
+      report_name: row.report_name || "",
+      stock_code: row.stock_code || "",
+      company_code: row.company_code || "",
+      market_cap_100m: row.market_cap_100m,
+      stock_name: row.stock_name || "",
+      company: row.company || "",
+      sales: row.sales || "",
+      operating_profit: row.operating_profit || "",
+      metrics: {
+        sales: compactMarketMetricForCache(row.metrics && row.metrics.sales),
+        operating_profit: compactMarketMetricForCache(row.metrics && row.metrics.operating_profit),
+      },
+    };
+  }
+
+  function compactMarketPayloadForCache(payload) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    return {
+      days: Number(payload.days || 0),
+      result_count: Number(payload.result_count || 0),
+      scanned_count: Number(payload.scanned_count || 0),
+      results: ensureArray(payload.results).map(compactMarketEarningsRowForCache).filter(Boolean),
+    };
+  }
+
   function loadDisclosurePageState() {
     try {
       const raw = localStorage.getItem(DISCLOSURE_PAGE_KEY);
@@ -8364,8 +8446,14 @@
         disclosureCategory: String(parsed.disclosureCategory || "earnings"),
         disclosureNextOffsetId: Number(parsed.disclosureNextOffsetId || 0),
         disclosureHasMore: !!parsed.disclosureHasMore,
-        marketPayload: validVersion ? parsed.marketPayload || null : null,
+        marketPayload: validVersion ? compactMarketPayloadForCache(parsed.marketPayload || null) : null,
+        marketScope: validVersion ? String(parsed.marketScope || "kr") : "kr",
+        marketForeignPayload: validVersion ? parsed.marketForeignPayload || null : null,
+        marketForeignMessage: validVersion ? String(parsed.marketForeignMessage || "") : "",
         marketScrollTop: Number(parsed.marketScrollTop || 0),
+        upcomingScope: validVersion ? String(parsed.upcomingScope || "kr") : "kr",
+        upcomingPayloads: validVersion && parsed.upcomingPayloads && typeof parsed.upcomingPayloads === "object" ? parsed.upcomingPayloads : {},
+        upcomingErrors: validVersion && parsed.upcomingErrors && typeof parsed.upcomingErrors === "object" ? parsed.upcomingErrors : {},
       };
     } catch (err) {
       return {};
@@ -8382,8 +8470,14 @@
         disclosureCategory: state.disclosureCategory || "earnings",
         disclosureNextOffsetId: Number(state.disclosureNextOffsetId || 0),
         disclosureHasMore: !!state.disclosureHasMore,
-        marketPayload: state.marketPayload || null,
+        marketPayload: compactMarketPayloadForCache(state.marketPayload || null),
+        marketScope: state.marketScope || "kr",
+        marketForeignPayload: state.marketForeignPayload || null,
+        marketForeignMessage: state.marketForeignMessage || "",
         marketScrollTop: Number(state.marketScrollTop || 0),
+        upcomingScope: state.upcomingScope || "kr",
+        upcomingPayloads: state.upcomingPayloads && typeof state.upcomingPayloads === "object" ? state.upcomingPayloads : {},
+        upcomingErrors: state.upcomingErrors && typeof state.upcomingErrors === "object" ? state.upcomingErrors : {},
         financialTrend: state.financialTrend || null,
         financialTrendMessage: state.financialTrendMessage || "",
       }));
@@ -9202,6 +9296,22 @@
       console.error("Failed to initialize sector-entry page module.", error);
     }
   }
+  const breakoutStatsPageModule = getStockAppModule("breakoutStatsPage");
+  function BreakoutStatsPageUnavailable() {
+    return h("div", { className: "page breakout-stats-page" }, h("section", { className: "panel" },
+      h(SectionTitle, null, "돌파 통계"), h("div", { className: "notice-box error" }, "페이지 모듈을 불러오지 못했습니다. 앱을 새로고침해 주세요.")));
+  }
+  let BreakoutStatsPage = BreakoutStatsPageUnavailable;
+  if (typeof breakoutStatsPageModule.createPage === "function") {
+    try {
+      BreakoutStatsPage = breakoutStatsPageModule.createPage({
+        React: React, h: h, ensureArray: ensureArray, numberFormat: numberFormat,
+        formatPercent: formatPercent, fetchJson: fetchJson, postJson: postJson,
+        ThemeSectorInput: ThemeSectorInput, SectionTitle: SectionTitle,
+        SummaryCard: SummaryCard, colorForKey: colorForKey,
+      });
+    } catch (error) { console.error("Failed to initialize breakout-stats page module.", error); }
+  }
   const sectorSnapshotPageModule = getStockAppModule("sectorSnapshotPage");
 
   function SectorSnapshotPageV2ModuleUnavailable() {
@@ -9377,6 +9487,81 @@
       console.error("Failed to initialize international-themes page module.", error);
     }
   }
+
+  const UNIFIED_THEME_MARKET_TAB_KEY = "stock-dashboard:unified-theme-market-tab";
+
+  function readUnifiedThemeMarketTab() {
+    try {
+      const value = localStorage.getItem(UNIFIED_THEME_MARKET_TAB_KEY);
+      return ["us", "jp", "cn", "hk"].indexOf(value) >= 0 ? value : "kr";
+    } catch (error) {
+      return "kr";
+    }
+  }
+
+  function writeUnifiedThemeMarketTab(value) {
+    try {
+      localStorage.setItem(UNIFIED_THEME_MARKET_TAB_KEY, ["us", "jp", "cn", "hk"].indexOf(value) >= 0 ? value : "kr");
+    } catch (error) {
+    }
+  }
+
+  function UnifiedThemesPage() {
+    const [marketTab, setMarketTab] = React.useState(readUnifiedThemeMarketTab);
+    const tabs = [
+      { key: "kr", label: "국내", help: "국내 SQL 데이터" },
+      { key: "us", label: "미국", help: "미국 SQL 데이터" },
+      { key: "jp", label: "일본", help: "일본 SQL 데이터" },
+      { key: "cn", label: "중국", help: "중국 SQL 데이터" },
+      { key: "hk", label: "홍콩", help: "홍콩 SQL 데이터" },
+    ];
+
+    function changeMarketTab(nextTab) {
+      setMarketTab(nextTab);
+      writeUnifiedThemeMarketTab(nextTab);
+    }
+
+    let activeMarketPage = h(MemoThemesPageV2);
+    if (marketTab === "us") {
+      activeMarketPage = h(GlobalThemesPage);
+    } else if (marketTab === "jp") {
+      activeMarketPage = h(AsiaThemesPage, { region: "jp", regionLabel: "일본" });
+    } else if (marketTab === "cn") {
+      activeMarketPage = h(AsiaThemesPage, { region: "cn", regionLabel: "중국" });
+    } else if (marketTab === "hk") {
+      activeMarketPage = h(AsiaThemesPage, { region: "hk", regionLabel: "홍콩" });
+    }
+
+    return h(
+      "div",
+      { className: "unified-themes-page" },
+      h(
+        "section",
+        { className: "unified-theme-tabs-panel" },
+        h(
+          "div",
+          { className: "unified-theme-tabs" },
+          tabs.map(function (tab) {
+            return h(
+              "button",
+              {
+                key: tab.key,
+                type: "button",
+                className: "unified-theme-tab" + (marketTab === tab.key ? " active" : ""),
+                onClick: function () { changeMarketTab(tab.key); },
+                title: tab.help,
+              },
+              tab.label
+            );
+          })
+        )
+      ),
+      activeMarketPage
+    );
+  }
+
+  const MemoUnifiedThemesPage = React.memo(UnifiedThemesPage);
+
   function BackgroundPreloader(props) {
     useEffect(function () {
       if (props && props.publicWeb) {
@@ -10036,8 +10221,6 @@
           { key: "sector-watch", label: "관심종목 보드" },
           { key: "themes", label: "오늘의 주도주" },
           { key: "chart-game", label: "차트 게임" },
-          { key: "global-themes", label: "\ubbf8\uad6d \uc8fc\ub3c4\uc8fc" },
-          { key: "asia-themes", label: "\uc544\uc2dc\uc544 \uc8fc\ub3c4\uc8fc" },
           { key: "telegram", label: "종목 정보 검색기" },
           { key: "disclosure", label: "공시/실적" },
           { key: "stock-news", label: "뉴스 검색기" },
@@ -10048,6 +10231,7 @@
           { key: "institutional-rebalance", label: "기관 리밸런싱 추정" },
           { key: "portfolio", label: "포트폴리오 수익" },
           { key: "sector-entry", label: "섹터 진입 신호" },
+          { key: "breakout-stats", label: "돌파 통계" },
           { key: "sector-snapshot", label: "섹터 비교 테이블" },
           { key: "trade-data", label: "수출입" },
           { key: "economy-cycle", label: "경기순환" },
@@ -10085,7 +10269,7 @@
           return "sector-watch";
         }
       }
-      return ["sector-watch", "portfolio", "themes", "chart-game", "global-themes", "asia-themes", "telegram", "disclosure", "stock-news", "global-company", "pair-correlation", "etf-flow", "global-indices", "institutional-rebalance", "sector-entry", "sector-snapshot", "trade-data", "economy-cycle", "strategy-backtest", "market-calendar", "naver-blog", "real-estate-prices", "subscription-list", "building-management", "next"].indexOf(savedPage) >= 0
+      return ["sector-watch", "portfolio", "themes", "chart-game", "telegram", "disclosure", "stock-news", "global-company", "pair-correlation", "etf-flow", "global-indices", "institutional-rebalance", "sector-entry", "breakout-stats", "sector-snapshot", "trade-data", "economy-cycle", "strategy-backtest", "market-calendar", "naver-blog", "real-estate-prices", "subscription-list", "building-management", "next"].indexOf(savedPage) >= 0
         ? savedPage
         : "sector-watch";
     });
@@ -10192,7 +10376,7 @@
 
     useEffect(function () {
       const timers = [];
-      const running = { kr: false, us: false };
+      const running = { kr: false, us: false, asia: false };
 
       function getStateForToday() {
         const today = todayIsoDate();
@@ -10200,7 +10384,7 @@
         if (currentState.date === today) {
           return currentState;
         }
-        const nextState = { date: today, kr: false, us: false };
+        const nextState = { date: today, kr: false, us: false, asia: false };
         writeAutoDailyThemeBuildState(nextState);
         return nextState;
       }
@@ -10208,21 +10392,19 @@
       function runAutoBuild(market) {
         const todayState = getStateForToday();
         if (running[market] || todayState[market]) {
-          return;
+          return Promise.resolve({ skipped: true });
         }
         const delayMs = getAutoBuildDelayMs(market);
         if (delayMs == null) {
-          return;
-        }
-        if (delayMs > 0) {
-          timers.push(window.setTimeout(function () {
-            runAutoBuild(market);
-          }, delayMs));
-          return;
+          return Promise.resolve({ skipped: true });
         }
         running[market] = true;
-        const url = market === "us" ? "/api/us-themes/build-today-data" : "/api/themes/build-today-data";
-        postJson(url, {
+        const url = market === "us"
+          ? "/api/us-themes/build-today-data"
+          : market === "asia"
+            ? "/api/asia-themes/build-today-data"
+            : "/api/themes/build-today-data";
+        return postJson(url, {
           min_score: 0,
           recent_limit: 20,
         }).then(function (payload) {
@@ -10239,9 +10421,29 @@
         });
       }
 
+      function runAutoBuildSequence(markets, index) {
+        if (index >= markets.length) {
+          return;
+        }
+        const market = markets[index];
+        const delayMs = getAutoBuildDelayMs(market);
+        if (delayMs == null) {
+          runAutoBuildSequence(markets, index + 1);
+          return;
+        }
+        if (delayMs > 0) {
+          timers.push(window.setTimeout(function () {
+            runAutoBuildSequence(markets, index);
+          }, delayMs));
+          return;
+        }
+        runAutoBuild(market).finally(function () {
+          runAutoBuildSequence(markets, index + 1);
+        });
+      }
+
       getStateForToday();
-      runAutoBuild("kr");
-      runAutoBuild("us");
+      runAutoBuildSequence(["kr", "us", "asia"], 0);
       return function () {
         timers.forEach(function (timerId) {
           window.clearTimeout(timerId);
@@ -10312,7 +10514,7 @@
         return h(PortfolioPageModern);
       }
       if (pageKey === "themes") {
-        return h(MemoThemesPageV2);
+        return h(MemoUnifiedThemesPage);
       }
       if (pageKey === "chart-game") {
         return h(ChartGamePage);
@@ -10363,6 +10565,9 @@
       }
       if (pageKey === "sector-entry") {
         return h(SectorEntrySignalPage);
+      }
+      if (pageKey === "breakout-stats") {
+        return h(BreakoutStatsPage);
       }
       if (pageKey === "sector-snapshot") {
         return h(SectorSnapshotPageV2);
@@ -10523,4 +10728,3 @@
   const rootElement = document.getElementById("root");
   ReactDOM.createRoot(rootElement).render(h(App));
 })();
-

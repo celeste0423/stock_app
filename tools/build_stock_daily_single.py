@@ -256,6 +256,45 @@ def _load_recent_stock_name_map(target_date: str) -> dict[str, str]:
     return out
 
 
+def _load_recent_stock_identity_map(target_date: str) -> dict[str, dict[str, str]]:
+    if not FAST_DB_PATH.exists():
+        return {}
+    try:
+        with sqlite3.connect(str(FAST_DB_PATH)) as conn:
+            row = conn.execute(
+                """
+                SELECT file_date_key
+                FROM file_meta
+                WHERE file_date_key < ?
+                ORDER BY file_date_key DESC
+                LIMIT 1
+                """,
+                (target_date,),
+            ).fetchone()
+            if not row or not row[0]:
+                return {}
+            rows = conn.execute(
+                """
+                SELECT stock_code, stock_name, sector
+                FROM screening_rows
+                WHERE file_date_key = ?
+                """,
+                (str(row[0]),),
+            ).fetchall()
+    except Exception:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for stock_code, stock_name, sector in rows:
+        code = _normalize_code(stock_code)
+        if not code:
+            continue
+        out[code] = {
+            "stock_name": str(stock_name or "").strip(),
+            "sector": str(sector or "").strip(),
+        }
+    return out
+
+
 def _canonicalize_codes_from_recent_history(base: pd.DataFrame, target_date: str) -> pd.DataFrame:
     if base.empty or not FAST_DB_PATH.exists():
         return base
@@ -493,6 +532,45 @@ def _fetch_base_snapshot_from_fdr(date_key: str) -> pd.DataFrame:
     return frame
 
 
+def _latest_sql_file_date_key() -> str:
+    if not FAST_DB_PATH.exists():
+        return ""
+    try:
+        with sqlite3.connect(str(FAST_DB_PATH)) as conn:
+            row = conn.execute("SELECT MAX(file_date_key) FROM screening_rows").fetchone()
+    except Exception:
+        return ""
+    value = str(row[0] or "").strip() if row else ""
+    return value if re.fullmatch(r"20\d{6}", value) else ""
+
+
+def _can_use_current_snapshot_fallback(date_key: str) -> bool:
+    """Allow current-snapshot fallback only for a new latest trading day.
+
+    FDR StockListing("KRX") is a current/latest snapshot, not an exact
+    historical source.  Using it for arbitrary historical rebuilds can write
+    today's prices under an old date, so it is restricted to the latest missing
+    day around the current calendar date.
+    """
+    if fdr is None:
+        return False
+    if not re.fullmatch(r"20\d{6}", str(date_key or "")):
+        return False
+    latest_key = _latest_sql_file_date_key()
+    if latest_key and str(date_key) < latest_key:
+        return False
+    try:
+        target = datetime.strptime(str(date_key), "%Y%m%d").date()
+    except ValueError:
+        return False
+    today = datetime.now().date()
+    if target > today:
+        return False
+    # Weekends request the prior weekday.  Keep a small buffer for holidays or
+    # delayed loads, but do not permit broad historical backfills via FDR.
+    return (today - target).days <= 7
+
+
 def _naver_number(value: Any) -> float:
     text = str(value or "").replace(",", "").strip()
     try:
@@ -501,7 +579,7 @@ def _naver_number(value: Any) -> float:
         return 0.0
 
 
-def _read_naver_json(url: str, timeout: int = 20) -> dict[str, Any]:
+def _read_naver_json(url: str, timeout: int = 20, *, retries: int = 2) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         headers={
@@ -510,8 +588,19 @@ def _read_naver_json(url: str, timeout: int = 20) -> dict[str, Any]:
             "Accept": "application/json, text/plain, */*",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = json.load(response)
+    last_error: Exception | None = None
+    for attempt in range(max(1, retries + 1)):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.load(response)
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt >= retries:
+                raise RuntimeError(f"Naver Finance JSON request failed: {exc}") from exc
+            time.sleep(0.5 * (attempt + 1))
+    else:
+        raise RuntimeError(f"Naver Finance JSON request failed: {last_error}")
     if not isinstance(payload, dict):
         raise RuntimeError("Naver Finance returned an invalid JSON payload.")
     return payload
@@ -578,13 +667,14 @@ def _fetch_base_snapshot_from_naver_close(date_key: str) -> pd.DataFrame:
     for start in range(0, len(codes), 80):
         batch = codes[start : start + 80]
         url = "https://polling.finance.naver.com/api/realtime/domestic/stock/" + ",".join(batch)
-        payload = _read_naver_json(url)
+        try:
+            payload = _read_naver_json(url, retries=1)
+        except Exception:
+            continue
         for item in payload.get("datas") or []:
             traded_at = str(item.get("localTradedAt") or "")[:10].replace("-", "")
             if traded_at and traded_at != date_key:
-                raise RuntimeError(
-                    f"Naver Finance OHLC date mismatch: requested {date_key}, observed {traded_at}"
-                )
+                continue
             code = _normalize_exact_code(item.get("itemCode") or item.get("symbolCode"))
             if not code:
                 continue
@@ -665,9 +755,16 @@ def _fetch_base_snapshot(date_key: str, krx_id: str = "", krx_password: str = ""
 
     try:
         ohlcv = pykrx_stock.get_market_ohlcv_by_ticker(effective_date, market="ALL")
-    except Exception:
+    except Exception as exc:
+        ohlcv_error = exc
         ohlcv = None
+    else:
+        ohlcv_error = None
     if ohlcv is None or ohlcv.empty:
+        if _can_use_current_snapshot_fallback(effective_date):
+            _write_progress(25, "KRX 조회 실패로 FDR 최신 스냅샷을 보조 사용 중", date_key=effective_date)
+            return _fetch_base_snapshot_from_fdr(effective_date)
+        detail = f": {ohlcv_error}" if ohlcv_error else ""
         raise RuntimeError(f"Exact historical KRX snapshot fetch failed for {date_key}; existing SQL was not changed.")
 
     ohlcv = ohlcv.reset_index()
@@ -761,7 +858,7 @@ def _fetch_kr_etf_snapshot() -> pd.DataFrame:
 def _metrics_from_close_series(close_series: pd.Series) -> dict[str, float]:
     close = pd.to_numeric(close_series, errors="coerce").dropna()
     if close.empty:
-        return {"sortino_norm": 0.25, "is_52w_high": 0, "is_20d_high": 0}
+        return {"sortino_norm": 0.25, "is_52w_high": 0, "is_60d_high": 0, "is_20d_high": 0}
     daily_ret = close.pct_change().dropna().tail(20)
     formula_cfg = _load_formula_config()
     final_cfg = formula_cfg.get("final_score_formula", {}) if isinstance(formula_cfg.get("final_score_formula"), dict) else {}
@@ -783,10 +880,12 @@ def _metrics_from_close_series(close_series: pd.Series) -> dict[str, float]:
         sortino_norm = float(0.5 + (0.5 * math.tanh(raw_sortino / sortino_scale)))
     last = float(close.iloc[-1])
     recent_252 = close.tail(252)
+    recent_60 = close.tail(60)
     recent_20 = close.tail(20)
     is_52w_high = int(not recent_252.empty and last >= float(recent_252.max()))
+    is_60d_high = int(not recent_60.empty and last >= float(recent_60.max()))
     is_20d_high = int(not recent_20.empty and last >= float(recent_20.max()))
-    return {"sortino_norm": sortino_norm, "is_52w_high": is_52w_high, "is_20d_high": is_20d_high}
+    return {"sortino_norm": sortino_norm, "is_52w_high": is_52w_high, "is_60d_high": is_60d_high, "is_20d_high": is_20d_high}
 
 
 def _load_recent_close_history_map(
@@ -858,9 +957,9 @@ def _load_recent_close_history_map(
         if np.isfinite(current_close) and np.isfinite(current_high) and np.isfinite(current_low):
             ohlc_rows.append((target_date, float(current_high), float(current_low), float(current_close)))
         if not rows and not ohlc_rows:
-            metrics[code] = {"sortino_norm": 0.25, "is_52w_high": 0, "is_20d_high": 0, "atr_20": 0.0}
+            metrics[code] = {"sortino_norm": 0.25, "is_52w_high": 0, "is_60d_high": 0, "is_20d_high": 0, "atr_20": 0.0}
             continue
-        row_metrics = {"sortino_norm": 0.25, "is_52w_high": 0, "is_20d_high": 0, "atr_20": 0.0}
+        row_metrics = {"sortino_norm": 0.25, "is_52w_high": 0, "is_60d_high": 0, "is_20d_high": 0, "atr_20": 0.0}
         if rows:
             rows.sort(key=lambda item: item[0])
             close_series = pd.Series([price for _, price in rows], dtype=float)
@@ -887,10 +986,6 @@ def _load_recent_close_history_map(
             if true_range_values and previous_close not in (None, 0):
                 atr_price = float(pd.Series(true_range_values, dtype=float).tail(20).mean())
                 row_metrics["atr_20"] = (atr_price / float(previous_close)) * 100.0
-            recent_20_highs = [float(high_price) for _, high_price, _low_price, _close_price in ohlc_rows[-20:]]
-            current_high_value = float(ohlc_rows[-1][1]) if ohlc_rows else 0.0
-            if recent_20_highs:
-                row_metrics["is_20d_high"] = int(current_high_value >= (max(recent_20_highs) - 1e-9))
         metrics[code] = row_metrics
     return metrics
 
@@ -967,6 +1062,12 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
         base = stock_base
     base["stock_code"] = base["stock_code"].map(_normalize_exact_code)
     base = _canonicalize_codes_from_recent_history(base, config.date_key)
+    identity_map = _load_recent_stock_identity_map(config.date_key)
+    if identity_map:
+        base["stock_name"] = base.apply(
+            lambda row: identity_map.get(_normalize_code(row.get("stock_code")), {}).get("stock_name") or row.get("stock_name"),
+            axis=1,
+        )
     base = base[base["market_cap"] >= config.min_marcap_100m * 100_000_000].copy()
     if base.empty:
         raise RuntimeError("No stocks above market-cap threshold.")
@@ -980,6 +1081,15 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
         ),
         axis=1,
     )
+    if identity_map:
+        base["sector"] = base.apply(
+            lambda row: (
+                identity_map.get(_normalize_code(row.get("stock_code")), {}).get("sector") or row.get("sector")
+                if str(row.get("security_type") or "").strip().lower() != "etf"
+                else row.get("sector")
+            ),
+            axis=1,
+        )
     base["industry"] = base["security_type"].map(lambda value: "ETF" if str(value or "").strip().lower() == "etf" else "")
     base["market_cap_100m"] = base["market_cap"] / 100_000_000.0
     base["trading_value_100m"] = base["trading_value"] / 100_000_000.0
@@ -1025,6 +1135,7 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             avg_value_20d_map = {}
     base["sortino_norm"] = base["stock_code"].map(lambda c: history_rows.get(_normalize_code(c), {}).get("sortino_norm", 0.25))
     base["is_52w_high"] = base["stock_code"].map(lambda c: int(history_rows.get(_normalize_code(c), {}).get("is_52w_high", 0)))
+    base["is_60d_high"] = base["stock_code"].map(lambda c: int(history_rows.get(_normalize_code(c), {}).get("is_60d_high", 0)))
     base["is_20d_high"] = base["stock_code"].map(lambda c: int(history_rows.get(_normalize_code(c), {}).get("is_20d_high", 0)))
     base["atr_20"] = base["stock_code"].map(lambda c: float(history_rows.get(_normalize_code(c), {}).get("atr_20", 0.0)))
 
@@ -1116,6 +1227,9 @@ def _build_frame(config: BuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
             "avg_1m",
             "avg_3m",
             "sortino_norm",
+            "is_52w_high",
+            "is_60d_high",
+            "is_20d_high",
             "score_s",
             "note",
         ]
@@ -1172,6 +1286,7 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
         [
             "file_date",
             "file_date_key",
+            "rank",
             "stock_code",
             "stock_name",
             "security_type",
@@ -1186,6 +1301,9 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             "avg_1m",
             "avg_3m",
             "sortino_norm",
+            "is_52w_high",
+            "is_60d_high",
+            "is_20d_high",
             "score_s",
             "note",
         ]
@@ -1203,6 +1321,7 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             CREATE TABLE IF NOT EXISTS screening_rows (
                 file_date TEXT NOT NULL,
                 file_date_key TEXT NOT NULL,
+                rank INTEGER,
                 stock_code TEXT NOT NULL,
                 stock_name TEXT,
                 security_type TEXT,
@@ -1218,6 +1337,7 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
                 avg_3m REAL,
                 sortino_norm REAL,
                 is_52w_high INTEGER,
+                is_60d_high INTEGER,
                 is_20d_high INTEGER,
                 score_s REAL,
                 note TEXT,
@@ -1226,6 +1346,8 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             """
         )
         existing_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(screening_rows)").fetchall() if row and len(row) > 1}
+        if "rank" not in existing_columns:
+            conn.execute("ALTER TABLE screening_rows ADD COLUMN rank INTEGER")
         if "security_type" not in existing_columns:
             conn.execute("ALTER TABLE screening_rows ADD COLUMN security_type TEXT")
         if "avg_1m" not in existing_columns:
@@ -1234,6 +1356,8 @@ def _write_sql(date_key: str, out: pd.DataFrame, close_frame: pd.DataFrame) -> N
             conn.execute("ALTER TABLE screening_rows ADD COLUMN atr_20 REAL")
         if "is_52w_high" not in existing_columns:
             conn.execute("ALTER TABLE screening_rows ADD COLUMN is_52w_high INTEGER")
+        if "is_60d_high" not in existing_columns:
+            conn.execute("ALTER TABLE screening_rows ADD COLUMN is_60d_high INTEGER")
         if "is_20d_high" not in existing_columns:
             conn.execute("ALTER TABLE screening_rows ADD COLUMN is_20d_high INTEGER")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_screening_date ON screening_rows(file_date_key)")

@@ -109,6 +109,10 @@
         : (!!(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_entry_52w_high) ? "52w" : "none")
     );
     const [leaderAllocationMode, setLeaderAllocationMode] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.allocation_mode ? savedLeaderBacktestPrefs.allocation_mode : "score_weight");
+    const [leaderUsePyramiding, setLeaderUsePyramiding] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.use_pyramiding != null ? !!savedLeaderBacktestPrefs.use_pyramiding : false);
+    const [leaderPyramidingTriggerPct, setLeaderPyramidingTriggerPct] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.pyramid_trigger_pct != null ? savedLeaderBacktestPrefs.pyramid_trigger_pct : 5);
+    const [leaderPyramidingAddWeightPct, setLeaderPyramidingAddWeightPct] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.pyramid_add_weight_pct != null ? savedLeaderBacktestPrefs.pyramid_add_weight_pct : 5);
+    const [leaderPyramidingMaxAddCount, setLeaderPyramidingMaxAddCount] = useState(savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.pyramid_max_add_count != null ? savedLeaderBacktestPrefs.pyramid_max_add_count : 1);
     const [strategyKey, setStrategyKey] = useState("ma20_cross");
     const [startDate, setStartDate] = useState(function () { return savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.start ? savedLeaderBacktestPrefs.start : isoDateOffset(-365); });
     const [endDate, setEndDate] = useState(function () { return savedLeaderBacktestPrefs && savedLeaderBacktestPrefs.end ? savedLeaderBacktestPrefs.end : isoDateOffset(0); });
@@ -199,6 +203,10 @@
             : (!!savedLeaderBacktestPrefs.use_entry_52w_high ? "52w" : "none"),
           use_entry_52w_high: !!savedLeaderBacktestPrefs.use_entry_52w_high,
           allocation_mode: savedLeaderBacktestPrefs.allocation_mode || "score_weight",
+          use_pyramiding: savedLeaderBacktestPrefs.use_pyramiding != null ? !!savedLeaderBacktestPrefs.use_pyramiding : false,
+          pyramid_trigger_pct: savedLeaderBacktestPrefs.pyramid_trigger_pct != null ? savedLeaderBacktestPrefs.pyramid_trigger_pct : 5,
+          pyramid_add_weight_pct: savedLeaderBacktestPrefs.pyramid_add_weight_pct != null ? savedLeaderBacktestPrefs.pyramid_add_weight_pct : 5,
+          pyramid_max_add_count: savedLeaderBacktestPrefs.pyramid_max_add_count != null ? savedLeaderBacktestPrefs.pyramid_max_add_count : 1,
           refresh: String(savedLeaderBacktestPrefs.refresh || Date.now()),
         };
       }
@@ -233,6 +241,10 @@
         entry_high_filter: "none",
         use_entry_52w_high: false,
         allocation_mode: "score_weight",
+        use_pyramiding: false,
+        pyramid_trigger_pct: 5,
+        pyramid_add_weight_pct: 5,
+        pyramid_max_add_count: 1,
         refresh: String(Date.now()),
       };
     });
@@ -302,6 +314,10 @@
       params.set("entry_high_filter", String(queryState.entry_high_filter || leaderEntryHighFilter || "none"));
       params.set("use_entry_52w_high", String((queryState.entry_high_filter || leaderEntryHighFilter || "none") === "52w"));
       params.set("allocation_mode", String(queryState.allocation_mode || leaderAllocationMode || "score_weight"));
+      params.set("use_pyramiding", String(!!(queryState.use_pyramiding != null ? queryState.use_pyramiding : leaderUsePyramiding)));
+      params.set("pyramid_trigger_pct", String(queryState.pyramid_trigger_pct != null ? queryState.pyramid_trigger_pct : leaderPyramidingTriggerPct || 0));
+      params.set("pyramid_add_weight_pct", String(queryState.pyramid_add_weight_pct != null ? queryState.pyramid_add_weight_pct : leaderPyramidingAddWeightPct || 0));
+      params.set("pyramid_max_add_count", String(queryState.pyramid_max_add_count != null ? queryState.pyramid_max_add_count : leaderPyramidingMaxAddCount || 1));
       params.set("refresh", String(queryState.refresh || Date.now()));
     }
     const sectorParams = new URLSearchParams({
@@ -415,6 +431,10 @@
       setLeaderUseAtrFilter(query.use_atr_filter != null ? !!query.use_atr_filter : false);
       setLeaderEntryHighFilter(String(query.entry_high_filter || (query.use_entry_52w_high ? "52w" : "none")));
       setLeaderAllocationMode(String(query.allocation_mode || "score_weight"));
+      setLeaderUsePyramiding(query.use_pyramiding != null ? !!query.use_pyramiding : false);
+      setLeaderPyramidingTriggerPct(query.pyramid_trigger_pct != null ? Number(query.pyramid_trigger_pct) : 5);
+      setLeaderPyramidingAddWeightPct(query.pyramid_add_weight_pct != null ? Number(query.pyramid_add_weight_pct) : 5);
+      setLeaderPyramidingMaxAddCount(query.pyramid_max_add_count != null ? Number(query.pyramid_max_add_count) : 1);
       setStartDate(String(query.start || isoDateOffset(-365)));
       setEndDate(String(query.end || isoDateOffset(0)));
     }
@@ -452,6 +472,10 @@
         entry_high_filter: "none",
         use_entry_52w_high: false,
         allocation_mode: "score_weight",
+        use_pyramiding: false,
+        pyramid_trigger_pct: 5,
+        pyramid_add_weight_pct: 5,
+        pyramid_max_add_count: 1,
       };
     }
 
@@ -488,6 +512,10 @@
         entry_high_filter: String(leaderEntryHighFilter || "none"),
         use_entry_52w_high: String(leaderEntryHighFilter || "none") === "52w",
         allocation_mode: leaderAllocationMode || "score_weight",
+        use_pyramiding: !!leaderUsePyramiding,
+        pyramid_trigger_pct: Number(leaderPyramidingTriggerPct || 0),
+        pyramid_add_weight_pct: Number(leaderPyramidingAddWeightPct || 0),
+        pyramid_max_add_count: Math.max(1, Number(leaderPyramidingMaxAddCount || 1)),
       };
       if (refreshValue != null) {
         nextQuery.refresh = String(refreshValue);
@@ -557,6 +585,10 @@
       leaderUseAtrFilter,
       leaderEntryHighFilter,
       leaderAllocationMode,
+      leaderUsePyramiding,
+      leaderPyramidingTriggerPct,
+      leaderPyramidingAddWeightPct,
+      leaderPyramidingMaxAddCount,
       startDate,
       endDate,
     ]);
@@ -1973,6 +2005,42 @@
             h("option", { value: "vol_inverse" }, "\ubcc0\ub3d9\uc131 \uc5ed\uac00\uc911")
           )
         ),
+        h("label", null,
+          renderLeaderConditionTitle("추세추종 피라미딩", leaderUsePyramiding, setLeaderUsePyramiding),
+          h("div", { style: { display: "grid", gap: "6px" } },
+            h("input", {
+              className: "text-input",
+              type: "number",
+              min: "0",
+              step: "0.1",
+              value: leaderPyramidingTriggerPct,
+              disabled: !leaderUsePyramiding,
+              onChange: function (event) { setLeaderPyramidingTriggerPct(event.target.value); },
+              placeholder: "트리거 수익률(%)",
+            }),
+            h("input", {
+              className: "text-input",
+              type: "number",
+              min: "0",
+              step: "0.1",
+              value: leaderPyramidingAddWeightPct,
+              disabled: !leaderUsePyramiding,
+              onChange: function (event) { setLeaderPyramidingAddWeightPct(event.target.value); },
+              placeholder: "추가 비중(%p)",
+            }),
+            h("input", {
+              className: "text-input",
+              type: "number",
+              min: "1",
+              step: "1",
+              value: leaderPyramidingMaxAddCount,
+              disabled: !leaderUsePyramiding,
+              onChange: function (event) { setLeaderPyramidingMaxAddCount(event.target.value); },
+              placeholder: "최대 추가 횟수",
+            }),
+            h("div", { className: "summary-help" }, "예: 수익률 5%마다 종목당 5%p씩 추가, 최대 2회")
+          )
+        ),
         isUsLeaderMode ? h("label", null,
           h("span", null, "비교 지수"),
           h("select", {
@@ -2060,6 +2128,10 @@
       var leaderUseAtrFilterLabel = !!(queryState.use_atr_filter != null ? queryState.use_atr_filter : leaderUseAtrFilter);
       var leaderMaxAtr20Label = Number(queryState.max_atr_20 != null ? queryState.max_atr_20 : leaderMaxAtr20 || 0);
       var leaderEntryHighFilterLabel = String(queryState.entry_high_filter || leaderEntryHighFilter || "none");
+      var leaderUsePyramidingLabel = !!(queryState.use_pyramiding != null ? queryState.use_pyramiding : leaderUsePyramiding);
+      var leaderPyramidingTriggerLabel = Number(queryState.pyramid_trigger_pct != null ? queryState.pyramid_trigger_pct : leaderPyramidingTriggerPct || 0);
+      var leaderPyramidingAddWeightLabel = Number(queryState.pyramid_add_weight_pct != null ? queryState.pyramid_add_weight_pct : leaderPyramidingAddWeightPct || 0);
+      var leaderPyramidingMaxAddCountLabel = Number(queryState.pyramid_max_add_count != null ? queryState.pyramid_max_add_count : leaderPyramidingMaxAddCount || 1);
       var leaderEntryHighFilterText = "";
       if (leaderEntryHighFilterLabel === "20d") {
         leaderEntryHighFilterText = "20일 신고가만 매수";
@@ -2081,6 +2153,9 @@
         + (leaderUseMinMarketCapFilterLabel && leaderMinMarketCapLabel > 0 ? " / \uc2dc\ucd1d " + numberFormat(leaderMinMarketCapLabel, 0) + "\uc5b5+" : "")
         + (leaderUseAtrFilterLabel && leaderMaxAtr20Label > 0 ? " / ATR " + numberFormat(leaderMaxAtr20Label, 1) + "% 이하" : "")
         + (leaderEntryHighFilterText ? " / " + leaderEntryHighFilterText : "")
+        + (leaderUsePyramidingLabel && leaderPyramidingTriggerLabel > 0 && leaderPyramidingAddWeightLabel > 0
+            ? " / 피라미딩 " + numberFormat(leaderPyramidingTriggerLabel, 1) + "%마다 +" + numberFormat(leaderPyramidingAddWeightLabel, 1) + "%p x" + numberFormat(leaderPyramidingMaxAddCountLabel, 0)
+            : "")
         + " / " + leaderAllocationLabel;
       var holdingsTimelineRows = leaderRows
         .map(function (row) {

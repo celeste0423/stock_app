@@ -18,7 +18,7 @@
     const numberFormat = deps.numberFormat;
     const persistStockNewsState = deps.persistStockNewsState;
     const SectionTitle = deps.SectionTitle;
-    const selectTextOnFocus = deps.selectTextOnFocus;
+    const selectTextOnFocus = typeof deps.selectTextOnFocus === "function" ? deps.selectTextOnFocus : function () {};
 
   function StockNewsPage() {
     const savedState = loadStockNewsState();
