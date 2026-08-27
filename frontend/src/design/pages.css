@@ -771,6 +771,246 @@ textarea:focus {
   border-radius: 8px;
 }
 
+.unified-themes-page {
+  gap: 16px;
+}
+
+.unified-themes-page .unified-theme-tabs-panel {
+  position: static;
+  top: auto;
+  z-index: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-color: rgba(25, 35, 48, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--ui-shadow-xs);
+  backdrop-filter: none;
+}
+
+.unified-themes-page .unified-theme-tabs {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 5px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #f2f6fa;
+  overflow-x: auto;
+}
+
+.unified-themes-page .unified-theme-tab {
+  min-width: 72px;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 7px;
+  font-size: 14px;
+  color: #42526a;
+}
+
+.unified-themes-page .unified-theme-tab.active {
+  background: #101828;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(16, 24, 40, 0.18);
+}
+
+.unified-themes-page .leader-calendar-panel {
+  padding: 24px;
+  border-color: rgba(49, 130, 246, 0.18);
+  background:
+    linear-gradient(135deg, #1457d9 0%, #1765d8 45%, #0b9c7f 100%);
+  color: #ffffff;
+  box-shadow: 0 22px 54px rgba(23, 101, 216, 0.22);
+}
+
+.unified-themes-page .leader-calendar-panel::before {
+  opacity: 0.16;
+}
+
+.unified-themes-page .leader-calendar-head {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.85fr) auto minmax(260px, 1fr);
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.unified-themes-page .leader-calendar-panel .section-title {
+  color: #ffffff;
+  font-size: 24px;
+  line-height: 1.2;
+  word-break: keep-all;
+}
+
+.unified-themes-page .leader-calendar-panel .summary-help {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+
+.unified-themes-page .leader-calendar-panel .toggle-group {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.unified-themes-page .leader-calendar-panel .mini-button {
+  min-width: max-content;
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.unified-themes-page .leader-calendar-panel .mini-button:hover,
+.unified-themes-page .leader-calendar-panel .mini-button.active {
+  border-color: #ffffff;
+  background: #ffffff;
+  color: #1765d8;
+}
+
+.unified-themes-page .leader-calendar-panel .capture-button {
+  background: rgba(255, 255, 255, 0.95);
+  color: #0b7a62;
+}
+
+.unified-themes-page .leader-calendar-panel .leader-timeline-wrap,
+.unified-themes-page .leader-calendar-panel .empty-state,
+.unified-themes-page .leader-calendar-panel .loading-block,
+.unified-themes-page .leader-calendar-panel .notice-box {
+  border-color: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ui-text);
+}
+
+.unified-themes-page .leader-calendar-panel .loading-block {
+  margin-top: 6px;
+}
+
+.unified-themes-page .themes-compact-hero {
+  min-height: 118px;
+  border-color: rgba(15, 181, 143, 0.24);
+  background:
+    linear-gradient(135deg, #ecfdf7 0%, #ffffff 42%, #eef6ff 100%);
+}
+
+.unified-themes-page .themes-compact-titlebar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.unified-themes-page .themes-compact-titlebar-main {
+  min-width: 0;
+}
+
+.unified-themes-page .theme-box-toggle {
+  display: inline-grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.unified-themes-page .theme-box-title-text {
+  min-width: 0;
+}
+
+.unified-themes-page .themes-compact-titlebar .page-title {
+  display: block;
+  margin: 2px 0 0;
+  font-size: 28px;
+  line-height: 1.18;
+  word-break: keep-all;
+}
+
+.unified-themes-page .themes-compact-titlebar > .summary-help {
+  justify-self: end;
+  max-width: 360px;
+  text-align: right;
+}
+
+.unified-themes-page .themes-compact-toolbar {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) repeat(3, max-content);
+  align-items: center;
+  gap: 8px;
+}
+
+.unified-themes-page .theme-file-calendar {
+  padding: 16px;
+  border: 1px solid rgba(15, 181, 143, 0.22);
+  border-radius: 8px;
+  background: #0b9c7f;
+  color: #ffffff;
+}
+
+.unified-themes-page .theme-file-calendar-head strong,
+.unified-themes-page .theme-file-calendar-weekdays span {
+  color: #ffffff;
+}
+
+.unified-themes-page .theme-file-calendar .mini-button,
+.unified-themes-page .theme-file-calendar-day {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.unified-themes-page .theme-file-calendar-day.has-file {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.unified-themes-page .theme-file-calendar-day.active,
+.unified-themes-page .theme-file-calendar-day.has-file:hover {
+  border-color: #ffffff;
+  background: #ffffff;
+  color: #08775f;
+}
+
+.unified-themes-page .theme-file-calendar-score {
+  color: inherit;
+}
+
+.unified-themes-page .theme-file-calendar-dot {
+  background: currentColor;
+}
+
+.unified-themes-page .section-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.unified-themes-page .section-toolbar > .summary-help {
+  justify-self: end;
+  max-width: 380px;
+  text-align: right;
+}
+
+.unified-themes-page .section-toolbar .toggle-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.unified-themes-page .theme-stock-search-bar {
+  display: grid;
+  grid-template-columns: minmax(260px, 420px) max-content;
+  align-items: center;
+  gap: 10px;
+}
+
+.unified-themes-page .theme-stock-search-wrap {
+  min-width: 0;
+}
+
 .main-content::-webkit-scrollbar,
 .nav-list::-webkit-scrollbar,
 .page-keepalive::-webkit-scrollbar,
@@ -1111,6 +1351,40 @@ textarea:focus {
 
   .section-toolbar {
     align-items: stretch;
+  }
+
+  .unified-themes-page .unified-theme-tabs-panel {
+    padding: 8px;
+    overflow-x: auto;
+  }
+
+  .unified-themes-page .leader-calendar-panel {
+    padding: 18px;
+  }
+
+  .unified-themes-page .leader-calendar-head,
+  .unified-themes-page .themes-compact-titlebar,
+  .unified-themes-page .section-toolbar,
+  .unified-themes-page .themes-compact-toolbar,
+  .unified-themes-page .theme-stock-search-bar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .unified-themes-page .leader-calendar-panel .toggle-group,
+  .unified-themes-page .section-toolbar .toggle-group {
+    justify-content: flex-start;
+  }
+
+  .unified-themes-page .themes-compact-titlebar > .summary-help,
+  .unified-themes-page .section-toolbar > .summary-help {
+    justify-self: start;
+    max-width: none;
+    text-align: left;
+  }
+
+  .unified-themes-page .themes-compact-titlebar .page-title {
+    font-size: 24px;
   }
 }
 
