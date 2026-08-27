@@ -23,6 +23,8 @@
   --ui-danger: #f04452;
   --ui-danger-soft: #fff0f1;
   --ui-glass-line: rgba(255, 255, 255, 0.72);
+  --ui-glass-blur: blur(22px);
+  --ui-panel-blur: blur(14px);
   --ui-shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
   --ui-shadow-sm: 0 12px 26px rgba(15, 23, 42, 0.07);
   --ui-shadow-md: 0 26px 64px rgba(15, 23, 42, 0.12);
@@ -51,24 +53,80 @@ select,
 textarea,
 table {
   letter-spacing: 0;
+  font-weight: 700;
+}
+
+p,
+span,
+label,
+td,
+th,
+li,
+div {
+  font-weight: inherit;
 }
 
 .app-shell {
+  position: relative;
   gap: 10px;
   padding: 10px;
 }
 
 .app-shell::before {
-  display: none;
+  content: "";
+  position: fixed;
+  inset: 10px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 12px;
+  background:
+    linear-gradient(120deg, rgba(49, 130, 246, 0.12), transparent 38%),
+    linear-gradient(300deg, rgba(15, 181, 143, 0.16), transparent 42%);
+  filter: blur(22px);
+  opacity: 0.68;
 }
 
 .sidebar {
+  position: relative;
+  z-index: 1;
   border: 1px solid rgba(255, 255, 255, 0.76);
   border-radius: 12px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.74)),
     var(--ui-surface-raised);
   box-shadow: 0 18px 42px rgba(24, 39, 58, 0.09);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.sidebar::before,
+.main-content::before,
+.hero-panel::after,
+.hero-panel.alt::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.42), transparent 48%),
+    linear-gradient(315deg, rgba(49, 130, 246, 0.08), rgba(15, 181, 143, 0.08));
+  filter: blur(10px);
+  opacity: 0.62;
+}
+
+.sidebar > *,
+.main-content > *,
+.hero-panel > *,
+.hero-panel.alt > * {
+  position: relative;
+  z-index: 1;
+}
+
+.app-shell .sidebar {
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
 }
 
 .sidebar-head {
@@ -171,12 +229,21 @@ table {
 }
 
 .main-content {
+  position: relative;
+  z-index: 1;
   border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: 12px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(247, 250, 252, 0.78)),
     var(--ui-canvas);
   box-shadow: inset 0 1px 0 var(--ui-glass-line), 0 18px 42px rgba(24, 39, 58, 0.075);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.app-shell .main-content {
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 .content-menu-bar {
@@ -187,8 +254,8 @@ table {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.78);
   box-shadow: 0 10px 26px rgba(24, 39, 58, 0.08);
-  backdrop-filter: blur(20px) saturate(150%);
-  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .page-keepalive {
@@ -210,6 +277,16 @@ table {
   background: var(--ui-surface);
   color: var(--ui-text);
   box-shadow: var(--ui-shadow-xs);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.page-keepalive > .panel,
+.page-keepalive > .theme-score-capture-bundle,
+.page-keepalive > .building-shell,
+.main-content .panel {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .page-keepalive > .panel:hover,
@@ -238,6 +315,8 @@ table {
   background:
     linear-gradient(102deg, #ffffff 0%, #f7fbfe 51%, #eefaf5 100%);
   box-shadow: 0 16px 36px rgba(24, 39, 58, 0.08);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
 }
 
 .hero-panel::before,
@@ -300,6 +379,7 @@ table {
 .sector-stock-heading span,
 .autocomplete-item span {
   color: var(--ui-text-secondary);
+  font-weight: 700;
   line-height: 1.58;
 }
 
@@ -540,8 +620,8 @@ textarea:focus {
 
 .modal-backdrop {
   background: rgba(17, 24, 39, 0.48);
-  backdrop-filter: blur(10px) saturate(130%);
-  -webkit-backdrop-filter: blur(10px) saturate(130%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .modal-panel {
@@ -572,8 +652,8 @@ textarea:focus {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.72);
   box-shadow: 0 18px 46px rgba(24, 39, 58, 0.1);
-  backdrop-filter: blur(18px) saturate(145%);
-  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 .loading-block-head {
@@ -623,8 +703,8 @@ textarea:focus {
   border-top-color: rgba(49, 130, 246, 0.18);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 -8px 20px rgba(24, 39, 58, 0.075);
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .global-loading-dock .loading-bar {
@@ -739,6 +819,8 @@ textarea:focus {
   --ui-warning-soft: rgba(245, 159, 0, 0.14);
   --ui-danger-soft: rgba(255, 105, 117, 0.14);
   --ui-glass-line: rgba(255, 255, 255, 0.11);
+  --ui-glass-blur: blur(24px);
+  --ui-panel-blur: blur(16px);
 }
 
 :root[data-theme="dark"] html,
@@ -752,6 +834,23 @@ textarea:focus {
     linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
     linear-gradient(180deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
     linear-gradient(180deg, #090d11 0%, #0e1318 50%, #111a20 100%);
+}
+
+:root[data-theme="dark"] .app-shell::before {
+  background:
+    linear-gradient(120deg, rgba(109, 167, 255, 0.16), transparent 38%),
+    linear-gradient(300deg, rgba(72, 207, 165, 0.18), transparent 42%);
+  opacity: 0.42;
+}
+
+:root[data-theme="dark"] .sidebar::before,
+:root[data-theme="dark"] .main-content::before,
+:root[data-theme="dark"] .hero-panel::after,
+:root[data-theme="dark"] .hero-panel.alt::after {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 48%),
+    linear-gradient(315deg, rgba(109, 167, 255, 0.12), rgba(72, 207, 165, 0.1));
+  opacity: 0.44;
 }
 
 :root[data-theme="dark"] .sidebar {
