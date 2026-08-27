@@ -72,6 +72,39 @@
   color: var(--ui-danger);
 }
 
+.ui-empty-state {
+  display: grid;
+  min-height: 118px;
+  place-items: center;
+  gap: 10px;
+  padding: 18px;
+  text-align: center;
+}
+
+.ui-empty-state.compact {
+  min-height: 58px;
+  padding: 12px;
+}
+
+.ui-empty-state-mark {
+  width: 34px;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--ui-positive), var(--ui-brand));
+  opacity: 0.42;
+}
+
+.ui-empty-state-message {
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.55;
+}
+
+.ui-loading-block {
+  isolation: isolate;
+}
+
 .ui-metric-card {
   position: relative;
   overflow: hidden;
@@ -94,6 +127,13 @@
 
 .ui-section-title {
   letter-spacing: -0.02em;
+}
+
+.ui-notice-box {
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.58;
 }
 
 .sidebar-icon-button .ui-icon {

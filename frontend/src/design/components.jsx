@@ -89,6 +89,30 @@ export function Badge({ children, className, tone = "neutral" }) {
   return <span className={joinClasses("ui-badge", "status-pill", `ui-badge-${tone}`, className)}>{children}</span>;
 }
 
+export function EmptyState({ children, className, compact, message }) {
+  return (
+    <div className={joinClasses("ui-empty-state", "empty-state", compact && "compact", className)}>
+      <span className="ui-empty-state-mark" aria-hidden="true" />
+      <span className="ui-empty-state-message">{children || message}</span>
+    </div>
+  );
+}
+
+export function LoadingBlock({ className, compact, detail, label, title }) {
+  return (
+    <div className={joinClasses("ui-loading-block", "loading-block", compact && "compact", className)}>
+      <div className="loading-block-head">
+        <strong>{title || "데이터를 불러오는 중입니다."}</strong>
+        <span>{label || "잠시만 기다려 주세요."}</span>
+      </div>
+      <div className="loading-bar indeterminate">
+        <span />
+      </div>
+      {detail ? <div className="loading-detail">{detail}</div> : null}
+    </div>
+  );
+}
+
 export function MetricCard({ className, help, label, value }) {
   return (
     <div className={joinClasses("ui-metric-card", "summary-card", className)}>
@@ -103,6 +127,14 @@ export function SectionTitle({ children, className }) {
   return <div className={joinClasses("ui-section-title", "section-title", className)}>{children}</div>;
 }
 
+export function NoticeBox({ children, className, compact, message, tone = "neutral" }) {
+  return (
+    <div className={joinClasses("ui-notice-box", "notice-box", compact && "compact", tone !== "neutral" && tone, className)}>
+      {children || message}
+    </div>
+  );
+}
+
 export function registerDesignSystem() {
-  window.StockAppUI = Object.freeze({ Badge, Button, Icon, MetricCard, SectionTitle });
+  window.StockAppUI = Object.freeze({ Badge, Button, EmptyState, Icon, LoadingBlock, MetricCard, NoticeBox, SectionTitle });
 }

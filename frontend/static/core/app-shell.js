@@ -3090,6 +3090,21 @@
       : h("span", { className: fallbackClassName, "aria-hidden": "true" });
   }
 
+  function SharedButton(props) {
+    const Button = window.StockAppUI && window.StockAppUI.Button;
+    if (Button) {
+      return h(Button, props);
+    }
+    const Element = props && props.href ? "a" : "button";
+    const className = props && props.variant === "primary" ? "primary-button" : props && props.variant === "mini" ? "mini-button" : "secondary-button";
+    const nextProps = Object.assign({}, props, { className: ((props && props.className) ? props.className + " " : "") + className });
+    delete nextProps.variant;
+    delete nextProps.icon;
+    delete nextProps.iconAfter;
+    delete nextProps.size;
+    return h(Element, nextProps, props && props.children);
+  }
+
   function selectTextOnFocus(event) {
     const target = event && event.currentTarget;
     if (!target || typeof target.select !== "function") {
@@ -3105,10 +3120,18 @@
   }
 
   function EmptyState(props) {
+    const SharedEmptyState = window.StockAppUI && window.StockAppUI.EmptyState;
+    if (SharedEmptyState) {
+      return h(SharedEmptyState, props);
+    }
     return h("div", { className: "empty-state" + (props.compact ? " compact" : "") }, props.message);
   }
 
   function LoadingBlock(props) {
+    const SharedLoadingBlock = window.StockAppUI && window.StockAppUI.LoadingBlock;
+    if (SharedLoadingBlock) {
+      return h(SharedLoadingBlock, props);
+    }
     return h(
       "div",
       { className: "loading-block" + (props && props.compact ? " compact" : "") },
@@ -3134,6 +3157,10 @@
   }
 
   function ErrorPanel(props) {
+    const SharedNoticeBox = window.StockAppUI && window.StockAppUI.NoticeBox;
+    if (SharedNoticeBox) {
+      return h(SharedNoticeBox, { className: "panel", tone: "error", message: props.message });
+    }
     return h("div", { className: "panel notice-box error" }, props.message);
   }
 
@@ -6590,11 +6617,14 @@
           h("h2", null, "오늘 KRX 핀맵"),
           h("p", null, "KOSPD 1일 KRX 맵을 그대로 표시합니다. 원본 기준 약 5분 간격 자동 갱신됩니다.")
         ),
-        h(
-          "a",
-          { className: "mini-button krx-market-map-link", href: mapUrl, target: "_blank", rel: "noreferrer" },
-          "원본 열기"
-        )
+        h(SharedButton, {
+          className: "krx-market-map-link",
+          href: mapUrl,
+          target: "_blank",
+          rel: "noreferrer",
+          variant: "mini",
+          iconAfter: "external",
+        }, "원본 열기")
       ),
       h(
         "div",
@@ -9683,7 +9713,7 @@
                 "div",
                 { className: "modal-head" },
                 h("div", null, h("strong", null, "진행 중 작업"), h("div", { className: "summary-help" }, "현재 요청과 백그라운드 계산 상태")),
-                h("button", { type: "button", className: "mini-button", onClick: function () { setDetailOpen(false); } }, "닫기")
+                h(SharedButton, { type: "button", variant: "mini", onClick: function () { setDetailOpen(false); } }, "닫기")
               ),
               h(
                 "div",
