@@ -22,6 +22,6 @@ New feature code should use these primitives before adding another button, badge
 
 ## Typography
 
-The app bundles NanumSquare Regular and Bold as WOFF2 files, so it does not depend on a system font or CDN at runtime.
-The webfont files are sourced from the [hiun/NanumSquare](https://github.com/hiun/NanumSquare) webfont repository and are credited there to NAVER.
-The current visual layer uses Bold as the default app weight to match the requested high-contrast dashboard style.
+The app uses Pretendard through the `pretendard` package, so it does not depend on a CDN at runtime.
+Financial numbers use tabular numeric alignment for easier scanning in tables, metrics, and dashboards.
+Default body text should stay around 400-500 weight; use 600-700 only for hierarchy such as page titles, section titles, selected states, and important metrics.

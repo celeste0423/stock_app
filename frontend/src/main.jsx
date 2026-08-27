@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 
+import "pretendard/dist/web/variable/pretendardvariable.css";
 import "../static/styles.css";
 import "./boot.css";
 import "./design/tokens.css";

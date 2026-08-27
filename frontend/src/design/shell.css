@@ -5,7 +5,15 @@ input,
 select,
 textarea,
 table {
-  font-family: "NanumSquare", "Malgun Gothic", sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+}
+
+body,
+table,
+input,
+select,
+textarea {
+  font-variant-numeric: tabular-nums;
 }
 
 html,
