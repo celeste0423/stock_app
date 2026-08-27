@@ -16,27 +16,28 @@
 
 :root,
 :root[data-theme="light"] {
-  --ui-canvas: #f5f7fa;
-  --ui-canvas-deep: #eef2f6;
+  --ui-canvas: #f6f8fb;
+  --ui-canvas-deep: #e8eef5;
   --ui-surface: #ffffff;
-  --ui-surface-raised: rgba(255, 255, 255, 0.9);
-  --ui-surface-soft: #f8fafc;
-  --ui-surface-hover: #f2f6fb;
+  --ui-surface-raised: rgba(255, 255, 255, 0.86);
+  --ui-surface-soft: #f3f7fb;
+  --ui-surface-hover: #edf4fb;
   --ui-text: #191f28;
   --ui-text-secondary: #4e5968;
   --ui-text-muted: #8b95a1;
   --ui-border: rgba(30, 41, 59, 0.08);
   --ui-border-strong: rgba(30, 41, 59, 0.14);
-  --ui-brand: #3182f6;
-  --ui-brand-hover: #1b64da;
-  --ui-brand-soft: #e8f3ff;
-  --ui-positive: #00a878;
-  --ui-positive-soft: #e8faf4;
+  --ui-brand: #19b995;
+  --ui-brand-hover: #07997d;
+  --ui-brand-soft: #e7fbf5;
+  --ui-positive: #3182f6;
+  --ui-positive-soft: #e8f3ff;
   --ui-danger: #f04452;
   --ui-danger-soft: #fff0f1;
-  --ui-shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.04), 0 4px 16px rgba(17, 24, 39, 0.04);
-  --ui-shadow-md: 0 16px 42px rgba(17, 24, 39, 0.08);
-  --ui-ring: 0 0 0 4px rgba(49, 130, 246, 0.14);
+  --ui-glass-line: rgba(255, 255, 255, 0.52);
+  --ui-shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.05), 0 12px 30px rgba(17, 24, 39, 0.06);
+  --ui-shadow-md: 0 22px 58px rgba(17, 24, 39, 0.12);
+  --ui-ring: 0 0 0 4px rgba(25, 185, 149, 0.16);
 
   --bg: var(--ui-canvas);
   --bg-alt: var(--ui-canvas-deep);
@@ -52,27 +53,28 @@
 }
 
 :root[data-theme="dark"] {
-  --ui-canvas: #0f1419;
-  --ui-canvas-deep: #0a0f13;
-  --ui-surface: #171e25;
-  --ui-surface-raised: rgba(23, 30, 37, 0.88);
-  --ui-surface-soft: #1d252d;
-  --ui-surface-hover: #232e38;
+  --ui-canvas: #111515;
+  --ui-canvas-deep: #0a0d0d;
+  --ui-surface: #17211f;
+  --ui-surface-raised: rgba(19, 32, 29, 0.86);
+  --ui-surface-soft: #1d2b28;
+  --ui-surface-hover: #243733;
   --ui-text: #f2f4f6;
   --ui-text-secondary: #c4cbd2;
   --ui-text-muted: #8f9aa5;
   --ui-border: rgba(255, 255, 255, 0.08);
   --ui-border-strong: rgba(255, 255, 255, 0.14);
-  --ui-brand: #5b9cff;
-  --ui-brand-hover: #82b5ff;
-  --ui-brand-soft: rgba(49, 130, 246, 0.16);
-  --ui-positive: #48cfa5;
-  --ui-positive-soft: rgba(72, 207, 165, 0.14);
+  --ui-brand: #48cfa5;
+  --ui-brand-hover: #69dfbb;
+  --ui-brand-soft: rgba(72, 207, 165, 0.16);
+  --ui-positive: #8c7aff;
+  --ui-positive-soft: rgba(140, 122, 255, 0.16);
   --ui-danger: #ff6975;
   --ui-danger-soft: rgba(255, 105, 117, 0.14);
-  --ui-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 12px 28px rgba(0, 0, 0, 0.18);
-  --ui-shadow-md: 0 20px 54px rgba(0, 0, 0, 0.32);
-  --ui-ring: 0 0 0 4px rgba(91, 156, 255, 0.18);
+  --ui-glass-line: rgba(255, 255, 255, 0.12);
+  --ui-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24), 0 18px 38px rgba(0, 0, 0, 0.2);
+  --ui-shadow-md: 0 26px 64px rgba(0, 0, 0, 0.38);
+  --ui-ring: 0 0 0 4px rgba(72, 207, 165, 0.2);
 
   --bg: var(--ui-canvas);
   --bg-alt: var(--ui-canvas-deep);

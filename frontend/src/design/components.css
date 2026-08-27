@@ -12,12 +12,13 @@
   padding-inline: 15px;
   text-decoration: none;
   white-space: nowrap;
+  border-radius: 8px;
 }
 
 .ui-button-small {
   min-height: 34px;
   padding-inline: 11px;
-  border-radius: 10px;
+  border-radius: 8px;
   font-size: 12px;
 }
 
@@ -45,7 +46,7 @@
   gap: 5px;
   padding: 5px 10px;
   border: 1px solid var(--ui-border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--ui-surface-soft);
   color: var(--ui-text-secondary);
   font-size: 11px;
@@ -54,13 +55,13 @@
 }
 
 .ui-badge-brand {
-  border-color: rgba(49, 130, 246, 0.18);
+  border-color: color-mix(in srgb, var(--ui-brand) 22%, transparent);
   background: var(--ui-brand-soft);
   color: var(--ui-brand);
 }
 
 .ui-badge-positive {
-  border-color: rgba(0, 168, 120, 0.18);
+  border-color: color-mix(in srgb, var(--ui-positive) 22%, transparent);
   background: var(--ui-positive-soft);
   color: var(--ui-positive);
 }
@@ -76,18 +77,18 @@
   overflow: hidden;
   min-height: 112px;
   padding: 18px;
+  isolation: isolate;
 }
 
 .ui-metric-card::after {
   content: "";
   position: absolute;
-  top: -42px;
-  right: -42px;
-  width: 94px;
-  height: 94px;
-  border-radius: 50%;
-  background: var(--ui-brand-soft);
-  opacity: 0.7;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ui-brand-soft) 82%, transparent), transparent 54%),
+    repeating-linear-gradient(128deg, color-mix(in srgb, var(--ui-brand) 9%, transparent) 0 1px, transparent 1px 48px);
+  opacity: 0.9;
   pointer-events: none;
 }
 

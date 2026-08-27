@@ -47,6 +47,15 @@ $defaultTargets = @(
   "WORKFLOW.md"
 )
 
+function Get-RelativePathCompat([string]$BasePath, [string]$TargetPath) {
+  if ([System.IO.Path].GetMethod("GetRelativePath", [type[]]@([string], [string]))) {
+    return [System.IO.Path]::GetRelativePath($BasePath, $TargetPath)
+  }
+  $baseUri = [System.Uri]((Resolve-Path $BasePath).ProviderPath.TrimEnd("\") + "\")
+  $targetUri = [System.Uri]((Resolve-Path $TargetPath).ProviderPath)
+  return [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString())
+}
+
 if ($Files -and $Files.Count -gt 0) {
   $targets = @($Files | Where-Object { $_ -and $_.Trim() })
 } else {
@@ -56,7 +65,7 @@ if ($Files -and $Files.Count -gt 0) {
 function Assert-Utf8Integrity([string]$Path) {
   $bytes = [System.IO.File]::ReadAllBytes($Path)
   $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
-  $relativePath = [System.IO.Path]::GetRelativePath($ProjectRoot, $Path).Replace("/", "\")
+  $relativePath = (Get-RelativePathCompat $ProjectRoot $Path).Replace("/", "\")
   $expectsBom = $relativePath -in @(
     "frontend\static\styles.css"
   )

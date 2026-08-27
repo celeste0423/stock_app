@@ -10649,7 +10649,6 @@
           h(
             "div",
             { className: "brand" },
-            h("span", { className: "brand-mark", "aria-hidden": "true" }),
             h(
               "span",
               { className: "brand-copy" },
