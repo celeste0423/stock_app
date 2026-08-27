@@ -3062,6 +3062,10 @@
   }
 
   function SummaryCard(props) {
+    const MetricCard = window.StockAppUI && window.StockAppUI.MetricCard;
+    if (MetricCard) {
+      return h(MetricCard, props);
+    }
     return h(
       "div",
       { className: "summary-card" + (props.className ? " " + props.className : "") },
@@ -3072,7 +3076,18 @@
   }
 
   function SectionTitle(props) {
+    const SharedSectionTitle = window.StockAppUI && window.StockAppUI.SectionTitle;
+    if (SharedSectionTitle) {
+      return h(SharedSectionTitle, props);
+    }
     return h("div", { className: "section-title" }, props.children);
+  }
+
+  function SharedIcon(props, fallbackClassName) {
+    const Icon = window.StockAppUI && window.StockAppUI.Icon;
+    return Icon
+      ? h(Icon, props)
+      : h("span", { className: fallbackClassName, "aria-hidden": "true" });
   }
 
   function selectTextOnFocus(event) {
@@ -10208,6 +10223,7 @@
         SectionTitle: SectionTitle,
         LoadingBlock: LoadingBlock,
         EmptyState: EmptyState,
+        ui: window.StockAppUI || null,
       });
     } catch (error) {
       console.error("Failed to initialize naver-blog page module.", error);
@@ -10652,7 +10668,7 @@
                 title: sidebarCollapsed ? "탭 열기" : "탭 닫기",
                 onClick: function () { setSidebarCollapsed(function (value) { return !value; }); },
               },
-              h("span", { className: "hamburger-lines", "aria-hidden": "true" }, h("i"), h("i"), h("i"))
+              SharedIcon({ name: "menu", size: 17 }, "hamburger-lines")
             ),
             h(
               "button",
@@ -10663,7 +10679,7 @@
                 "aria-label": "페이지 새로고침",
                 onClick: function () { window.location.reload(); },
               },
-              h("span", { className: "refresh-icon", "aria-hidden": "true" })
+              SharedIcon({ name: "refresh", size: 17 }, "refresh-icon")
             ),
             h(
               "button",
@@ -10674,7 +10690,7 @@
                 "aria-label": colorTheme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환",
                 onClick: function () { if (window.StockAppTheme) { window.StockAppTheme.toggleTheme(); } },
               },
-              h("span", { className: "theme-icon", "aria-hidden": "true" })
+              SharedIcon({ name: colorTheme === "dark" ? "sun" : "moon", size: 17 }, "theme-icon")
             )
           )
         ),
@@ -10725,7 +10741,7 @@
                   title: "\ud0ed \uc5f4\uae30",
                   onClick: function () { setSidebarCollapsed(false); },
                 },
-                h("span", { className: "hamburger-lines", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
+                SharedIcon({ name: "menu", size: 17 }, "hamburger-lines"),
                 h("span", null, "탭 열기")
               ),
               h(
@@ -10736,7 +10752,7 @@
                   title: "\ud398\uc774\uc9c0 \uc0c8\ub85c\uace0\uce68",
                   onClick: function () { window.location.reload(); },
                 },
-                h("span", { className: "refresh-icon", "aria-hidden": "true" }),
+                SharedIcon({ name: "refresh", size: 17 }, "refresh-icon"),
                 h("span", null, "새로고침")
               ),
               h(
@@ -10747,7 +10763,7 @@
                   title: colorTheme === "dark" ? "라이트 모드" : "다크 모드",
                   onClick: function () { if (window.StockAppTheme) { window.StockAppTheme.toggleTheme(); } },
                 },
-                h("span", { className: "theme-icon", "aria-hidden": "true" }),
+                SharedIcon({ name: colorTheme === "dark" ? "sun" : "moon", size: 17 }, "theme-icon"),
                 h("span", null, colorTheme === "dark" ? "라이트" : "다크")
               )
             )

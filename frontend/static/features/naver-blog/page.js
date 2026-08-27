@@ -62,6 +62,24 @@
     const SectionTitle = deps.SectionTitle;
     const LoadingBlock = deps.LoadingBlock;
     const EmptyState = deps.EmptyState;
+    const ui = deps.ui || {};
+    const Button = ui.Button;
+    const Badge = ui.Badge;
+
+    function renderButton(variant, props, label) {
+      if (Button) {
+        return h(Button, Object.assign({ variant: variant }, props), label);
+      }
+      const element = props && props.href ? "a" : "button";
+      const legacyClass = variant === "primary" ? "primary-button" : variant === "mini" ? "mini-button" : "secondary-button";
+      return h(element, Object.assign({}, props, { className: [legacyClass, props && props.className].filter(Boolean).join(" ") }), label);
+    }
+
+    function renderBadge(label, tone, className) {
+      return Badge
+        ? h(Badge, { tone: tone || "neutral", className: className || "" }, label)
+        : h("span", { className: ["status-pill", className].filter(Boolean).join(" ") }, label);
+    }
 
     return function NaverBlogBriefPage() {
       const savedState = loadPageState();
@@ -214,22 +232,21 @@
             h("p", { className: "page-copy compact-copy" }, "이웃새글을 불러와서 기업분석, 산업, 시장으로 분류하고 바로 읽을 수 있게 요약합니다.")
           ),
           h("div", { className: "hero-actions" },
-            h("span", { className: "status-pill" }, status && status.logged_in ? "로그인 연결됨" : "로그인 필요"),
-            status && status.last_updated_at ? h("span", { className: "status-pill" }, "마지막 수집 " + status.last_updated_at.replace("T", " ")) : null,
-            h("button", {
+            renderBadge(status && status.logged_in ? "로그인 연결됨" : "로그인 필요", status && status.logged_in ? "positive" : "danger"),
+            status && status.last_updated_at ? renderBadge("마지막 수집 " + status.last_updated_at.replace("T", " "), "neutral") : null,
+            renderButton("secondary", {
               type: "button",
-              className: "secondary-button",
               disabled: actionLoading || (status && status.login_running),
               onClick: startLogin,
             }, status && status.login_running ? "로그인 대기 중" : (status && status.logged_in ? "다시 로그인" : "브라우저 열고 로그인")),
-            h("button", { type: "button", className: "primary-button", disabled: actionLoading || !(status && status.logged_in), onClick: refreshFeed }, actionLoading ? "수집 중" : "새로고침")
+            renderButton("primary", { type: "button", disabled: actionLoading || !(status && status.logged_in), onClick: refreshFeed }, actionLoading ? "수집 중" : "새로고침")
           )
         ),
         h("div", { className: "naver-blog-summary-bar" },
-          h("span", { className: "naver-blog-summary-chip" }, "최근 2주 " + numberFormat(counts.all, 0) + "건"),
-          h("span", { className: "naver-blog-summary-chip" }, "기업분석 " + numberFormat(counts.company, 0) + "건"),
-          h("span", { className: "naver-blog-summary-chip" }, "산업 " + numberFormat(counts.industry, 0) + "건"),
-          h("span", { className: "naver-blog-summary-chip" }, "시장 " + numberFormat(counts.market, 0) + "건")
+          renderBadge("최근 2주 " + numberFormat(counts.all, 0) + "건", "brand", "naver-blog-summary-chip"),
+          renderBadge("기업분석 " + numberFormat(counts.company, 0) + "건", "brand", "naver-blog-summary-chip"),
+          renderBadge("산업 " + numberFormat(counts.industry, 0) + "건", "brand", "naver-blog-summary-chip"),
+          renderBadge("시장 " + numberFormat(counts.market, 0) + "건", "brand", "naver-blog-summary-chip")
         ),
         message ? h("div", { className: "notice-box compact" }, message) : null,
         status && status.login_running ? h("div", { className: "notice-box compact" }, status.login_message || "브라우저 로그인 완료를 기다리는 중입니다.") : null,
@@ -240,7 +257,7 @@
           ? h("section", { className: "panel naver-blog-login-panel" },
               h(SectionTitle, null, "초기 연결"),
               h("p", { className: "summary-help" }, "한 번만 네이버 로그인 세션을 저장하면 이후에는 이 페이지에서 새로고침 버튼으로 이웃새글을 다시 불러올 수 있습니다."),
-              h("button", { type: "button", className: "primary-button", disabled: actionLoading, onClick: startLogin }, "브라우저 열고 로그인")
+              renderButton("primary", { type: "button", disabled: actionLoading, onClick: startLogin }, "브라우저 열고 로그인")
             )
           : null,
         h("div", { className: "naver-blog-layout" },
@@ -296,7 +313,7 @@
                             detail && detail.published_text,
                           ].filter(Boolean).join(" · "))
                         ),
-                        h("a", { className: "secondary-button", href: (detail && detail.url) || selectedItem.url, target: "_blank", rel: "noreferrer" }, "원문 열기")
+                        renderButton("secondary", { as: "a", iconAfter: "external", href: (detail && detail.url) || selectedItem.url, target: "_blank", rel: "noreferrer" }, "원문 열기")
                       ),
                       h("div", { className: "naver-blog-detail-summary" },
                         h("strong", null, "요약"),

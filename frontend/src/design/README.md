@@ -15,6 +15,11 @@
 `window.StockAppTheme` exposes `getTheme()`, `setTheme(theme)`, and `toggleTheme()`.
 The selected theme is persisted under `stock-dashboard:color-theme-v1`; a missing value always resolves to light mode.
 
+## Component API
+
+`window.StockAppUI` exposes `Button`, `Badge`, `Icon`, `MetricCard`, and `SectionTitle` to both Vite modules and legacy feature modules.
+New feature code should use these primitives before adding another button, badge, metric card, or icon implementation. The primitives retain the legacy class names during migration, so pages can move incrementally without a full rewrite.
+
 ## Typography
 
 The app bundles NanumSquare Regular and Bold as WOFF2 files, so it does not depend on a system font or CDN at runtime.

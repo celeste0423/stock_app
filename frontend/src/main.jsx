@@ -5,13 +5,16 @@ import "../static/styles.css";
 import "./boot.css";
 import "./design/tokens.css";
 import "./design/shell.css";
+import "./design/components.css";
 import { legacyScripts } from "./legacy-manifest";
+import { registerDesignSystem } from "./design/components";
 import { initializeTheme } from "./design/theme";
 
 window.React = React;
 window.ReactDOM = { createRoot };
 window.__STOCK_APP_VITE__ = true;
 initializeTheme();
+registerDesignSystem();
 
 function showBootError(error) {
   const root = document.getElementById("root");
