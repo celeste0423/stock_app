@@ -6,8 +6,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 $node = "C:\Users\jyeob\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+$pnpm = "C:\Users\jyeob\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\fallback\pnpm.cmd"
 if (-not (Test-Path $node)) {
   throw "Node runtime not found: $node"
+}
+if (-not (Test-Path $pnpm)) {
+  throw "pnpm runtime not found: $pnpm"
 }
 
 $defaultTargets = @(
@@ -24,6 +28,7 @@ $defaultTargets = @(
   "frontend/static/features/etf-flow/page.js",
   "frontend/static/features/institutional-rebalance/page.js",
   "frontend/static/features/sector-entry/page.js",
+  "frontend/static/features/breakout-stats/page.js",
   "frontend/static/features/trade-data/page.js",
   "frontend/static/features/economy-cycle/page.js",
   "frontend/static/features/market-calendar/page.js",
@@ -53,8 +58,7 @@ function Assert-Utf8Integrity([string]$Path) {
   $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
   $relativePath = [System.IO.Path]::GetRelativePath($ProjectRoot, $Path).Replace("/", "\")
   $expectsBom = $relativePath -in @(
-    "frontend\static\styles.css",
-    "frontend\index.html"
+    "frontend\static\styles.css"
   )
   if ($expectsBom -and -not $hasBom) {
     throw "UTF-8 BOM missing: $Path"
@@ -79,6 +83,21 @@ foreach ($target in $targets) {
     if ($LASTEXITCODE -ne 0) {
       throw "Syntax check failed: $fullPath"
     }
+  }
+}
+
+if (-not $Files -or $Files.Count -eq 0) {
+  $originalPath = $env:PATH
+  try {
+    $env:PATH = "$(Split-Path -Parent $node);$originalPath"
+    Push-Location (Join-Path $ProjectRoot "frontend")
+    & $pnpm build
+    if ($LASTEXITCODE -ne 0) {
+      throw "Vite production build failed."
+    }
+  } finally {
+    Pop-Location
+    $env:PATH = $originalPath
   }
 }
 

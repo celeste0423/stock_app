@@ -5,12 +5,14 @@
 - 실행: `실행하기.vbs`
 - 백엔드 진입점: `launchers_internal/backend_desktop_server.py`
 - 앱 진입점: `backend/app.py`
+- 프론트엔드 빌드: `tools/build_frontend.ps1`
 - 기본 주소: `http://127.0.0.1:8124`
 
 ## 코드 구조
 
 - `frontend/static/core/`: 공통 앱 셸, API, UI 기반
 - `frontend/static/features/`: 페이지별 기능 모듈
+- `frontend/src/`: Vite 진입점과 신규 React 컴포넌트
 - `backend/api/`: API 도메인 분류
 - `backend/core/`: 백엔드 시작과 호환 로더
 - `backend/features/`: 소스로 분리된 백엔드 기능

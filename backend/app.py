@@ -35,6 +35,12 @@ os.environ.setdefault("STOCK_DASHBOARD_REAL_ESTATE_BUILDING_EXPORT_DIR", str(DAT
 # behind stable package boundaries.
 execute_legacy_backend(globals())
 
+# Prefer the Vite production entry when it has been built. The isolated legacy
+# entry remains a safe fallback while pages are migrated to module components.
+VITE_FRONTEND_DIR = PROJECT_ROOT / "frontend" / "static" / "vite"
+LEGACY_FRONTEND_DIR = PROJECT_ROOT / "frontend" / "legacy"
+FRONTEND_DIR = VITE_FRONTEND_DIR if VITE_FRONTEND_DIR.joinpath("index.html").exists() else LEGACY_FRONTEND_DIR
+
 _LEGACY_SEARCH_STOCK_NEWS = search_stock_news
 _LEGACY_BUILD_KR_STOCK_OVERVIEW = build_kr_stock_overview
 _LEGACY_BUILD_DISCLOSURE_COMPANY_TARGET = build_disclosure_company_target
