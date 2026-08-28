@@ -58,6 +58,14 @@ body {
   grid-template-columns: 0 minmax(0, 1fr);
 }
 
+.app-shell.sidebar-collapsed .sidebar {
+  visibility: hidden;
+}
+
+.app-shell:not(.sidebar-collapsed) .sidebar {
+  visibility: visible;
+}
+
 .sidebar {
   position: relative;
   z-index: 1;
@@ -579,4 +587,87 @@ textarea:focus {
   textarea {
     transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
   }
+}
+
+/* Premium finance shell polish. Keep this layer semantic-token based. */
+body {
+  background-image:
+    radial-gradient(circle at 9% 12%, rgba(49, 130, 246, 0.16), transparent 31%),
+    radial-gradient(circle at 94% 8%, rgba(25, 185, 149, 0.18), transparent 28%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.74), transparent 42%),
+    repeating-linear-gradient(124deg, rgba(49, 130, 246, 0.045) 0 1px, transparent 1px 78px),
+    linear-gradient(145deg, var(--ui-canvas), var(--ui-canvas-deep));
+}
+
+.app-shell::before {
+  background:
+    radial-gradient(circle at 16% 8%, rgba(49, 130, 246, 0.16), transparent 32%),
+    radial-gradient(circle at 88% 16%, rgba(25, 185, 149, 0.18), transparent 29%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.32)),
+    linear-gradient(145deg, rgba(25, 185, 149, 0.08), rgba(49, 130, 246, 0.04) 56%, transparent);
+  box-shadow: var(--ui-shadow-lg);
+}
+
+.sidebar {
+  border-radius: var(--ui-radius-xl) var(--ui-radius-md) var(--ui-radius-md) var(--ui-radius-xl);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 250, 255, 0.82)),
+    var(--ui-surface-raised);
+  backdrop-filter: blur(26px) saturate(148%);
+  -webkit-backdrop-filter: blur(26px) saturate(148%);
+}
+
+.main-content {
+  border-radius: var(--ui-radius-md) var(--ui-radius-xl) var(--ui-radius-xl) var(--ui-radius-md);
+}
+
+.page-keepalive > .panel,
+.page-keepalive > .theme-score-capture-bundle,
+.page-keepalive > .building-shell,
+.panel,
+.hero-panel,
+.hero-panel.alt {
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-gradient-surface);
+}
+
+.hero-panel,
+.hero-panel.alt {
+  background: var(--ui-gradient-hero);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), var(--ui-shadow-md);
+}
+
+.content-menu-bar {
+  border-radius: var(--ui-radius-lg);
+  box-shadow: var(--ui-shadow-md);
+  backdrop-filter: blur(24px) saturate(145%);
+  -webkit-backdrop-filter: blur(24px) saturate(145%);
+}
+
+.nav-item.active {
+  background:
+    radial-gradient(circle at 96% 50%, color-mix(in srgb, var(--ui-brand) 17%, transparent), transparent 36%),
+    linear-gradient(135deg, color-mix(in srgb, var(--ui-brand-soft) 82%, white), var(--ui-surface-soft));
+}
+
+.primary-button {
+  background: var(--ui-gradient-brand);
+  box-shadow: var(--ui-shadow-glow);
+}
+
+:root[data-theme="dark"] body {
+  background-image:
+    radial-gradient(circle at 10% 10%, rgba(109, 167, 255, 0.18), transparent 30%),
+    radial-gradient(circle at 94% 8%, rgba(72, 207, 165, 0.16), transparent 28%),
+    linear-gradient(118deg, rgba(72, 207, 165, 0.13), transparent 34%),
+    repeating-linear-gradient(124deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 78px),
+    linear-gradient(145deg, var(--ui-canvas-deep), var(--ui-canvas));
+}
+
+:root[data-theme="dark"] .app-shell::before {
+  background:
+    radial-gradient(circle at 14% 10%, rgba(109, 167, 255, 0.2), transparent 30%),
+    radial-gradient(circle at 88% 14%, rgba(72, 207, 165, 0.16), transparent 28%),
+    linear-gradient(90deg, rgba(10, 13, 13, 0.72), rgba(18, 32, 29, 0.42)),
+    linear-gradient(145deg, rgba(72, 207, 165, 0.12), rgba(140, 122, 255, 0.08) 56%, transparent);
 }

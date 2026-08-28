@@ -22,6 +22,21 @@
   --ui-shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.05), 0 12px 30px rgba(17, 24, 39, 0.06);
   --ui-shadow-md: 0 22px 58px rgba(17, 24, 39, 0.12);
   --ui-ring: 0 0 0 4px rgba(25, 185, 149, 0.16);
+  --ui-shadow-lg: 0 28px 80px rgba(17, 24, 39, 0.14);
+  --ui-shadow-glow: 0 18px 54px rgba(49, 130, 246, 0.18);
+  --ui-gradient-brand: linear-gradient(135deg, #3182f6 0%, #19b995 100%);
+  --ui-gradient-surface: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(244, 248, 252, 0.78));
+  --ui-gradient-hero: radial-gradient(circle at 12% 18%, rgba(49, 130, 246, 0.22), transparent 28%), radial-gradient(circle at 88% 4%, rgba(25, 185, 149, 0.24), transparent 30%), linear-gradient(135deg, #ffffff 0%, #eef6ff 48%, #ecfbf6 100%);
+  --ui-radius-sm: 10px;
+  --ui-radius-md: 14px;
+  --ui-radius-lg: 18px;
+  --ui-radius-xl: 24px;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
 
   --bg: var(--ui-canvas);
   --bg-alt: var(--ui-canvas-deep);
@@ -59,6 +74,11 @@
   --ui-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24), 0 18px 38px rgba(0, 0, 0, 0.2);
   --ui-shadow-md: 0 26px 64px rgba(0, 0, 0, 0.38);
   --ui-ring: 0 0 0 4px rgba(72, 207, 165, 0.2);
+  --ui-shadow-lg: 0 30px 86px rgba(0, 0, 0, 0.52);
+  --ui-shadow-glow: 0 22px 64px rgba(109, 167, 255, 0.2);
+  --ui-gradient-brand: linear-gradient(135deg, #6da7ff 0%, #48cfa5 100%);
+  --ui-gradient-surface: linear-gradient(145deg, rgba(23, 31, 42, 0.96), rgba(16, 23, 34, 0.84));
+  --ui-gradient-hero: radial-gradient(circle at 12% 18%, rgba(109, 167, 255, 0.22), transparent 28%), radial-gradient(circle at 88% 4%, rgba(72, 207, 165, 0.18), transparent 30%), linear-gradient(135deg, #17212d 0%, #101722 52%, #0f1c1a 100%);
 
   --bg: var(--ui-canvas);
   --bg-alt: var(--ui-canvas-deep);
