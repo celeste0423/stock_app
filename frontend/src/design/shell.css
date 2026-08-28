@@ -589,7 +589,7 @@ textarea:focus {
   }
 }
 
-/* Premium finance shell polish. Keep this layer semantic-token based. */
+/* Dense financial terminal shell layer. */
 body {
   background-image:
     radial-gradient(circle at 9% 12%, rgba(49, 130, 246, 0.16), transparent 31%),
@@ -597,6 +597,209 @@ body {
     linear-gradient(135deg, rgba(255, 255, 255, 0.74), transparent 42%),
     repeating-linear-gradient(124deg, rgba(49, 130, 246, 0.045) 0 1px, transparent 1px 78px),
     linear-gradient(145deg, var(--ui-canvas), var(--ui-canvas-deep));
+}
+
+.app-shell {
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+}
+
+.app-shell::before {
+  inset: 8px;
+  border-radius: 18px;
+}
+
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 54px minmax(0, 1fr);
+}
+
+.app-shell.sidebar-collapsed .sidebar {
+  width: 54px;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app-shell.sidebar-collapsed .brand,
+.app-shell.sidebar-collapsed .nav-group-title,
+.app-shell.sidebar-collapsed .nav-item-label,
+.app-shell.sidebar-collapsed .nav-item-shortcut,
+.app-shell.sidebar-collapsed .sidebar-icon-button:not(:first-child) {
+  display: none;
+}
+
+.app-shell.sidebar-collapsed .sidebar-head {
+  display: grid;
+  grid-template-columns: 1fr;
+  padding: 10px 8px;
+}
+
+.app-shell.sidebar-collapsed .sidebar-actions {
+  grid-column: auto;
+}
+
+.app-shell.sidebar-collapsed .nav-list {
+  padding: 8px 6px;
+}
+
+.app-shell.sidebar-collapsed .nav-item {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar {
+  height: calc(100vh - 16px);
+  border-radius: 18px 8px 8px 18px;
+}
+
+.sidebar-head {
+  min-height: var(--ui-density-topbar);
+  padding: 10px;
+}
+
+.brand-title {
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.brand-caption,
+.nav-group-title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.sidebar-actions {
+  gap: 4px;
+}
+
+.sidebar-icon-button,
+.content-menu-button {
+  min-width: var(--ui-density-control-sm);
+  height: var(--ui-density-control-sm);
+  border-radius: 9px;
+}
+
+.nav-list {
+  gap: 3px;
+  padding: 8px 6px 10px;
+}
+
+.nav-group + .nav-group {
+  margin-top: 7px;
+  padding-top: 8px;
+}
+
+.nav-group-title {
+  padding: 2px 8px 5px;
+}
+
+.nav-item {
+  position: relative;
+  min-height: var(--ui-density-nav);
+  padding: 6px 7px;
+  gap: 7px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 580;
+}
+
+.nav-item::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.nav-item.active::before {
+  background: var(--ui-gradient-brand);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--ui-brand) 42%, transparent);
+}
+
+.nav-item-glyph {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--ui-surface-soft) 78%, transparent);
+  color: var(--ui-text-muted);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+}
+
+.nav-item.active .nav-item-glyph {
+  background: var(--ui-gradient-brand);
+  color: #ffffff;
+}
+
+.nav-item-shortcut {
+  font-size: 9px;
+  opacity: 0.48;
+}
+
+.main-content {
+  border-radius: 8px 18px 18px 8px;
+}
+
+.page-keepalive {
+  padding: 12px 14px 18px;
+}
+
+.page-keepalive.active {
+  gap: 10px;
+}
+
+.page-keepalive > .panel,
+.page-keepalive > .theme-score-capture-bundle,
+.page-keepalive > .building-shell,
+.panel,
+.hero-panel,
+.hero-panel.alt {
+  border-radius: 14px;
+}
+
+.content-menu-bar {
+  min-height: 44px;
+  margin: 8px 8px 0;
+  padding: 6px;
+  border-radius: 14px;
+}
+
+.content-menu-button {
+  height: 32px;
+  padding-inline: 9px;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+input,
+select,
+textarea,
+.form-field input,
+.form-field select,
+.form-field textarea,
+.stock-input-cell input {
+  min-height: var(--ui-density-input);
+}
+
+button,
+.primary-button,
+.secondary-button,
+.mini-button,
+.icon-button,
+.table-link-button,
+.chat-chip,
+.chat-search-item,
+.autocomplete-item {
+  min-height: var(--ui-density-control-md);
 }
 
 .app-shell::before {

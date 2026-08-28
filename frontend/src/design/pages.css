@@ -1617,14 +1617,75 @@ table {
 .sortable-table th,
 .market-investor-flow-table th,
 .investor-flow-table th {
-  font-weight: 600;
+  height: 34px;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
 }
 
 .data-table td,
 .sortable-table td,
 .market-investor-flow-table td,
 .investor-flow-table td {
+  height: var(--ui-density-row);
+  padding: 7px 9px;
+  font-size: 12.5px;
   font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.data-table td:nth-child(n + 3),
+.sortable-table td:nth-child(n + 3),
+.market-investor-flow-table td:nth-child(n + 3),
+.investor-flow-table td:nth-child(n + 3) {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.data-table .rank-cell,
+.sortable-table .rank-cell,
+.theme-score,
+.score-pill {
+  font-weight: 720;
+}
+
+.section-toolbar {
+  min-height: 38px;
+  margin-bottom: 8px;
+}
+
+.section-title,
+.subsection-title {
+  font-size: clamp(18px, 1.5vw, 22px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+}
+
+.summary-card,
+.theme-card,
+.empty-state,
+.notice-box,
+.telegram-bubble,
+.mini-table-panel,
+.business-segment-panel,
+.stock-news-card,
+.global-company-card,
+.global-earnings-card,
+.building-unit-card,
+.subscription-case-card,
+.subscription-special-card,
+.price-map-card,
+.price-chart-card,
+.dram-price-card,
+.radar-definition-card,
+.sector-entry-card,
+.dart-card,
+.portfolio-benchmark-summary-card,
+.portfolio-account-panel,
+.portfolio-capture-panel,
+.portfolio-ai-panel {
+  padding: var(--ui-density-card-pad);
 }
 
 .unified-themes-page {
@@ -1897,40 +1958,40 @@ table {
   }
 }
 
-/* Premium finance page polish. This layer only changes presentation. */
+/* Dense market intelligence page layer. */
 .unified-themes-page {
   width: min(100%, 1540px);
-  padding: 4px;
+  padding: 0;
 }
 
 .unified-themes-page .unified-theme-tabs-panel {
   position: static;
-  padding: 14px;
+  padding: 8px;
   border: 1px solid color-mix(in srgb, var(--ui-brand) 12%, var(--ui-border));
-  border-radius: var(--ui-radius-xl);
+  border-radius: 14px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 255, 0.66)),
     var(--ui-surface);
-  box-shadow: var(--ui-shadow-md);
+  box-shadow: var(--ui-shadow-sm);
   backdrop-filter: blur(24px) saturate(142%);
   -webkit-backdrop-filter: blur(24px) saturate(142%);
 }
 
 .unified-themes-page .unified-theme-tabs {
   display: inline-grid;
-  grid-auto-columns: minmax(78px, 1fr);
+  grid-auto-columns: minmax(68px, 1fr);
   grid-auto-flow: column;
-  gap: 6px;
-  padding: 5px;
+  gap: 4px;
+  padding: 4px;
   border: 1px solid var(--ui-border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--ui-surface-soft) 76%, white);
 }
 
 .unified-themes-page .unified-theme-tab {
-  min-height: 42px;
+  min-height: 32px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: -0.02em;
 }
@@ -1938,19 +1999,61 @@ table {
 .unified-themes-page .unified-theme-tab.active {
   background: var(--ui-gradient-brand);
   color: #ffffff;
-  box-shadow: 0 14px 28px color-mix(in srgb, var(--ui-brand) 26%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--ui-brand) 22%, transparent);
+}
+
+.unified-themes-page .leader-calendar-panel {
+  padding: 14px;
+}
+
+.unified-themes-page .leader-calendar-panel .leader-timeline-wrap {
+  margin-top: 10px;
+}
+
+.unified-themes-page .leader-timeline-legend {
+  margin-top: 6px;
+}
+
+.unified-themes-page .theme-edit-table tbody tr.stock-search-highlight td {
+  height: 42px;
+}
+
+.unified-themes-page .theme-edit-table tbody tr:not(.stock-search-highlight) td {
+  height: 40px;
+}
+
+@media (min-width: 1440px) {
+  .unified-themes-page .leader-calendar-panel {
+    padding: 16px;
+  }
+}
+
+:root[data-theme="dark"] .unified-themes-page .leader-calendar-panel {
+  padding: 14px;
+}
+
+@media (min-width: 1440px) {
+  :root[data-theme="dark"] .unified-themes-page .leader-calendar-panel {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 720px) {
+  .unified-themes-page .leader-calendar-panel {
+    padding: 12px;
+  }
 }
 
 .unified-themes-page .leader-calendar-panel {
   position: relative;
   overflow: hidden;
-  padding: 30px;
+  padding: 16px;
   border: 1px solid color-mix(in srgb, var(--ui-brand) 12%, var(--ui-border));
-  border-radius: var(--ui-radius-xl);
+  border-radius: 16px;
   background:
     radial-gradient(circle at 90% 10%, color-mix(in srgb, var(--ui-brand) 10%, transparent), transparent 30%),
     var(--ui-gradient-surface);
-  box-shadow: var(--ui-shadow-md);
+  box-shadow: var(--ui-shadow-sm);
 }
 
 .unified-themes-page .leader-calendar-panel::after,
@@ -1963,12 +2066,17 @@ table {
   pointer-events: none;
 }
 
+.unified-themes-page .leader-calendar-panel::before,
+.unified-themes-page .themes-compact-hero::before {
+  opacity: 0.22;
+}
+
 .unified-themes-page .leader-calendar-head {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  gap: 10px;
   align-items: start;
-  padding-bottom: 20px;
+  padding-bottom: 12px;
 }
 
 .unified-themes-page .leader-calendar-head > .summary-help {
@@ -1978,19 +2086,19 @@ table {
 }
 
 .unified-themes-page .leader-calendar-panel .section-title {
-  font-size: clamp(24px, 2vw, 32px);
-  font-weight: 760;
+  font-size: clamp(22px, 1.8vw, 30px);
+  font-weight: 730;
   letter-spacing: -0.04em;
 }
 
 .unified-themes-page .leader-calendar-panel .summary-help {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 560;
   line-height: 1.55;
 }
 
 .unified-themes-page .leader-calendar-panel .toggle-group {
-  gap: 8px;
+  gap: 6px;
   justify-content: flex-start;
   flex-wrap: wrap;
 }
@@ -1998,9 +2106,11 @@ table {
 .unified-themes-page .leader-calendar-panel .mini-button,
 .unified-themes-page .themes-compact-hero .mini-button,
 .unified-themes-page .section-toolbar .mini-button {
-  min-height: 40px;
-  border-radius: var(--ui-radius-md);
-  font-weight: 680;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 650;
   letter-spacing: -0.02em;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
 }
@@ -2019,24 +2129,29 @@ table {
   color: var(--ui-positive);
 }
 
+.unified-themes-page .leader-calendar-panel .capture-button:hover {
+  background: var(--ui-gradient-brand);
+  color: #ffffff;
+}
+
 .unified-themes-page .leader-timeline-wrap {
-  padding: 16px;
-  border-radius: var(--ui-radius-lg);
+  padding: 10px;
+  border-radius: 12px;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--ui-surface-soft) 72%, white), var(--ui-surface-soft));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62);
 }
 
 .unified-themes-page .leader-timeline {
-  gap: 8px;
+  gap: 5px;
 }
 
 .unified-themes-page .leader-timeline-date,
 .unified-themes-page .leader-timeline-rank,
 .unified-themes-page .leader-timeline-corner {
-  min-height: 42px;
+  min-height: 34px;
   border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-md);
+  border-radius: 10px;
   background: color-mix(in srgb, var(--ui-surface) 78%, var(--ui-surface-soft));
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
 }
@@ -2047,39 +2162,55 @@ table {
   color: var(--ui-brand);
 }
 
+.unified-themes-page .leader-timeline-date-score,
+.unified-themes-page .theme-file-calendar-score,
+.unified-themes-page .theme-sector-chip-meta {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
 .unified-themes-page .leader-timeline-cell {
-  min-height: 42px;
+  min-height: 34px;
   border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-md);
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.82);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .unified-themes-page .leader-timeline-segment {
-  min-height: 26px;
+  min-height: 22px;
   border-radius: 999px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 8px 18px rgba(15, 23, 42, 0.16);
-  font-size: 12px;
-  font-weight: 760;
+  font-size: 11px;
+  font-weight: 720;
   letter-spacing: -0.02em;
 }
 
 .unified-themes-page .themes-compact-hero {
   position: relative;
   overflow: hidden;
-  min-height: 132px;
-  padding: 28px 30px;
-  border-radius: var(--ui-radius-xl);
+  min-height: 82px;
+  padding: 16px 18px;
+  border-radius: 16px;
   background:
     radial-gradient(circle at 78% 30%, rgba(25, 185, 149, 0.18), transparent 28%),
     radial-gradient(circle at 18% 16%, rgba(49, 130, 246, 0.2), transparent 30%),
     linear-gradient(135deg, #ffffff 0%, #edf6ff 50%, #edfbf6 100%);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+.unified-themes-page .themes-compact-hero.collapsed {
+  cursor: pointer;
+}
+
+.unified-themes-page .themes-compact-hero.collapsed:hover {
+  transform: translateY(-1px);
   box-shadow: var(--ui-shadow-md);
 }
 
 .unified-themes-page .themes-compact-titlebar {
   align-items: center;
-  gap: 18px;
+  gap: 12px;
 }
 
 .unified-themes-page .themes-compact-titlebar-main {
@@ -2087,20 +2218,21 @@ table {
 }
 
 .unified-themes-page .themes-compact-titlebar .page-title {
-  font-size: clamp(28px, 2.4vw, 40px);
-  font-weight: 780;
+  font-size: clamp(26px, 2vw, 34px);
+  font-weight: 740;
   letter-spacing: -0.055em;
 }
 
 .unified-themes-page .themes-compact-titlebar .eyebrow {
   color: var(--ui-brand);
-  font-size: 12px;
-  font-weight: 760;
+  font-size: 11px;
+  font-weight: 720;
   letter-spacing: 0.14em;
 }
 
 .unified-themes-page .theme-file-calendar {
-  border-radius: var(--ui-radius-xl);
+  padding: 12px;
+  border-radius: 14px;
   background:
     radial-gradient(circle at 92% 10%, color-mix(in srgb, var(--ui-brand) 18%, transparent), transparent 24%),
     linear-gradient(135deg, color-mix(in srgb, var(--ui-brand-soft) 88%, white), #ffffff);
@@ -2108,9 +2240,10 @@ table {
 }
 
 .unified-themes-page .theme-file-calendar-day {
-  min-height: 54px;
-  border-radius: var(--ui-radius-md);
-  font-weight: 680;
+  min-height: 48px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 650;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
 }
 
@@ -2126,23 +2259,23 @@ table {
 }
 
 .unified-themes-page .manual-theme-strip {
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 6px;
 }
 
 .unified-themes-page .theme-sector-chip {
-  min-height: 48px;
-  padding: 10px 13px;
-  border-radius: var(--ui-radius-md);
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 9px;
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 255, 0.72));
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+  box-shadow: none;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
 }
 
 .unified-themes-page .theme-sector-chip:hover,
 .unified-themes-page .theme-sector-chip.active {
-  transform: translateY(-2px);
+  transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--ui-brand) 28%, transparent);
   background:
     radial-gradient(circle at 100% 0, color-mix(in srgb, var(--ui-brand) 15%, transparent), transparent 34%),
@@ -2151,26 +2284,32 @@ table {
 }
 
 .unified-themes-page .theme-sector-dot {
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: 999px;
   box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 10%, transparent);
 }
 
 .unified-themes-page .theme-stock-search-bar,
 .unified-themes-page .theme-stock-search-wrap {
-  border-radius: var(--ui-radius-lg);
+  border-radius: 12px;
 }
 
 .unified-themes-page .theme-stock-search-bar {
-  padding: 14px;
+  padding: 8px;
   background: color-mix(in srgb, var(--ui-surface-soft) 82%, white);
 }
 
 .unified-themes-page .theme-stock-search-wrap input {
-  min-height: 46px;
-  border-radius: var(--ui-radius-md);
+  min-height: 34px;
+  border-radius: 10px;
   font-weight: 560;
+}
+
+.unified-themes-page .theme-stock-search-bar .mini-button,
+.unified-themes-page .theme-stock-search-bar button {
+  min-height: 34px;
+  padding-inline: 12px;
 }
 
 .unified-themes-page .data-table,
@@ -2183,20 +2322,78 @@ table {
 .unified-themes-page .sortable-table th {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--ui-surface-soft) 84%, white), var(--ui-surface-soft));
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 720;
   letter-spacing: -0.01em;
 }
 
 .unified-themes-page .data-table td,
 .unified-themes-page .sortable-table td {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 540;
 }
 
 .unified-themes-page .data-table tbody tr:hover td,
 .unified-themes-page .sortable-table tbody tr:hover td {
   background: color-mix(in srgb, var(--ui-brand-soft) 54%, white);
+}
+
+.unified-themes-page .theme-edit-table .score-pill,
+.unified-themes-page .theme-high-count-badge {
+  min-height: 22px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.unified-themes-page .theme-table-virtual-wrap {
+  border-radius: 12px;
+}
+
+.unified-themes-page .theme-edit-table th {
+  height: 32px;
+  padding: 6px 8px;
+}
+
+.unified-themes-page .theme-edit-table td {
+  height: 38px;
+  padding: 4px 8px;
+}
+
+.unified-themes-page .theme-edit-table .theme-sector-cell {
+  padding-block: 4px;
+}
+
+.unified-themes-page .theme-sector-cell-inner {
+  min-height: 28px;
+  border-radius: 8px;
+}
+
+.unified-themes-page .theme-sector-cell-inner input,
+.unified-themes-page .theme-note-input {
+  min-height: 28px;
+  height: 28px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.unified-themes-page .table-sort-button {
+  min-height: 24px;
+  padding: 2px 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.unified-themes-page .theme-stock-name-cell,
+.unified-themes-page .theme-sector-cell {
+  font-size: 12.5px;
+  line-height: 1.25;
+}
+
+.unified-themes-page .theme-stock-code-inline {
+  font-size: 11px;
+  opacity: 0.72;
 }
 
 :root[data-theme="dark"] .unified-themes-page .unified-theme-tabs-panel,
@@ -2265,7 +2462,7 @@ table {
 
   .unified-themes-page .leader-calendar-panel,
   .unified-themes-page .themes-compact-hero {
-    padding: 20px;
+    padding: 14px;
   }
 
   .unified-themes-page .leader-calendar-panel .toggle-group,

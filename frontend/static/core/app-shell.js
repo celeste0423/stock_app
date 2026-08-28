@@ -10262,33 +10262,53 @@
   function App() {
     const defaultTabGroups = [
       {
-        label: "\uc8fc\uc2dd",
+        label: "MARKET",
+        tabs: [
+          { key: "themes", label: "오늘의 주도주" },
+          { key: "global-indices", label: "지수/가격동향" },
+          { key: "global-company", label: "해외기업 검색기" },
+          { key: "telegram", label: "종목 정보 검색기" },
+        ]
+      },
+      {
+        label: "RESEARCH",
         tabs: [
           { key: "sector-watch", label: "관심종목 보드" },
-          { key: "themes", label: "오늘의 주도주" },
-          { key: "chart-game", label: "차트 게임" },
-          { key: "telegram", label: "종목 정보 검색기" },
           { key: "disclosure", label: "공시/실적" },
           { key: "stock-news", label: "뉴스 검색기" },
-          { key: "global-company", label: "해외기업 검색기" },
-          { key: "pair-correlation", label: "주가 상관관계" },
+          { key: "naver-blog", label: "네이버 블로그 브리핑" },
+          { key: "market-calendar", label: "증시 일정" },
+        ]
+      },
+      {
+        label: "FLOW",
+        tabs: [
           { key: "etf-flow", label: "ETF 자금 추정" },
-          { key: "global-indices", label: "지수/가격동향" },
           { key: "institutional-rebalance", label: "기관 리밸런싱 추정" },
-          { key: "portfolio", label: "포트폴리오 수익" },
           { key: "sector-entry", label: "섹터 진입 신호" },
-          { key: "breakout-stats", label: "돌파 통계" },
           { key: "sector-snapshot", label: "섹터 비교 테이블" },
           { key: "trade-data", label: "수출입" },
           { key: "economy-cycle", label: "경기순환" },
+        ]
+      },
+      {
+        label: "STRATEGY",
+        tabs: [
+          { key: "portfolio", label: "포트폴리오 수익" },
+          { key: "pair-correlation", label: "주가 상관관계" },
           { key: "strategy-backtest", label: "전략 백테스트" },
-          { key: "market-calendar", label: "증시 일정" },
-          { key: "naver-blog", label: "네이버 블로그 브리핑" },
+        ]
+      },
+      {
+        label: "TOOLS",
+        tabs: [
+          { key: "breakout-stats", label: "돌파 통계" },
+          { key: "chart-game", label: "차트 게임" },
           { key: "next", label: "추가 예정 페이지" }
         ]
       },
       {
-        label: "\ubd80\ub3d9\uc0b0",
+        label: "REAL ASSET",
         tabs: [
           { key: "real-estate-prices", label: "부동산 가격" },
           { key: "subscription-list", label: "아파트 청약 리스트" },
@@ -10565,6 +10585,36 @@
       moveTabToPosition(sourceKey, targetKey);
     }
 
+    function navIconCode(tabKey) {
+      const iconMap = {
+        "breakout-stats": "BO",
+        "building-management": "BD",
+        "chart-game": "CG",
+        "disclosure": "IR",
+        "economy-cycle": "EC",
+        "etf-flow": "EF",
+        "global-company": "GC",
+        "global-indices": "IX",
+        "institutional-rebalance": "IB",
+        "market-calendar": "CA",
+        "naver-blog": "NB",
+        "next": "NX",
+        "pair-correlation": "CO",
+        "portfolio": "PF",
+        "real-estate-prices": "RE",
+        "sector-entry": "SE",
+        "sector-snapshot": "SS",
+        "sector-watch": "WL",
+        "stock-news": "NW",
+        "strategy-backtest": "BT",
+        "subscription-list": "AP",
+        "telegram": "ST",
+        "themes": "TL",
+        "trade-data": "TR",
+      };
+      return iconMap[tabKey] || "•";
+    }
+
     function renderPageContent(pageKey) {
       if (pageKey === "sector-watch") {
         return h(SectorWatchBoardPage);
@@ -10747,6 +10797,7 @@
                     onDrop: function (event) { handleTabDrop(tab.key, event); },
                     title: shortcutLabel ? tab.label + " (" + shortcutLabel + ")" : tab.label,
                   },
+                  h("span", { className: "nav-item-glyph", "aria-hidden": "true" }, navIconCode(tab.key)),
                   h("span", { className: "nav-item-label" }, tab.label),
                   shortcutLabel ? h("span", { className: "nav-item-shortcut" }, shortcutLabel) : null
                 );

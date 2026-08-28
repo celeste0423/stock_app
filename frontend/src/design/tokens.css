@@ -37,6 +37,13 @@
   --ui-space-4: 16px;
   --ui-space-5: 20px;
   --ui-space-6: 24px;
+  --ui-density-topbar: 46px;
+  --ui-density-control-sm: 30px;
+  --ui-density-control-md: 34px;
+  --ui-density-input: 36px;
+  --ui-density-row: 40px;
+  --ui-density-nav: 34px;
+  --ui-density-card-pad: 14px;
 
   --bg: var(--ui-canvas);
   --bg-alt: var(--ui-canvas-deep);
