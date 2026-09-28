@@ -1,0 +1,11 @@
+[Unit]
+Description=Send US leader report after market close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 17:15:00 America/New_York
+Persistent=true
+AccuracySec=1min
+Unit=stock-muse-close@us.service
+
+[Install]
+WantedBy=timers.target

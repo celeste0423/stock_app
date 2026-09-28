@@ -1,0 +1,20 @@
+[Unit]
+Description=Stock leader API on Muse VM
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stockleader
+Group=stockleader
+WorkingDirectory=/opt/stock-leader/app
+EnvironmentFile=/etc/stock-leader.env
+Environment=HOME=/var/lib/stock-leader
+Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/bin/bash -lc 'exec /opt/stock-leader/venv/bin/python -m uvicorn backend.app:app --host "${STOCK_APP_BIND_HOST:-127.0.0.1}" --port "${STOCK_APP_PORT:-8124}"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

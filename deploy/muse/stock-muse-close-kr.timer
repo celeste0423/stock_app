@@ -1,0 +1,11 @@
+[Unit]
+Description=Send Korean leader report after market close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:20:00 Asia/Seoul
+Persistent=true
+AccuracySec=1min
+Unit=stock-muse-close@kr.service
+
+[Install]
+WantedBy=timers.target

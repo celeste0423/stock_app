@@ -1,0 +1,21 @@
+[Unit]
+Description=Stock leader Telegram command bot on Muse VM
+After=network-online.target stock-muse-app.service
+Wants=network-online.target
+Requires=stock-muse-app.service
+
+[Service]
+Type=simple
+User=stockleader
+Group=stockleader
+WorkingDirectory=/opt/stock-leader/app
+EnvironmentFile=/etc/stock-leader.env
+Environment=HOME=/var/lib/stock-leader
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/bin/bash -lc 'for i in {1..60}; do curl -fsS http://127.0.0.1:${STOCK_APP_PORT:-8124}/api/health >/dev/null && exit 0; sleep 2; done; exit 1'
+ExecStart=/bin/bash -lc 'exec /opt/stock-leader/venv/bin/python tools/oracle_leader_telegram_bot.py --server-url "http://127.0.0.1:${STOCK_APP_PORT:-8124}"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
