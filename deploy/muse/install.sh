@@ -49,7 +49,7 @@ create_uv_venv() {
     curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
   fi
   UV_PYTHON_INSTALL_DIR="${ROOT_DIR}/python" uv python install 3.12
-  UV_PYTHON_INSTALL_DIR="${ROOT_DIR}/python" uv venv --python 3.12 "${VENV_DIR}"
+  UV_PYTHON_INSTALL_DIR="${ROOT_DIR}/python" uv venv --seed --python 3.12 "${VENV_DIR}"
 }
 
 if command -v python3.12 >/dev/null 2>&1; then
